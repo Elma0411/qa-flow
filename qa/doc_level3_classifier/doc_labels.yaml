@@ -1,0 +1,5126 @@
+# 文件作用：定义文档三级分类标签、规则、权重和兜底标签。
+# 关联说明：被 config.py 加载，是 classifier_core 的规则和标签数据来源。
+source: D:\项目\国网\Label_stage\data\raw\rule.txt
+defaults:
+  head_chars: 1800
+  min_score: 4.0
+fallback_label:
+  level1: 其他文档
+  level2: 其他
+  level3: 其他
+labels:
+- id: doc_0630d8cfb0
+  level1: 标准
+  level2: 标准执行指导文件
+  level3: 其他
+  priority: 78
+  note: 文档名可能包含"标准执行指导"，内容描述某项管理、业务或技术相关工作应执行的一系列标准，包括标准体系、标准执行说明
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 标准执行指导
+    - 标准体系
+    - 执行说明
+    weight: 3.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 标准执行指导
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_a72a615906
+  level1: 标准
+  level2: 团体标准
+  level3: 其他
+  priority: 78
+  note: 标准号以"T"开头，适用于社会团体发布的标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bT(?!\s*/\s*CEC)\s*(?:/[A-Za-z]+)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: regex
+    match: \bT(?:\s*/\s*[A-Za-z]+)?\s*\d
+    weight: 4.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 团体标准
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_35fbef890a
+  level1: 标准
+  level2: 团体标准
+  level3: 其他团体标准
+  priority: 79
+  note: 标准号以"T"开头，除上述团体以外的团体标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bT(?!\s*/\s*CEC)\s*(?:/[A-Za-z]+)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: regex
+    match: \bT(?:\s*/\s*[A-Za-z]+)?\s*\d
+    weight: 4.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 团体标准
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_198f8f2bf6
+  level1: 标准
+  level2: 团体标准
+  level3: 中国电力企业联合会
+  priority: 80
+  note: 标准号以"T/CEC"开头，适用于中国电力企业联合会发布的团体标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bT\s*/\s*CEC\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: regex
+    match: \bT\s*/\s*CEC\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 中国电力企业联合会
+    weight: 2.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - T/CEC
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: standard_enterprise_state_grid
+  level1: 标准
+  level2: 企业标准
+  level3: 国家电网公司
+  priority: 91
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bQ\s*/\s*GDW\s*[0-9Xx×]+
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 国家电网公司
+    - 国网
+    - 企业标准
+    - 国家电网公司企业标准
+    - 'ICS '
+    weight: 1.5
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+  note: 发布单位是国家电网公司的企业标准
+- id: doc_6efd39f2a3
+  level1: 标准
+  level2: 企业标准
+  level3: 其他
+  priority: 78
+  note: 标准号以"Q"开头，适用于企业发布的标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bQ(?!\s*/\s*GDW)\s*(?:/[A-Za-z]+)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: regex
+    match: \bQ(?:\s*/\s*[A-Za-z]+)?\s*[0-9A-Z]
+    weight: 4.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 企业标准
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_83ba6de6f6
+  level1: 标准
+  level2: 企业标准
+  level3: 其他公司企标
+  priority: 78
+  note: 发布单位不是国家电网公司的企业标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bQ(?!\s*/\s*GDW)\s*(?:/[A-Za-z]+)?\s*\d
+    weight: 4.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 企业标准
+    weight: 1.5
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 国家电网
+    - 国网
+    - 供电公司
+    - 电力公司
+    weight: 3.0
+- id: doc_9407358770
+  level1: 标准
+  level2: 行业标准
+  level3: 环境保护标准
+  priority: 81
+  note: 标准号以"HJ"开头，适用于环境保护行业
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bHJ(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 环境保护标准
+    - HJ
+    weight: 1.2
+  - scope: title_head
+    algorithm: any
+    match:
+    - HJ
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_9763cb3e99
+  level1: 标准
+  level2: 行业标准
+  level3: 其他
+  priority: 78
+  note: 标准号以行业缩写开头，适用于特定行业
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 行业标准
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_5b41b2891b
+  level1: 标准
+  level2: 行业标准
+  level3: 档案标准
+  priority: 81
+  note: 标准号以"DA"开头，适用于档案管理行业
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDA(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 档案标准
+    - DA
+    weight: 1.2
+  - scope: title_head
+    algorithm: any
+    match:
+    - DA
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: standard_industry_safety
+  level1: 标准
+  level2: 行业标准
+  level3: 安全生产标准
+  priority: 90
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bAQ(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 安全生产标准
+    - 应急管理
+    weight: 1.0
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+  note: 标准号以"AQ"开头，适用于安全生产行业
+- id: standard_industry_power
+  level1: 标准
+  level2: 行业标准
+  level3: 电力标准
+  priority: 92
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDL/T\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 电力行业标准
+    - 电力标准
+    - 'ICS '
+    weight: 1.5
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+  note: 标准号以"DL"开头，适用于电力行业
+- id: doc_1b5baf744b
+  level1: 标准
+  level2: 行业标准
+  level3: 其他行业标准
+  priority: 79
+  note: 除上述行业以外的其他行业标准
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 行业标准
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_df1fad6018
+  level1: 标准
+  level2: 行业标准
+  level3: 建筑工程标准
+  priority: 81
+  note: 标准号以"JG"开头，适用于建筑工程行业
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bJG(?:J)?(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 建筑工程标准
+    - JG
+    weight: 1.2
+  - scope: title_head
+    algorithm: any
+    match:
+    - JG
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_d034facce9
+  level1: 标准
+  level2: 行业标准
+  level3: 城镇建设工程标准
+  priority: 81
+  note: 标准号以"CJJ"开头，适用于城镇建设工程行业
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bCJJ(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 城镇建设工程标准
+    - CJJ
+    weight: 1.2
+  - scope: title_head
+    algorithm: any
+    match:
+    - CJJ
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_42b5073454
+  level1: 标准
+  level2: 行业标准
+  level3: 能源标准
+  priority: 81
+  note: 标准号以"NB"开头，适用于能源行业
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bNB(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 能源标准
+    - NB
+    weight: 1.2
+  - scope: title_head
+    algorithm: any
+    match:
+    - NB
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_2f4ff07db5
+  level1: 标准
+  level2: 行业标准
+  level3: 标准发布公告
+  priority: 81
+  note: 文档名可能包含"标准发布"，内容只有公告描述，没有标准正文
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 标准发布
+    - 公告
+    - 发布公告
+    weight: 1.2
+  - scope: title_head
+    algorithm: any
+    match:
+    - 标准发布
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_aef64e469a
+  level1: 标准
+  level2: 地方标准
+  level3: 河南省
+  priority: 80
+  note: 标准号以"DB41"开头，适用于河南省的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB41(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 河南省
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB41
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_666914711f
+  level1: 标准
+  level2: 地方标准
+  level3: 广东省
+  priority: 80
+  note: 标准号以"DB44"开头，适用于广东省的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB44(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 广东省
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB44
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_f867b4e005
+  level1: 标准
+  level2: 地方标准
+  level3: 吉林省
+  priority: 80
+  note: 标准号以"DB22"开头，适用于吉林省的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB22(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 吉林省
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB22
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_0c6f59e372
+  level1: 标准
+  level2: 地方标准
+  level3: 江西省
+  priority: 80
+  note: 标准号以"DB36"开头，适用于江西省的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB36(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 江西省
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB36
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_2fbf3344ed
+  level1: 标准
+  level2: 地方标准
+  level3: 黑龙江省
+  priority: 80
+  note: 标准号以"DB23"开头，适用于黑龙江省的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB23(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 黑龙江省
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB23
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_dcbf127a28
+  level1: 标准
+  level2: 地方标准
+  level3: 北京市
+  priority: 80
+  note: 标准号以"DB11"开头，适用于北京市的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB11(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 北京市
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB11
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_d3478e673f
+  level1: 标准
+  level2: 地方标准
+  level3: 广西壮族自治区
+  priority: 80
+  note: 标准号以"DB45"开头，适用于广西壮族自治区的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB45(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 广西壮族自治区
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB45
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_fd95ef897b
+  level1: 标准
+  level2: 地方标准
+  level3: 宁夏回族自治区
+  priority: 80
+  note: 标准号以"DB64"开头，适用于宁夏回族自治区的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB64(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 宁夏回族自治区
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB64
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_d91e12f53e
+  level1: 标准
+  level2: 地方标准
+  level3: 湖南省
+  priority: 80
+  note: 标准号以"DB43"开头，适用于湖南省的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB43(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 湖南省
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB43
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_0f8ad899f2
+  level1: 标准
+  level2: 地方标准
+  level3: 标准发布公告
+  priority: 81
+  note: 文档名可能包含"标准发布"，内容只有公告描述，没有标准正文
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 标准发布
+    - 公告
+    - 发布公告
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 标准发布
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+  - scope: head
+    algorithm: regex
+    match: 第[一二三四五六七八九十百千0-9]+条
+    weight: 4.0
+- id: doc_04695cfe5f
+  level1: 标准
+  level2: 地方标准
+  level3: 陕西省
+  priority: 80
+  note: 标准号以"DB61"开头，适用于陕西省的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB61(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 陕西省
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB61
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_23ef7e920d
+  level1: 标准
+  level2: 地方标准
+  level3: 其他地方标准
+  priority: 79
+  note: 标准号以"DB"开头，适用于地方政府及其各部门发布的标准
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_e00eefd74a
+  level1: 标准
+  level2: 地方标准
+  level3: 山西省
+  priority: 80
+  note: 标准号以"DB14"开头，适用于山西省的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB14(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 山西省
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB14
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_e182e72468
+  level1: 标准
+  level2: 地方标准
+  level3: 浙江省
+  priority: 80
+  note: 标准号以"DB33"开头，适用于浙江省的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB33(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 浙江省
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB33
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_9cb224bd9b
+  level1: 标准
+  level2: 地方标准
+  level3: 安徽省
+  priority: 80
+  note: 标准号以"DB34"开头，适用于安徽省的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB34(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 安徽省
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB34
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_f60d032e6f
+  level1: 标准
+  level2: 地方标准
+  level3: 重庆市
+  priority: 80
+  note: 标准号以"DB50"开头，适用于重庆市的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB50(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 重庆市
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB50
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_975e4b186e
+  level1: 标准
+  level2: 地方标准
+  level3: 江苏省
+  priority: 80
+  note: 标准号以"DB32"开头，适用于江苏省的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB32(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 江苏省
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB32
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_4a2ab4e750
+  level1: 标准
+  level2: 地方标准
+  level3: 新疆维吾尔自治区
+  priority: 80
+  note: 标准号以"DB65"开头，适用于新疆维吾尔自治区的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB65(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 新疆维吾尔自治区
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB65
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_b54e0bec3d
+  level1: 标准
+  level2: 地方标准
+  level3: 河北省
+  priority: 80
+  note: 标准号以"DB13"开头，适用于河北省的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB13(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 河北省
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB13
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: standard_local_other
+  level1: 标准
+  level2: 地方标准
+  level3: 其他
+  priority: 88
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB\d{2,3}(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 地方标准
+    weight: 1.0
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+  note: 标准号以"DB"开头，适用于地方政府及其各部门发布的标准
+- id: doc_ccaf3b07de
+  level1: 标准
+  level2: 地方标准
+  level3: 云南省
+  priority: 80
+  note: 标准号以"DB53"开头，适用于云南省的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB53(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 云南省
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB53
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_140d903b7a
+  level1: 标准
+  level2: 地方标准
+  level3: 山东省
+  priority: 80
+  note: 标准号以"DB37"开头，适用于山东省的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB37(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 山东省
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB37
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_42810c758f
+  level1: 标准
+  level2: 地方标准
+  level3: 青海省
+  priority: 80
+  note: 标准号以"DB63"开头，适用于青海省的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB63(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 青海省
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB63
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_7b751d19e9
+  level1: 标准
+  level2: 地方标准
+  level3: 贵州省
+  priority: 80
+  note: 标准号以"DB52"开头，适用于贵州省的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB52(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 贵州省
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB52
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_7503b1d08d
+  level1: 标准
+  level2: 地方标准
+  level3: 四川省
+  priority: 80
+  note: 标准号以"DB51"开头，适用于四川省的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB51(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 四川省
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB51
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_c91f8e27c5
+  level1: 标准
+  level2: 地方标准
+  level3: 海南省
+  priority: 80
+  note: 标准号以"DB46"开头，适用于海南省的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB46(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 海南省
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB46
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_61b4ed0688
+  level1: 标准
+  level2: 地方标准
+  level3: 天津市
+  priority: 80
+  note: 标准号以"DB12"开头，适用于天津市的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB12(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 天津市
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB12
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_6eb935365c
+  level1: 标准
+  level2: 地方标准
+  level3: 福建省
+  priority: 80
+  note: 标准号以"DB35"开头，适用于福建省的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB35(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 福建省
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB35
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_cebfb6cd22
+  level1: 标准
+  level2: 地方标准
+  level3: 甘肃省
+  priority: 80
+  note: 标准号以"DB62"开头，适用于甘肃省的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB62(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 甘肃省
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB62
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_cf6c48fed4
+  level1: 标准
+  level2: 地方标准
+  level3: 上海市
+  priority: 80
+  note: 标准号以"DB31"开头，适用于上海市的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB31(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 上海市
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB31
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_4590446d4d
+  level1: 标准
+  level2: 地方标准
+  level3: 湖北省
+  priority: 80
+  note: 标准号以"DB42"开头，适用于湖北省的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB42(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 湖北省
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB42
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_b0cf5d5de0
+  level1: 标准
+  level2: 地方标准
+  level3: 西藏自治区
+  priority: 80
+  note: 标准号以"DB54"开头，适用于西藏自治区的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB54(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 西藏自治区
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB54
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_bd12c511e5
+  level1: 标准
+  level2: 地方标准
+  level3: 内蒙古自治区
+  priority: 80
+  note: 标准号以"DB15"开头，适用于内蒙古自治区的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB15(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 内蒙古自治区
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB15
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_96660b22a4
+  level1: 标准
+  level2: 地方标准
+  level3: 辽宁省
+  priority: 80
+  note: 标准号以"DB21"开头，适用于辽宁省的地方标准
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bDB21(?:/T)?\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 辽宁省
+    - 地方标准
+    weight: 1.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - DB21
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_3f5fd6c441
+  level1: 标准
+  level2: 其他标准
+  level3: 其他
+  priority: 76
+  note: 除国家标准、行业标准、地方标准、团体标准、企业标准以外的其他标准
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - standard_style
+    weight: 2.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 标准
+    - 标准化
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: standard_national_mandatory
+  level1: 标准
+  level2: 国家标准
+  level3: 强制性标准
+  priority: 93
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bGB\s*\d
+    weight: 4.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 国家标准
+    weight: 1.5
+  excludes:
+  - scope: title_head
+    algorithm: regex
+    match: \bGB/T\s*\d|\bGB/Z\s*\d
+    weight: 6.0
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+  note: 标准号开头只有"GB"，没有"/T"和"/Z"
+- id: standard_national_recommended
+  level1: 标准
+  level2: 国家标准
+  level3: 推荐性标准
+  priority: 94
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bGB/T\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 国家标准
+    - 'ICS '
+    weight: 1.0
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+  note: 标准号开头是"GB/T"
+- id: doc_9bf00b5a2d
+  level1: 标准
+  level2: 国家标准
+  level3: 指导性技术文件
+  priority: 80
+  note: 标准号开头是"GB/Z"
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bGB/Z\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: regex
+    match: \bGB/Z\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - GB/Z
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_17549758da
+  level1: 标准
+  level2: 国家标准
+  level3: 标准发布公告
+  priority: 81
+  note: 文档名可能包含"标准发布"，内容只有公告描述，没有标准正文
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 标准发布
+    - 发布公告
+    - 公告
+    weight: 3.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 标准发布
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+  - scope: head
+    algorithm: regex
+    match: 第[一二三四五六七八九十百千0-9]+条
+    weight: 4.0
+- id: doc_5541af95ce
+  level1: 标准
+  level2: 国家标准
+  level3: 其他
+  priority: 78
+  note: 标准号以"GB"开头，适用于全国范围，通常是由国务院各部委发布
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bGB\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 国家标准
+    - 标准
+    weight: 1.2
+  - scope: title_head
+    algorithm: any
+    match:
+    - GB
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_71a2e9a77e
+  level1: 标准
+  level2: 标准编制说明
+  level3: 其他
+  priority: 78
+  note: 标准号以"GB"开头，适用于全国范围，通常是由国务院各部委发布
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: \bGB\s*\d
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 编制说明
+    weight: 4.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - GB
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_6d24b128f5
+  level1: 标准
+  level2: 其他
+  level3: 其他
+  priority: 76
+  note: 是由标准化组织、行业机构或企业制定和发布的技术标准、操作标准等，其中： 其他 文档名或文档内容前几行可能包含标准类型描述，如"国家标准"、"行业标准"、"企业标准"、"地方标准"、"团体标准"。
+    其他 文档名或文档内容前几行可能包含标准编号，编号格式类似GB/T 12345其他2020（国家标准）、DL/T 598其他2020（行业标准）、Q/GDW
+    168其他2008（企业标准）。 其他 文档名可能是国家标准/行业标准/地方标准/团体标准等的备案、编制说明、执行指导意见的，归入此类 其他 **注意**：文档名或文档内容中包含"标准"、"标准化"等文字，但不涉及标准类型描述的，不归入此类。
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 国家标准
+    - 行业标准
+    - 企业标准
+    - 地方标准
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 意见
+    - 报告
+    - 评审
+    - 接入系统
+    - 工程
+    weight: 6.0
+- id: doc_810f33c6b5
+  level1: 图书
+  level2: 人工智能与数据科学
+  level3: 自然语言处理
+  priority: 64
+  note: 文档内容跟自然语言处理相关的，可能包括：预训练语言模型、多模态语义理解、对话式AI应用、知识图谱技术等
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - book_style
+    weight: 2.2
+  - scope: fulltext
+    algorithm: any
+    match: &id001
+    - 出版社
+    - ISBN
+    - 主编
+    - 编著
+    - 图书
+    - 教材
+    - 版权
+    weight: 1.8
+  - scope: title
+    algorithm: any
+    match:
+    - 自然语言处理
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 自然语言处理
+    weight: 1.6
+  - scope: fulltext
+    algorithm: any
+    match:
+    - 自然语言处理
+    weight: 1.5
+  excludes: []
+- id: doc_f03ab3fbb6
+  level1: 图书
+  level2: 人工智能与数据科学
+  level3: 强化学习
+  priority: 64
+  note: 文档内容是跟强化学习（Reinforcement Learning，RL）
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - book_style
+    weight: 2.2
+  - scope: fulltext
+    algorithm: any
+    match: *id001
+    weight: 1.8
+  - scope: title
+    algorithm: any
+    match:
+    - 强化学习
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 强化学习
+    weight: 1.6
+  - scope: fulltext
+    algorithm: any
+    match:
+    - 强化学习
+    weight: 1.5
+  excludes: []
+- id: doc_46f82a815d
+  level1: 图书
+  level2: 人工智能与数据科学
+  level3: 计算机图像
+  priority: 64
+  note: 文档内容跟计算机图形图像计算有关
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - book_style
+    weight: 2.2
+  - scope: fulltext
+    algorithm: any
+    match: *id001
+    weight: 1.8
+  - scope: title
+    algorithm: any
+    match:
+    - 计算机图像
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 计算机图像
+    weight: 1.6
+  - scope: fulltext
+    algorithm: any
+    match:
+    - 计算机图像
+    weight: 1.5
+  excludes: []
+- id: doc_9dde21018c
+  level1: 图书
+  level2: 人工智能与数据科学
+  level3: 其他
+  priority: 62
+  note: 文档内容跟人工智能、数据科学、统计分析、数据挖掘、机器学习、深度学习等技术相关的
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - book_style
+    weight: 2.2
+  - scope: fulltext
+    algorithm: any
+    match: *id001
+    weight: 1.8
+  - scope: title_head
+    algorithm: any
+    match:
+    - 人工智能与数据科学
+    weight: 1.2
+  excludes: []
+- id: doc_7618d6e774
+  level1: 图书
+  level2: 人工智能与数据科学
+  level3: 人工智能理论
+  priority: 64
+  note: 文档内容是人工智能理论相关的
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - book_style
+    weight: 2.2
+  - scope: fulltext
+    algorithm: any
+    match: *id001
+    weight: 1.8
+  - scope: title
+    algorithm: any
+    match:
+    - 人工智能理论
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 人工智能理论
+    weight: 1.6
+  - scope: fulltext
+    algorithm: any
+    match:
+    - 人工智能理论
+    weight: 1.5
+  excludes: []
+- id: doc_8e619fd518
+  level1: 图书
+  level2: 人工智能与数据科学
+  level3: 大数据技术
+  priority: 64
+  note: 文档内容跟大数据技术栈相关，可能包括：流式计算引擎、图数据、数据湖仓一体化架构、隐私保护计算等
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - book_style
+    weight: 2.2
+  - scope: fulltext
+    algorithm: any
+    match: *id001
+    weight: 1.8
+  - scope: title
+    algorithm: any
+    match:
+    - 大数据技术
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 大数据技术
+    weight: 1.6
+  - scope: fulltext
+    algorithm: any
+    match:
+    - 大数据技术
+    weight: 1.5
+  excludes: []
+- id: doc_2ee0c0f24f
+  level1: 图书
+  level2: 人工智能与数据科学
+  level3: 机器学习
+  priority: 64
+  note: 文档内容跟数据分析、数据挖掘、模式识别、深度学习、自监督学习、神经网络等有关
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - book_style
+    weight: 2.2
+  - scope: fulltext
+    algorithm: any
+    match: *id001
+    weight: 1.8
+  - scope: title
+    algorithm: any
+    match:
+    - 机器学习
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 机器学习
+    weight: 1.6
+  - scope: fulltext
+    algorithm: any
+    match:
+    - 机器学习
+    weight: 1.5
+  excludes: []
+- id: doc_0cfbdb3024
+  level1: 图书
+  level2: 人工智能与数据科学
+  level3: 其他主题
+  priority: 62
+  note: 文档跟智能计算与数据科学有关，但无法归入具体三级分类的，归入此类
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - book_style
+    weight: 2.2
+  - scope: fulltext
+    algorithm: any
+    match: *id001
+    weight: 1.8
+  - scope: title_head
+    algorithm: any
+    match:
+    - 人工智能与数据科学
+    weight: 1.2
+  excludes: []
+- id: doc_a6ff681017
+  level1: 图书
+  level2: 科普读物
+  level3: 其他
+  priority: 62
+  note: 文档内容是行业知识、行业概况的科普传播、大众化表达的
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - book_style
+    weight: 2.2
+  - scope: fulltext
+    algorithm: any
+    match: *id001
+    weight: 1.8
+  - scope: title_head
+    algorithm: any
+    match:
+    - 科普读物
+    weight: 1.2
+  excludes: []
+- id: book_other
+  level1: 图书
+  level2: 其他图书
+  level3: 其他
+  priority: 70
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 出版社
+    - ISBN
+    - 作者
+    - 主编
+    - 版权页
+    weight: 3.0
+  - scope: signals
+    algorithm: any
+    match:
+    - book_style
+    weight: 1.5
+  note: 无法归入到图书的具体二级分类的，归入此类
+- id: doc_d42d28f0b0
+  level1: 图书
+  level2: 电力系统与工程
+  level3: 其他主题
+  priority: 62
+  note: 难以划分到电力系统与工程具体三级分类的，归入此类
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - book_style
+    weight: 2.2
+  - scope: fulltext
+    algorithm: any
+    match: *id001
+    weight: 1.8
+  - scope: title_head
+    algorithm: any
+    match:
+    - 电力系统与工程
+    weight: 1.2
+  excludes: []
+- id: doc_cd07a332c0
+  level1: 图书
+  level2: 电力系统与工程
+  level3: 输电与变电
+  priority: 64
+  note: 文档是跟电力系统运行中的电力传输和分配环节相关，可能包括：超/特高压输电技术、柔性直流输电、电能质量优化，GIS设备、主变压器等输变电设备的状态评价、故障诊断等
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - book_style
+    weight: 2.2
+  - scope: fulltext
+    algorithm: any
+    match: *id001
+    weight: 1.8
+  - scope: title
+    algorithm: any
+    match:
+    - 输电与变电
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 输电与变电
+    weight: 1.6
+  - scope: fulltext
+    algorithm: any
+    match:
+    - 输电与变电
+    weight: 1.5
+  excludes: []
+- id: doc_5f86165560
+  level1: 图书
+  level2: 电力系统与工程
+  level3: 智能电网
+  priority: 64
+  note: 文档主题跟智能电网相关的，可能包括：电力物联网等电网通信技术，自适应继电保护、电网故障诊断、区块链智能合约等电网智能控制与保护；虚拟电厂优化调度、智能电表数据挖掘等用户侧智能电网应用
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - book_style
+    weight: 2.2
+  - scope: fulltext
+    algorithm: any
+    match: *id001
+    weight: 1.8
+  - scope: title
+    algorithm: any
+    match:
+    - 智能电网
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 智能电网
+    weight: 1.6
+  - scope: fulltext
+    algorithm: any
+    match:
+    - 智能电网
+    weight: 1.5
+  excludes: []
+- id: doc_9b0e9c20f3
+  level1: 图书
+  level2: 电力系统与工程
+  level3: 新能源技术
+  priority: 64
+  note: 文档主题跟新能源技术相关，可能包括：风光功率预测、多能源互补协调控制等新能源并网；锂离子电池、液流电池、压缩空气储能、飞轮储能、抽水蓄能等储能系统和技术，以及天然气能、水能(包括海洋能等)、风能、地热能、生物能、太阳能、核能等新型能源技术，以及节能技术
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - book_style
+    weight: 2.2
+  - scope: fulltext
+    algorithm: any
+    match: *id001
+    weight: 1.8
+  - scope: title
+    algorithm: any
+    match:
+    - 新能源技术
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 新能源技术
+    weight: 1.6
+  - scope: fulltext
+    algorithm: any
+    match:
+    - 新能源技术
+    weight: 1.5
+  excludes: []
+- id: doc_0971b9cb9c
+  level1: 图书
+  level2: 电力系统与工程
+  level3: 电力系统运行
+  priority: 64
+  note: 文档是以电网系统运行整体为主要主题的，可能包括电力系统稳定性、暂态稳定分析、电压稳定控制、潮流分析、电力系统自动化分析，等等为主要主题的
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - book_style
+    weight: 2.2
+  - scope: fulltext
+    algorithm: any
+    match: *id001
+    weight: 1.8
+  - scope: title
+    algorithm: any
+    match:
+    - 电力系统运行
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 电力系统运行
+    weight: 1.6
+  - scope: fulltext
+    algorithm: any
+    match:
+    - 电力系统运行
+    weight: 1.5
+  excludes: []
+- id: doc_4a92ef6dd5
+  level1: 图书
+  level2: 电力系统与工程
+  level3: 配电与用电
+  priority: 64
+  note: 文档主题跟电力系统运行中的配电和用电环节相关，可能包括配电变压器等配用电设备的状态评价、故障诊断，配电自动化与可靠性，用户侧用电核算等。
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - book_style
+    weight: 2.2
+  - scope: fulltext
+    algorithm: any
+    match: *id001
+    weight: 1.8
+  - scope: title
+    algorithm: any
+    match:
+    - 配电与用电
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 配电与用电
+    weight: 1.6
+  - scope: fulltext
+    algorithm: any
+    match:
+    - 配电与用电
+    weight: 1.5
+  excludes: []
+- id: doc_d943bcbec8
+  level1: 图书
+  level2: 电力系统与工程
+  level3: 其他
+  priority: 62
+  note: 文档是电力系统运行、输电、变电、配电、用电、新能源技术、智能电网等电力电网领域为主要主题的
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - book_style
+    weight: 2.2
+  - scope: fulltext
+    algorithm: any
+    match: *id001
+    weight: 1.8
+  - scope: title_head
+    algorithm: any
+    match:
+    - 电力系统与工程
+    weight: 1.2
+  excludes: []
+- id: doc_ac0d223446
+  level1: 图书
+  level2: 计算机科学技术
+  level3: 其他
+  priority: 62
+  note: 文档内容跟计算机技术相关的，主题可能跟以下关键词相关： 其他 计算机理论，数据结构，数据安全，计算机仿真，计算机过程控制，计算机辅助设计，计算机信息管理系统，计算机决策支持系统，等等
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - book_style
+    weight: 2.2
+  - scope: fulltext
+    algorithm: any
+    match: *id001
+    weight: 1.8
+  - scope: title_head
+    algorithm: any
+    match:
+    - 计算机科学技术
+    weight: 1.2
+  excludes: []
+- id: doc_84b9c798d7
+  level1: 图书
+  level2: 其他
+  level3: 其他
+  priority: 60
+  note: 是由出版社出版的图书、教科书,或系统性、体系化的教程教材： 其他 文档内容通常包含图书名称、作者或编著者、出版社、版权信息等；如果文档内容不包含出版社信息，则不归入此类；
+    其他 文档内容如果包含国际标准书号（ISBN）出版物代码的，则为出版图书
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - book_style
+    weight: 2.2
+  - scope: fulltext
+    algorithm: any
+    match: *id001
+    weight: 1.8
+  excludes: []
+- id: company_policy_technical
+  level1: 公司制度
+  level2: 总部制度
+  level3: 技术规范
+  priority: 85
+  rules:
+  - scope: title
+    algorithm: any
+    match:
+    - 技术规范
+    - 技术导则
+    - 操作规范
+    - 工作规范
+    - 技术细则
+    weight: 4.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 国家电网
+    - 国网
+    - 供电公司
+    weight: 1.0
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 标准
+    - 条例
+    - 通知
+    - 公告
+    weight: 4.0
+  note: 设备、产品、研发等技术标准和规范，以确保技术质量的，归入此类。 **注意**：以"企业标准"发布的技术标准和规范，归入"企业标准"类
+- id: doc_08fe591fc3
+  level1: 公司制度
+  level2: 总部制度
+  level3: 领导讲话
+  priority: 74
+  note: 国家电网公司领导的讲话材料、文章、演讲、新闻稿等归入此类
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - state_grid_name
+    weight: 1.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 讲话
+    - 发言
+    - 致辞
+    weight: 3.2
+  - scope: title
+    algorithm: any
+    match:
+    - 领导讲话
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 领导讲话
+    weight: 1.6
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 评审意见
+    - 接入系统
+    - 工程
+    - 项目
+    - 初步设计
+    - 概算
+    - 批复
+    weight: 5.5
+  - scope: title
+    algorithm: any
+    match:
+    - 企业标准
+    - 条例
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 企业标准
+    weight: 4.0
+- id: doc_cf84dc1c36
+  level1: 公司制度
+  level2: 总部制度
+  level3: 制度讲解
+  priority: 74
+  note: 对制度的专家解读、要点解读
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - state_grid_name
+    weight: 1.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 解读
+    - 讲解
+    - 释义
+    weight: 3.2
+  - scope: title
+    algorithm: any
+    match:
+    - 制度讲解
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 制度讲解
+    weight: 1.6
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 评审意见
+    - 接入系统
+    - 工程
+    - 项目
+    - 初步设计
+    - 概算
+    - 批复
+    weight: 5.5
+  - scope: title
+    algorithm: any
+    match:
+    - 企业标准
+    - 条例
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 企业标准
+    weight: 4.0
+- id: company_policy_management
+  level1: 公司制度
+  level2: 总部制度
+  level3: 管理制度
+  priority: 84
+  rules:
+  - scope: title
+    algorithm: any
+    match:
+    - 制度
+    - 管理办法
+    - 管理规定
+    - 细则
+    - 规则
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 规章制度编号
+    - 制度编号
+    weight: 4.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 国家电网
+    - 国网
+    - 供电公司
+    weight: 1.5
+  - scope: signals
+    algorithm: any
+    match:
+    - state_grid_name
+    weight: 1.0
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 通知
+    - 公告
+    - 方案
+    - 报告
+    - 条例
+    - 法律
+    - 标准
+    weight: 5.0
+  note: 公司章程、股东会议事规则等规范公司治理结构及运作的，归入此类
+- id: doc_823348b3bd
+  level1: 公司制度
+  level2: 总部制度
+  level3: 公司治理
+  priority: 74
+  note: 公司章程、股东会议事规则等规范公司治理结构及运作的，归入此类
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - state_grid_name
+    weight: 1.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 公司章程
+    - 议事规则
+    - 股东会
+    - 董事会
+    - 治理
+    weight: 3.2
+  - scope: title
+    algorithm: any
+    match:
+    - 公司治理
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 公司治理
+    weight: 1.6
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 评审意见
+    - 接入系统
+    - 工程
+    - 项目
+    - 初步设计
+    - 概算
+    - 批复
+    weight: 5.5
+  - scope: title
+    algorithm: any
+    match:
+    - 企业标准
+    - 条例
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 企业标准
+    weight: 4.0
+- id: doc_e27d1695d2
+  level1: 公司制度
+  level2: 总部制度
+  level3: 其他
+  priority: 72
+  note: 公司章程、股东会议事规则等规范公司治理结构及运作的，归入此类
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - state_grid_name
+    weight: 1.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 规章制度编号
+    - 制度编号
+    weight: 2.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 总部制度
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 评审意见
+    - 接入系统
+    - 工程
+    - 项目
+    - 初步设计
+    - 概算
+    - 批复
+    weight: 5.5
+  - scope: title
+    algorithm: any
+    match:
+    - 企业标准
+    - 条例
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 企业标准
+    weight: 4.0
+- id: doc_f475411a7c
+  level1: 公司制度
+  level2: 总部制度
+  level3: 业务规范
+  priority: 74
+  note: 指导具体生产运营活动、业务指引等规范业务操作的，归入此类
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - state_grid_name
+    weight: 1.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 业务规范
+    - 业务指引
+    - 操作规范
+    - 作业规范
+    weight: 3.2
+  - scope: title
+    algorithm: any
+    match:
+    - 业务规范
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 业务规范
+    weight: 1.6
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 评审意见
+    - 接入系统
+    - 工程
+    - 项目
+    - 初步设计
+    - 概算
+    - 批复
+    weight: 5.5
+  - scope: title
+    algorithm: any
+    match:
+    - 企业标准
+    - 条例
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 企业标准
+    weight: 4.0
+- id: doc_8ff1a3e62b
+  level1: 公司制度
+  level2: 市级制度
+  level3: 其他
+  priority: 72
+  note: 由地市级电力公司制定的公司制度
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: 供电公司|市公司|地市公司
+    weight: 2.2
+  - scope: filename
+    algorithm: regex
+    match: 供电公司|市公司|地市公司
+    weight: 1.8
+  - scope: title_head
+    algorithm: any
+    match:
+    - 规章制度编号
+    - 制度编号
+    weight: 2.5
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 评审意见
+    - 接入系统
+    - 工程
+    - 项目
+    - 初步设计
+    - 概算
+    - 批复
+    weight: 5.5
+  - scope: title
+    algorithm: any
+    match:
+    - 企业标准
+    - 条例
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 国家电网公司
+    - 国网
+    weight: 2.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 企业标准
+    weight: 4.0
+- id: doc_b8788afafb
+  level1: 公司制度
+  level2: 市级制度
+  level3: 管理制度
+  priority: 74
+  note: 类似"总部制度/管理制度"，但是由地市公司制定的
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: 供电公司|市公司|地市公司
+    weight: 2.2
+  - scope: filename
+    algorithm: regex
+    match: 供电公司|市公司|地市公司
+    weight: 1.8
+  - scope: title
+    algorithm: any
+    match:
+    - 管理制度
+    - 管理规定
+    weight: 2.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 总部制度/管理制度
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 评审意见
+    - 接入系统
+    - 工程
+    - 项目
+    - 初步设计
+    - 概算
+    - 批复
+    weight: 5.5
+  - scope: title
+    algorithm: any
+    match:
+    - 企业标准
+    - 条例
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 国家电网公司
+    - 国网
+    weight: 2.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 企业标准
+    weight: 4.0
+- id: doc_2577a33c3e
+  level1: 公司制度
+  level2: 市级制度
+  level3: 技术规范
+  priority: 74
+  note: 类似"总部制度/技术规范"，但是由地市公司制定的
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: 供电公司|市公司|地市公司
+    weight: 2.2
+  - scope: filename
+    algorithm: regex
+    match: 供电公司|市公司|地市公司
+    weight: 1.8
+  - scope: title
+    algorithm: any
+    match:
+    - 技术规范
+    - 技术标准
+    - 技术导则
+    - 技术细则
+    - 技术规程
+    weight: 2.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 总部制度/技术规范
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 评审意见
+    - 接入系统
+    - 工程
+    - 项目
+    - 初步设计
+    - 概算
+    - 批复
+    weight: 5.5
+  - scope: title
+    algorithm: any
+    match:
+    - 企业标准
+    - 条例
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 国家电网公司
+    - 国网
+    weight: 2.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 企业标准
+    weight: 4.0
+- id: doc_66c7e52f1c
+  level1: 公司制度
+  level2: 市级制度
+  level3: 业务规范
+  priority: 74
+  note: 类似"总部制度/业务规范"，但是由地市公司制定的
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: 供电公司|市公司|地市公司
+    weight: 2.2
+  - scope: filename
+    algorithm: regex
+    match: 供电公司|市公司|地市公司
+    weight: 1.8
+  - scope: title
+    algorithm: any
+    match:
+    - 业务规范
+    - 业务指引
+    - 操作规范
+    - 作业规范
+    weight: 2.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 总部制度/业务规范
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 评审意见
+    - 接入系统
+    - 工程
+    - 项目
+    - 初步设计
+    - 概算
+    - 批复
+    weight: 5.5
+  - scope: title
+    algorithm: any
+    match:
+    - 企业标准
+    - 条例
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 国家电网公司
+    - 国网
+    weight: 2.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 企业标准
+    weight: 4.0
+- id: doc_f342320c1c
+  level1: 公司制度
+  level2: 市级制度
+  level3: 公司治理
+  priority: 74
+  note: 类似"总部制度/公司治理"，但是由地市公司制定的
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: 供电公司|市公司|地市公司
+    weight: 2.2
+  - scope: filename
+    algorithm: regex
+    match: 供电公司|市公司|地市公司
+    weight: 1.8
+  - scope: title
+    algorithm: any
+    match:
+    - 公司章程
+    - 议事规则
+    - 股东会
+    - 董事会
+    - 治理
+    weight: 2.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 总部制度/公司治理
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 评审意见
+    - 接入系统
+    - 工程
+    - 项目
+    - 初步设计
+    - 概算
+    - 批复
+    weight: 5.5
+  - scope: title
+    algorithm: any
+    match:
+    - 企业标准
+    - 条例
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 国家电网公司
+    - 国网
+    weight: 2.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 企业标准
+    weight: 4.0
+- id: doc_57fe9ce1a8
+  level1: 公司制度
+  level2: 省级制度
+  level3: 业务规范
+  priority: 74
+  note: 类似"总部制度/业务规范"，但是由分省公司制定的
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: 省电力公司|省公司|国网.*省
+    weight: 2.2
+  - scope: filename
+    algorithm: regex
+    match: 省电力公司|省公司|国网.*省
+    weight: 1.8
+  - scope: title
+    algorithm: any
+    match:
+    - 业务规范
+    - 业务指引
+    - 操作规范
+    - 作业规范
+    weight: 2.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 总部制度/业务规范
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 评审意见
+    - 接入系统
+    - 工程
+    - 项目
+    - 初步设计
+    - 概算
+    - 批复
+    weight: 5.5
+  - scope: title
+    algorithm: any
+    match:
+    - 企业标准
+    - 条例
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 国家电网公司
+    - 国网
+    weight: 2.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 企业标准
+    weight: 4.0
+- id: doc_4da89cea98
+  level1: 公司制度
+  level2: 省级制度
+  level3: 公司治理
+  priority: 74
+  note: 类似"总部制度/公司治理"，但是由分省公司制定的
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: 省电力公司|省公司|国网.*省
+    weight: 2.2
+  - scope: filename
+    algorithm: regex
+    match: 省电力公司|省公司|国网.*省
+    weight: 1.8
+  - scope: title
+    algorithm: any
+    match:
+    - 公司章程
+    - 议事规则
+    - 股东会
+    - 董事会
+    - 治理
+    weight: 2.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 总部制度/公司治理
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 评审意见
+    - 接入系统
+    - 工程
+    - 项目
+    - 初步设计
+    - 概算
+    - 批复
+    weight: 5.5
+  - scope: title
+    algorithm: any
+    match:
+    - 企业标准
+    - 条例
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 国家电网公司
+    - 国网
+    weight: 2.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 企业标准
+    weight: 4.0
+- id: doc_46cc31cf8d
+  level1: 公司制度
+  level2: 省级制度
+  level3: 管理制度
+  priority: 74
+  note: 类似"总部制度/管理制度"，但是由分省公司制定的
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: 省电力公司|省公司|国网.*省
+    weight: 2.2
+  - scope: filename
+    algorithm: regex
+    match: 省电力公司|省公司|国网.*省
+    weight: 1.8
+  - scope: title
+    algorithm: any
+    match:
+    - 管理制度
+    - 管理规定
+    weight: 2.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 总部制度/管理制度
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 评审意见
+    - 接入系统
+    - 工程
+    - 项目
+    - 初步设计
+    - 概算
+    - 批复
+    weight: 5.5
+  - scope: title
+    algorithm: any
+    match:
+    - 企业标准
+    - 条例
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 国家电网公司
+    - 国网
+    weight: 2.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 企业标准
+    weight: 4.0
+- id: doc_387ae54b24
+  level1: 公司制度
+  level2: 省级制度
+  level3: 工作手册
+  priority: 74
+  note: 针对某一项具体工作指引性手册
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: 省电力公司|省公司|国网.*省
+    weight: 2.2
+  - scope: filename
+    algorithm: regex
+    match: 省电力公司|省公司|国网.*省
+    weight: 1.8
+  - scope: title
+    algorithm: any
+    match:
+    - 工作手册
+    - 操作手册
+    - 手册
+    weight: 2.0
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 评审意见
+    - 接入系统
+    - 工程
+    - 项目
+    - 初步设计
+    - 概算
+    - 批复
+    weight: 5.5
+  - scope: title
+    algorithm: any
+    match:
+    - 企业标准
+    - 条例
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 国家电网公司
+    - 国网
+    weight: 2.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 企业标准
+    weight: 4.0
+- id: doc_2cbcbb910c
+  level1: 公司制度
+  level2: 省级制度
+  level3: 技术规范
+  priority: 74
+  note: 类似"总部制度/技术规范"，但是由分省公司制定的
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: 省电力公司|省公司|国网.*省
+    weight: 2.2
+  - scope: filename
+    algorithm: regex
+    match: 省电力公司|省公司|国网.*省
+    weight: 1.8
+  - scope: title
+    algorithm: any
+    match:
+    - 技术规范
+    - 技术标准
+    - 技术导则
+    - 技术细则
+    - 技术规程
+    weight: 2.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 总部制度/技术规范
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 评审意见
+    - 接入系统
+    - 工程
+    - 项目
+    - 初步设计
+    - 概算
+    - 批复
+    weight: 5.5
+  - scope: title
+    algorithm: any
+    match:
+    - 企业标准
+    - 条例
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 国家电网公司
+    - 国网
+    weight: 2.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 企业标准
+    weight: 4.0
+- id: doc_fb4b292194
+  level1: 公司制度
+  level2: 省级制度
+  level3: 行动方案
+  priority: 74
+  note: 针对某一项工作任务的行动指南
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: 省电力公司|省公司|国网.*省
+    weight: 2.2
+  - scope: filename
+    algorithm: regex
+    match: 省电力公司|省公司|国网.*省
+    weight: 1.8
+  - scope: title
+    algorithm: any
+    match:
+    - 行动方案
+    - 行动计划
+    weight: 2.0
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 评审意见
+    - 接入系统
+    - 工程
+    - 项目
+    - 初步设计
+    - 概算
+    - 批复
+    weight: 5.5
+  - scope: title
+    algorithm: any
+    match:
+    - 企业标准
+    - 条例
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 国家电网公司
+    - 国网
+    weight: 2.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 企业标准
+    weight: 4.0
+- id: doc_e11db94826
+  level1: 公司制度
+  level2: 省级制度
+  level3: 其他
+  priority: 72
+  note: 由国家电网公司下属分省公司及其各部门制定的公司制度
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: 省电力公司|省公司|国网.*省
+    weight: 2.2
+  - scope: filename
+    algorithm: regex
+    match: 省电力公司|省公司|国网.*省
+    weight: 1.8
+  - scope: title_head
+    algorithm: any
+    match:
+    - 规章制度编号
+    - 制度编号
+    weight: 2.5
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 评审意见
+    - 接入系统
+    - 工程
+    - 项目
+    - 初步设计
+    - 概算
+    - 批复
+    weight: 5.5
+  - scope: title
+    algorithm: any
+    match:
+    - 企业标准
+    - 条例
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 国家电网公司
+    - 国网
+    weight: 2.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 企业标准
+    weight: 4.0
+- id: doc_e2868f2d56
+  level1: 公司制度
+  level2: 其他
+  level3: 其他
+  priority: 70
+  note: 是由国家电网公司（简称国网、国网公司，旧称国家电力公司）的各部门及下属公司发布，内容性质是指导国网及各部门生产经营活动的管理流程、业务规范、内部操作要求等。
+    其他 文档名可能包含类似"技术规范"、"实施办法"、"管理制度"、"暂行办法"、"暂行规定"等描述 其他 文档名或内容可能包含类似"国网（交易/4）283其他2014"这种格式的编号，或者包含"规章制度编号："这种格式的描述
+    其他 通常以条文形式为主 **注意**：只有由国网各部门及其下属公司制定和发布的，才归入此类, **注意**：不是由国网各部门及其下属公司制定和发布的，不归入此类。
+    **注意**：国网公司制定和发布的"企业标准"，归入"标准"类别，不归入此类。
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 规章制度编号
+    - 制度编号
+    weight: 2.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 技术规范
+    - 实施办法
+    - 管理制度
+    - 暂行办法
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 方案
+    - 评审意见
+    - 接入系统
+    - 工程
+    - 项目
+    - 初步设计
+    - 概算
+    - 批复
+    weight: 5.5
+  - scope: title
+    algorithm: any
+    match:
+    - 企业标准
+    - 条例
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 企业标准
+    weight: 4.0
+- id: law_local_regulation
+  level1: 法律法规
+  level2: 地方法规
+  level3: 其他
+  priority: 95
+  note: 地方人大及其常委会制定的地方性法规。
+  rules:
+  - scope: title
+    algorithm: any
+    match:
+    - 条例
+    - 办法
+    - 规定
+    - 规则
+    weight: 1.0
+  - scope: head
+    algorithm: regex
+    match: 第[一二三四五六七八九十百千0-9]+条
+    weight: 2.5
+  - scope: title_head
+    algorithm: regex
+    match: 人民代表大会常务委员会|自治区人民代表大会|省人民代表大会
+    weight: 3.5
+  - scope: signals
+    algorithm: all
+    match:
+    - law_style
+    - npc_name
+    weight: 2.0
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 解读
+    - 答记者问
+    weight: 4.0
+- id: doc_1066b7bc29
+  level1: 法律法规
+  level2: 司法解释
+  level3: 程序规范
+  priority: 78
+  note: 专门针对审判执行活动的流程、标准作出规定，如民事诉讼程序的操作细则。
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: 最高人民法院|最高人民检察院
+    weight: 2.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 程序
+    - 审判程序
+    - 执行程序
+    - 流程
+    - 规范
+    weight: 2.5
+  excludes: []
+- id: doc_c65aa89c8a
+  level1: 法律法规
+  level2: 司法解释
+  level3: 条纹阐述
+  priority: 78
+  note: 指“条文阐述/条文阐释”，依据立法精神对条文适用作解释说明，例如证据规则的细化规定
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: 最高人民法院|最高人民检察院
+    weight: 2.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 条文阐释
+    - 条文阐述
+    - 释义
+    - 解读
+    weight: 2.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 条文阐述/条文阐释
+    weight: 1.2
+  excludes: []
+- id: law_interpretation
+  level1: 法律法规
+  level2: 司法解释
+  level3: 其他
+  priority: 86
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 司法解释
+    - 批复
+    - 解释
+    - 审判委员会
+    weight: 2.5
+  - scope: title_head
+    algorithm: regex
+    match: 最高人民法院|最高人民检察院
+    weight: 3.0
+  note: 由最高人民法院或最高人民检察院制定，文档名或文档内容可能包含类似关于某某事件的解释或规定
+- id: doc_3abb5ba949
+  level1: 法律法规
+  level2: 司法解释
+  level3: 修订废止
+  priority: 78
+  note: 通过决定形式修改或废止现有司法解释，确保法律适用与立法动态一致。
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: 最高人民法院|最高人民检察院
+    weight: 2.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 修改
+    - 废止
+    - 决定
+    weight: 2.5
+  excludes: []
+- id: doc_6e96d31991
+  level1: 法律法规
+  level2: 司法解释
+  level3: 规范规定
+  priority: 78
+  note: 依据立法精神制定审判或检察工作的具体规范、意见，例如证据规则的细化规定
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: 最高人民法院|最高人民检察院
+    weight: 2.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 规定
+    - 规范
+    - 意见
+    - 规则
+    weight: 2.5
+  excludes: []
+- id: doc_cb3e36ddbd
+  level1: 法律法规
+  level2: 司法解释
+  level3: 个案批复
+  priority: 78
+  note: 针对下级法院或检察院的请示，就具体案件的法律适用作出答复，仅对请示案件有效。
+  rules:
+  - scope: title_head
+    algorithm: regex
+    match: 最高人民法院|最高人民检察院
+    weight: 2.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 批复
+    - 答复
+    - 请示
+    weight: 2.5
+  excludes: []
+- id: law_explanation
+  level1: 法律法规
+  level2: 法律法规解读
+  level3: 权威解读
+  priority: 82
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 解读
+    - 释义
+    - 答记者问
+    - 权威解读
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 条例
+    - 规定
+    - 办法
+    - 法律
+    - 法规
+    weight: 1.5
+  note: 以法律法规的制定单位、主管单位或单位负责人名义的解读
+- id: doc_98adf22f7c
+  level1: 法律法规
+  level2: 法律法规解读
+  level3: 专家解读
+  priority: 79
+  note: 以专家个人名义的解读
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 专家解读
+    - 专家
+    - 解读
+    weight: 2.8
+  excludes: []
+- id: doc_980af61e69
+  level1: 法律法规
+  level2: 法律法规解读
+  level3: 答记者问
+  priority: 78
+  note: 文档名或文档内容前几行可能包含"答记者问"等描述
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 答记者问
+    weight: 4.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 答记者问
+    weight: 1.2
+  excludes: []
+- id: doc_4f9f69af17
+  level1: 法律法规
+  level2: 党内法规
+  level3: 其他
+  priority: 76
+  note: 由中共中央或各级党组制定的，内容是规范党员工作、生活、作风、精神文明等的法规
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 中共中央
+    - 党组
+    - 党内法规
+    weight: 3.0
+  - scope: head
+    algorithm: regex
+    match: 第[一二三四五六七八九十百千0-9]+条
+    weight: 1.5
+  excludes: []
+- id: doc_593e169226
+  level1: 法律法规
+  level2: 国家法律
+  level3: 法律公告
+  priority: 79
+  note: 文档名包含“发布”、“公告”等，内容只包含公告描述，不包含法律正文的
+  rules:
+  - scope: title
+    algorithm: any
+    match:
+    - 公告
+    - 发布
+    weight: 2.5
+  - scope: title_head
+    algorithm: regex
+    match: 主席令|公告
+    weight: 2.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 发布
+    - 公告
+    weight: 1.2
+  excludes:
+  - scope: head
+    algorithm: regex
+    match: 第[一二三四五六七八九十百千0-9]+条
+    weight: 4.0
+  - scope: title
+    algorithm: any
+    match:
+    - 条例
+    - 办法
+    - 规定
+    - 规则
+    - 解读
+    - 答记者问
+    weight: 4.0
+- id: law_national
+  level1: 法律法规
+  level2: 国家法律
+  level3: 其他
+  priority: 92
+  rules:
+  - scope: title
+    algorithm: regex
+    match: ^(中华人民共和国)?[^\n]{0,80}法(（.*）|\(.*\)|$)
+    weight: 4.5
+  - scope: head
+    algorithm: regex
+    match: 第[一二三四五六七八九十百千0-9]+条
+    weight: 2.0
+  - scope: signals
+    algorithm: any
+    match:
+    - law_style
+    weight: 1.0
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 条例
+    - 办法
+    - 规定
+    - 细则
+    - 规则
+    - 解读
+    - 问答
+    weight: 4.0
+  note: 由全国人民代表大会及其常委会等国家立法机关制定，通过主席令形式发布的法律法规 其他 名称通常以"中华人民共和国XXX法"的形式，如中华人民共和国个人所得税法。
+    其他 以条文的形式为主
+- id: doc_19d06ea611
+  level1: 法律法规
+  level2: 国家法律
+  level3: 修订说明
+  priority: 78
+  note: 文档名可能包含"修订说明"等，内容有且只有一部分法律法规条款的修订前后差异说明 **注意**：包含法律法规正文的修订版本，不归入此类
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 修订说明
+    - 修正说明
+    - 修订前后对照
+    - 修订对照
+    weight: 4.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 修订说明
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 条例
+    - 办法
+    - 规定
+    - 规则
+    - 解读
+    - 答记者问
+    weight: 4.0
+- id: doc_54d79a3d74
+  level1: 法律法规
+  level2: 行政法规
+  level3: 法规公告
+  priority: 79
+  note: 文档名可能包含“发布”“公告”等，内容只包含公告描述，不包含行政法规全文
+  rules:
+  - scope: title
+    algorithm: any
+    match:
+    - 公告
+    - 发布
+    weight: 2.5
+  - scope: title_head
+    algorithm: regex
+    match: 国务院令|国务院第[0-9]+号令|中华人民共和国国务院令
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 发布
+    - 公告
+    weight: 1.2
+  excludes:
+  - scope: head
+    algorithm: regex
+    match: 第[一二三四五六七八九十百千0-9]+条
+    weight: 4.0
+  - scope: title
+    algorithm: any
+    match:
+    - 解读
+    - 答记者问
+    weight: 4.0
+- id: law_administrative
+  level1: 法律法规
+  level2: 行政法规
+  level3: 其他
+  priority: 90
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 条例
+    - 办法
+    - 规定
+    weight: 2.0
+  - scope: title_head
+    algorithm: regex
+    match: 国务院令|国务院第[0-9]+号令|中华人民共和国国务院令
+    weight: 3.0
+  - scope: head
+    algorithm: regex
+    match: 第[一二三四五六七八九十百千0-9]+条
+    weight: 2.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 施行
+    - 公布
+    weight: 1.0
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 解读
+    - 答记者问
+    weight: 4.0
+  note: 由国务院制定的，对全国范围内的某一类或某一领域的行政事务进行全面、系统的规范。 其他 通常是通过国务院令（或国令）形式发布 其他 名称一般为"条例"、"规定"、"办法"等
+    其他 以条文的形式为主
+- id: doc_268dfceac6
+  level1: 法律法规
+  level2: 其他规定
+  level3: 其他
+  priority: 76
+  note: 由行业协会、社会团体等发布的，规范协会成员、团体成员的规定
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 协会
+    - 社会团体
+    - 成员
+    - 章程
+    weight: 2.5
+  excludes: []
+- id: doc_a3fa3a9b42
+  level1: 法律法规
+  level2: 部委规章
+  level3: 规章公告
+  priority: 79
+  note: 文档名可能包含“规章公告”“公告”等，内容只包含公告描述，不包含部委规章全文
+  rules:
+  - scope: title
+    algorithm: any
+    match:
+    - 规章公告
+    - 公告
+    - 发布
+    weight: 3.0
+  - scope: title_head
+    algorithm: regex
+    match: 国家发展改革委|财政部|司法部|公安部|教育部|国家能源局|国家计委|国家物价局|国家计划委员会|工业和信息化部|住房城乡建设部|生态环境部|应急管理部
+    weight: 2.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 规章公告
+    - 公告
+    weight: 1.2
+  excludes:
+  - scope: head
+    algorithm: regex
+    match: 第[一二三四五六七八九十百千0-9]+条
+    weight: 4.0
+  - scope: title_head
+    algorithm: regex
+    match: 人民代表大会常务委员会|国务院令
+    weight: 5.0
+- id: law_ministry_regulation
+  level1: 法律法规
+  level2: 部委规章
+  level3: 其他
+  priority: 88
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 规定
+    - 办法
+    - 细则
+    - 规则
+    weight: 2.0
+  - scope: title_head
+    algorithm: regex
+    match: 令（第|\(第|部令|委员会令|公安部|国家发展改革委|财政部|教育部|国家能源局
+    weight: 3.5
+  - scope: head
+    algorithm: regex
+    match: 国家发展改革委|财政部|司法部|公安部|教育部|国家能源局|国家计委|国家物价局|国家计划委员会
+    weight: 2.5
+  - scope: head
+    algorithm: regex
+    match: 第[一二三四五六七八九十百千0-9]+条
+    weight: 1.5
+  excludes:
+  - scope: title_head
+    algorithm: regex
+    match: 人民代表大会常务委员会|国务院令
+    weight: 5.0
+  note: 由国务院各部委、央行、审计署或具有行政管理职能的国家机构等制定的，对本部门职责范围内的特定事项进行细化和规范的法律法规。 其他 通常是通过部门令的形式发布
+    其他 名称一般为"规定"、"办法"、"实施细则"等, 其他 以条文形式为主 **注意**：企业转发部委规章的，归入此类
+- id: doc_66dfede4df
+  level1: 法律法规
+  level2: 其他
+  level3: 其他
+  priority: 74
+  note: 由人民代表大会及其常委会等立法机关，或中央及各级政府、国务院各部委等政府部门发布，具有法律强制力，内容以权利义务、法律责任为主，包括国家法律、行政法规、地方法规、部委规章等，通常以条文形式为主。
+  rules: []
+  excludes: []
+- id: doc_71c47dc37a
+  level1: 学术论文
+  level2: 人工智能与数据科学
+  level3: 自然语言处理
+  priority: 64
+  note: 文档内容跟自然语言处理相关的，可能包括：预训练语言模型、多模态语义理解、对话式AI应用、知识图谱技术等
+  rules:
+  - scope: fulltext
+    algorithm: any
+    match: &id002
+    - 摘要
+    - 关键词
+    - 参考文献
+    - doi
+    - DOI
+    - 收稿日期
+    - 作者单位
+    weight: 2.2
+  - scope: title
+    algorithm: any
+    match:
+    - 自然语言处理
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 自然语言处理
+    weight: 1.6
+  - scope: fulltext
+    algorithm: any
+    match:
+    - 自然语言处理
+    weight: 1.2
+  excludes: []
+- id: doc_a3e5b8f622
+  level1: 学术论文
+  level2: 人工智能与数据科学
+  level3: 强化学习
+  priority: 64
+  note: 文档内容是跟强化学习（Reinforcement Learning，RL）
+  rules:
+  - scope: fulltext
+    algorithm: any
+    match: *id002
+    weight: 2.2
+  - scope: title
+    algorithm: any
+    match:
+    - 强化学习
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 强化学习
+    weight: 1.6
+  - scope: fulltext
+    algorithm: any
+    match:
+    - 强化学习
+    weight: 1.2
+  excludes: []
+- id: doc_892cda4e8b
+  level1: 学术论文
+  level2: 人工智能与数据科学
+  level3: 计算机图像
+  priority: 64
+  note: 文档内容跟计算机图形图像计算有关
+  rules:
+  - scope: fulltext
+    algorithm: any
+    match: *id002
+    weight: 2.2
+  - scope: title
+    algorithm: any
+    match:
+    - 计算机图像
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 计算机图像
+    weight: 1.6
+  - scope: fulltext
+    algorithm: any
+    match:
+    - 计算机图像
+    weight: 1.2
+  excludes: []
+- id: doc_7833405986
+  level1: 学术论文
+  level2: 人工智能与数据科学
+  level3: 其他
+  priority: 62
+  note: 文档内容跟人工智能、数据科学、统计分析、数据挖掘、机器学习、深度学习等技术相关的
+  rules:
+  - scope: fulltext
+    algorithm: any
+    match: *id002
+    weight: 2.2
+  - scope: title_head
+    algorithm: any
+    match:
+    - 人工智能与数据科学
+    weight: 1.2
+  excludes: []
+- id: doc_79cc5556b0
+  level1: 学术论文
+  level2: 人工智能与数据科学
+  level3: 人工智能理论
+  priority: 64
+  note: 文档内容是人工智能理论相关的
+  rules:
+  - scope: fulltext
+    algorithm: any
+    match: *id002
+    weight: 2.2
+  - scope: title
+    algorithm: any
+    match:
+    - 人工智能理论
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 人工智能理论
+    weight: 1.6
+  - scope: fulltext
+    algorithm: any
+    match:
+    - 人工智能理论
+    weight: 1.2
+  excludes: []
+- id: doc_58d0389214
+  level1: 学术论文
+  level2: 人工智能与数据科学
+  level3: 大数据技术
+  priority: 64
+  note: 文档内容跟大数据技术栈相关，可能包括：流式计算引擎、图数据、数据湖仓一体化架构、隐私保护计算等
+  rules:
+  - scope: fulltext
+    algorithm: any
+    match: *id002
+    weight: 2.2
+  - scope: title
+    algorithm: any
+    match:
+    - 大数据技术
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 大数据技术
+    weight: 1.6
+  - scope: fulltext
+    algorithm: any
+    match:
+    - 大数据技术
+    weight: 1.2
+  excludes: []
+- id: doc_da1f89bbda
+  level1: 学术论文
+  level2: 人工智能与数据科学
+  level3: 机器学习
+  priority: 64
+  note: 文档内容跟数据分析、数据挖掘、模式识别、深度学习、自监督学习、神经网络等有关
+  rules:
+  - scope: fulltext
+    algorithm: any
+    match: *id002
+    weight: 2.2
+  - scope: title
+    algorithm: any
+    match:
+    - 机器学习
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 机器学习
+    weight: 1.6
+  - scope: fulltext
+    algorithm: any
+    match:
+    - 机器学习
+    weight: 1.2
+  excludes: []
+- id: doc_e3f25fe5f9
+  level1: 学术论文
+  level2: 人工智能与数据科学
+  level3: 其他主题
+  priority: 62
+  note: 文档跟智能计算与数据科学有关，但无法归入具体三级分类的，归入此类
+  rules:
+  - scope: fulltext
+    algorithm: any
+    match: *id002
+    weight: 2.2
+  - scope: title_head
+    algorithm: any
+    match:
+    - 人工智能与数据科学
+    weight: 1.2
+  excludes: []
+- id: doc_23ed55ff9f
+  level1: 学术论文
+  level2: 电力系统与工程
+  level3: 其他主题
+  priority: 62
+  note: 难以划分到电力系统与工程具体三级分类的，归入此类
+  rules:
+  - scope: fulltext
+    algorithm: any
+    match: *id002
+    weight: 2.2
+  - scope: title_head
+    algorithm: any
+    match:
+    - 电力系统与工程
+    weight: 1.2
+  excludes: []
+- id: doc_82b1b797e6
+  level1: 学术论文
+  level2: 电力系统与工程
+  level3: 输电与变电
+  priority: 64
+  note: 文档是跟电力系统运行中的电力传输和分配环节相关，可能包括：超/特高压输电技术、柔性直流输电、电能质量优化，GIS设备、主变压器等输变电设备的状态评价、故障诊断等
+  rules:
+  - scope: fulltext
+    algorithm: any
+    match: *id002
+    weight: 2.2
+  - scope: title
+    algorithm: any
+    match:
+    - 输电与变电
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 输电与变电
+    weight: 1.6
+  - scope: fulltext
+    algorithm: any
+    match:
+    - 输电与变电
+    weight: 1.2
+  excludes: []
+- id: doc_61849c7875
+  level1: 学术论文
+  level2: 电力系统与工程
+  level3: 智能电网
+  priority: 64
+  note: 文档主题跟智能电网相关的，可能包括：电力物联网等电网通信技术，自适应继电保护、电网故障诊断、区块链智能合约等电网智能控制与保护；虚拟电厂优化调度、智能电表数据挖掘等用户侧智能电网应用
+  rules:
+  - scope: fulltext
+    algorithm: any
+    match: *id002
+    weight: 2.2
+  - scope: title
+    algorithm: any
+    match:
+    - 智能电网
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 智能电网
+    weight: 1.6
+  - scope: fulltext
+    algorithm: any
+    match:
+    - 智能电网
+    weight: 1.2
+  excludes: []
+- id: doc_96784d82a1
+  level1: 学术论文
+  level2: 电力系统与工程
+  level3: 新能源技术
+  priority: 64
+  note: 文档主题跟新能源技术相关，可能包括：风光功率预测、多能源互补协调控制等新能源并网；锂离子电池、液流电池、压缩空气储能、飞轮储能、抽水蓄能等储能系统和技术，以及天然气能、水能(包括海洋能等)、风能、地热能、生物能、太阳能、核能等新型能源技术，以及节能技术
+  rules:
+  - scope: fulltext
+    algorithm: any
+    match: *id002
+    weight: 2.2
+  - scope: title
+    algorithm: any
+    match:
+    - 新能源技术
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 新能源技术
+    weight: 1.6
+  - scope: fulltext
+    algorithm: any
+    match:
+    - 新能源技术
+    weight: 1.2
+  excludes: []
+- id: doc_b425a1bbd8
+  level1: 学术论文
+  level2: 电力系统与工程
+  level3: 电力系统运行
+  priority: 64
+  note: 文档是以电网系统运行整体为主要主题的，可能包括电力系统稳定性、暂态稳定分析、电压稳定控制、潮流分析、电力系统自动化分析，等等为主要主题的
+  rules:
+  - scope: fulltext
+    algorithm: any
+    match: *id002
+    weight: 2.2
+  - scope: title
+    algorithm: any
+    match:
+    - 电力系统运行
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 电力系统运行
+    weight: 1.6
+  - scope: fulltext
+    algorithm: any
+    match:
+    - 电力系统运行
+    weight: 1.2
+  excludes: []
+- id: doc_cafa066f14
+  level1: 学术论文
+  level2: 电力系统与工程
+  level3: 配电与用电
+  priority: 64
+  note: 文档主题跟电力系统运行中的配电和用电环节相关，可能包括配电变压器等配用电设备的状态评价、故障诊断，配电自动化与可靠性，用户侧用电核算等。
+  rules:
+  - scope: fulltext
+    algorithm: any
+    match: *id002
+    weight: 2.2
+  - scope: title
+    algorithm: any
+    match:
+    - 配电与用电
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 配电与用电
+    weight: 1.6
+  - scope: fulltext
+    algorithm: any
+    match:
+    - 配电与用电
+    weight: 1.2
+  excludes: []
+- id: doc_6668582798
+  level1: 学术论文
+  level2: 电力系统与工程
+  level3: 其他
+  priority: 62
+  note: 文档是电力系统运行、输电、变电、配电、用电、新能源技术、智能电网等电力电网领域为主要主题的
+  rules:
+  - scope: fulltext
+    algorithm: any
+    match: *id002
+    weight: 2.2
+  - scope: title_head
+    algorithm: any
+    match:
+    - 电力系统与工程
+    weight: 1.2
+  excludes: []
+- id: doc_8bf9db35b1
+  level1: 学术论文
+  level2: 计算机科学技术
+  level3: 其他
+  priority: 62
+  note: 文档内容跟计算机技术相关的，主题可能跟以下关键词相关： 其他 计算机理论，数据结构，数据安全，计算机仿真，计算机过程控制，计算机辅助设计，计算机信息管理系统，计算机决策支持系统，等等
+  rules:
+  - scope: fulltext
+    algorithm: any
+    match: *id002
+    weight: 2.2
+  - scope: title_head
+    algorithm: any
+    match:
+    - 计算机科学技术
+    weight: 1.2
+  excludes: []
+- id: doc_192f347293
+  level1: 学术论文
+  level2: 其他
+  level3: 其他
+  priority: 60
+  note: 是期刊论文、会议论文、学位论文、学术专著、预印本、技术报告等： 其他 文档内容如果包含doi编号、文献标识码，则为学术论文； 其他 文档内容通常包含论文名称、作者、作者单位、摘要、关键词、参考文献等内容；
+    其他 部分论文可能包含所属卷号、期号，收稿时间等信息，如果包含则可能是论文； **注意**：区分期刊名称和论文主题，不要将期刊名称当成了所属分类。
+  rules:
+  - scope: fulltext
+    algorithm: any
+    match: *id002
+    weight: 2.2
+  excludes: []
+- id: doc_75c435fd49
+  level1: 学术论文
+  level2: 其他论文
+  level3: 其他论文
+  priority: 60
+  note: 无法归入到学术论文的具体二级分类，归入此类
+  rules:
+  - scope: fulltext
+    algorithm: any
+    match: *id002
+    weight: 2.2
+  excludes: []
+- id: doc_90c496e513
+  level1: 公司发文
+  level2: 实施方案
+  level3: 其他
+  priority: 71
+  note: 文档名或文档内容包含实施方案、实施计划、实施验收、验收方案等描述的
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - state_grid_name
+    weight: 1.2
+  - scope: title
+    algorithm: any
+    match: &id003
+    - 实施方案
+    - 实施计划
+    - 实施验收
+    - 验收方案
+    weight: 2.8
+  - scope: title_head
+    algorithm: any
+    match: *id003
+    weight: 1.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 实施方案
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 条例
+    - 办法
+    - 规定
+    - 标准
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 规章制度编号
+    - 制度编号
+    weight: 4.5
+- id: doc_5f0101d72b
+  level1: 公司发文
+  level2: 其他
+  level3: 其他
+  priority: 69
+  note: 由国家电网公司总部及各部门、分子公司发布的，通常以文件、通知、意见、规划等形式出现的、对相关业务工作开展的指导或要求 公司发文与公司制度的区别是：
+    其他 公司制度通常以条文形式为主，具有较强的规范性和严谨性，一旦制定不会轻易变动。 其他 公司发文语言和形式相对灵活，具有一定的时效性和灵活性。
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - state_grid_name
+    weight: 1.2
+  - scope: title
+    algorithm: any
+    match: &id004
+    - 文件
+    - 通知
+    - 意见
+    - 规划
+    - 批复
+    - 函
+    weight: 2.8
+  - scope: title_head
+    algorithm: any
+    match: *id004
+    weight: 1.5
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 条例
+    - 办法
+    - 规定
+    - 标准
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 规章制度编号
+    - 制度编号
+    weight: 4.5
+- id: doc_74adaa4abb
+  level1: 公司发文
+  level2: 行动方案
+  level3: 其他
+  priority: 71
+  note: 文档名或文档内容包含行动方案、行动计划等描述的
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - state_grid_name
+    weight: 1.2
+  - scope: title
+    algorithm: any
+    match: &id005
+    - 行动方案
+    - 行动计划
+    weight: 2.8
+  - scope: title_head
+    algorithm: any
+    match: *id005
+    weight: 1.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 行动方案
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 条例
+    - 办法
+    - 规定
+    - 标准
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 规章制度编号
+    - 制度编号
+    weight: 4.5
+- id: company_doc_plan
+  level1: 公司发文
+  level2: 工作方案
+  level3: 其他
+  priority: 80
+  rules:
+  - scope: title
+    algorithm: any
+    match:
+    - 工作方案
+    - 实施方案
+    - 行动方案
+    - 工作计划
+    - 发展规划
+    - 评审意见
+    - 接入系统方案
+    - 接入系统
+    weight: 4.0
+  - scope: signals
+    algorithm: any
+    match:
+    - plan_style
+    - state_grid_name
+    weight: 1.5
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 标准
+    - 条例
+    - 办法
+    weight: 4.0
+  note: 文档名或文档内容包含工作方案、工作计划等描述的
+- id: doc_da06e29bb0
+  level1: 公司发文
+  level2: 重点工作任务
+  level3: 其他
+  priority: 71
+  note: 文档名包含重点工作任务、重点工作等描述的
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - state_grid_name
+    weight: 1.2
+  - scope: title
+    algorithm: any
+    match: &id006
+    - 重点工作任务
+    - 重点工作
+    weight: 2.8
+  - scope: title_head
+    algorithm: any
+    match: *id006
+    weight: 1.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 重点工作任务
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 条例
+    - 办法
+    - 规定
+    - 标准
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 规章制度编号
+    - 制度编号
+    weight: 4.5
+- id: doc_d91157e2da
+  level1: 公司发文
+  level2: 工作要求
+  level3: 其他
+  priority: 71
+  note: 文档名包含工作要求，或文档内容是对某些工作提出的具体工作要求的
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - state_grid_name
+    weight: 1.2
+  - scope: title
+    algorithm: any
+    match: &id007
+    - 工作要求
+    weight: 2.8
+  - scope: title_head
+    algorithm: any
+    match: *id007
+    weight: 1.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 工作要求
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 条例
+    - 办法
+    - 规定
+    - 标准
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 规章制度编号
+    - 制度编号
+    weight: 4.5
+- id: doc_5c6428a9a3
+  level1: 公司发文
+  level2: 发展规划
+  level3: 其他
+  priority: 71
+  note: 文档内容是对国网公司或各部门的未来发展进行规划、预测和指示的
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - state_grid_name
+    weight: 1.2
+  - scope: title
+    algorithm: any
+    match: &id008
+    - 发展规划
+    - 规划
+    weight: 2.8
+  - scope: title_head
+    algorithm: any
+    match: *id008
+    weight: 1.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 发展规划
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 条例
+    - 办法
+    - 规定
+    - 标准
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 规章制度编号
+    - 制度编号
+    weight: 4.5
+- id: doc_c6d6221dee
+  level1: 公司发文
+  level2: 指导意见
+  level3: 其他
+  priority: 71
+  note: 文档名包含指导意见，或文档内容是对某些工作提出指导性的意见建议的
+  rules:
+  - scope: signals
+    algorithm: any
+    match:
+    - state_grid_name
+    weight: 1.2
+  - scope: title
+    algorithm: any
+    match: &id009
+    - 指导意见
+    weight: 2.8
+  - scope: title_head
+    algorithm: any
+    match: *id009
+    weight: 1.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 指导意见
+    weight: 1.2
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 条例
+    - 办法
+    - 规定
+    - 标准
+    weight: 5.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 规章制度编号
+    - 制度编号
+    weight: 4.5
+- id: company_doc_announcement
+  level1: 公司发文
+  level2: 公司公告通知
+  level3: 其他
+  priority: 82
+  rules:
+  - scope: title
+    algorithm: any
+    match:
+    - 公告
+    - 公示
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 国家电网
+    - 国网
+    - 供电公司
+    weight: 1.5
+  - scope: signals
+    algorithm: any
+    match:
+    - state_grid_name
+    weight: 1.0
+  excludes:
+  - scope: title_head
+    algorithm: regex
+    match: 人民代表大会常务委员会|国务院|人民政府
+    weight: 5.0
+  note: 由国网公司名义发布的，文件名包含公告、通知等描述，文件内容只有公告描述，不涉及所公告的制度、标准、政策等正文内容的。
+- id: company_doc_notice
+  level1: 公司发文
+  level2: 部门工作通知
+  level3: 其他
+  priority: 84
+  rules:
+  - scope: title
+    algorithm: regex
+    match: 关于.*的通知
+    weight: 4.0
+  - scope: title
+    algorithm: any
+    match:
+    - 通知
+    - 通报
+    - 印发
+    - 函
+    weight: 2.0
+  - scope: signals
+    algorithm: any
+    match:
+    - notice_style
+    - state_grid_name
+    weight: 1.5
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 条例
+    - 办法
+    - 规定
+    - 标准
+    weight: 5.0
+  note: 由国网公司各部门名义发布的的工作开展通知
+- id: company_doc_meeting
+  level1: 公司发文
+  level2: 重要会议报告
+  level3: 其他
+  priority: 80
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 会议纪要
+    - 工作会议
+    - 讲话
+    - 会议报告
+    - 会议材料
+    - 座谈会
+    weight: 3.0
+  - scope: signals
+    algorithm: any
+    match:
+    - meeting_style
+    - state_grid_name
+    weight: 2.0
+  excludes:
+  - scope: title
+    algorithm: any
+    match:
+    - 条例
+    - 办法
+    - 规定
+    - 标准
+    weight: 5.0
+  note: 文档名或文档内容是在重要会议上进行汇报的报告性材料的
+- id: doc_0638a5344f
+  level1: 业务通识
+  level2: 培训资料
+  level3: 系统使用培训
+  priority: 66
+  note: 内容是针对某一个信息化业务系统的使用说明、操作手册等的培训资料，可能包含业务系统名称、功能或操作步骤等
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 培训
+    - 课件
+    - 讲义
+    - 教程
+    weight: 2.8
+  - scope: title_head
+    algorithm: any
+    match:
+    - 系统使用
+    - 操作手册
+    - 使用说明
+    weight: 2.8
+  - scope: title
+    algorithm: any
+    match:
+    - 系统使用培训
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 系统使用培训
+    weight: 1.6
+  excludes: []
+- id: doc_fc6abde03b
+  level1: 业务通识
+  level2: 培训资料
+  level3: 专业知识培训
+  priority: 66
+  note: 内容是针对某一项电力领域专业知识的培训资料，可能包含培训讲师信息的
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 培训
+    - 课件
+    - 讲义
+    - 教程
+    weight: 2.8
+  - scope: title_head
+    algorithm: any
+    match:
+    - 专业知识
+    - 培训讲师
+    weight: 2.8
+  - scope: title
+    algorithm: any
+    match:
+    - 专业知识培训
+    weight: 3.0
+  - scope: title_head
+    algorithm: any
+    match:
+    - 专业知识培训
+    weight: 1.6
+  excludes: []
+- id: business_training
+  level1: 业务通识
+  level2: 培训资料
+  level3: 其他
+  priority: 76
+  rules:
+  - scope: title
+    algorithm: any
+    match:
+    - 培训
+    - 课件
+    - 讲义
+    - 试题
+    - 学习材料
+    weight: 3.0
+  - scope: signals
+    algorithm: any
+    match:
+    - training_style
+    weight: 0.5
+  excludes:
+  - scope: signals
+    algorithm: any
+    match:
+    - law_style
+    - normative_title
+    weight: 3.0
+  note: 文档内容对知识或技能的培训
+- id: doc_da69cb54ad
+  level1: 业务通识
+  level2: 研究报告
+  level3: 其他
+  priority: 64
+  note: 内容是针对某一类业务、行业的研究报告、白皮书。技术报告不归入此类
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 研究报告
+    - 白皮书
+    weight: 2.8
+  - scope: title_head
+    algorithm: any
+    match:
+    - 研究报告
+    weight: 1.2
+  excludes: []
+- id: doc_a023960096
+  level1: 业务通识
+  level2: 专业知识
+  level3: 其他
+  priority: 64
+  note: 文档内容是电力领域相关专业知识介绍的
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 知识
+    - 基础
+    - 概论
+    weight: 2.8
+  - scope: title_head
+    algorithm: any
+    match:
+    - 专业知识
+    weight: 1.2
+  excludes: []
+- id: doc_766f82a169
+  level1: 业务通识
+  level2: 典型案例
+  level3: 其他
+  priority: 64
+  note: 各级单位或人员分享的典型案例，文件名包含典型案例等描述的
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 典型案例
+    - 案例
+    weight: 2.8
+  - scope: title_head
+    algorithm: any
+    match:
+    - 典型案例
+    weight: 1.2
+  excludes: []
+- id: doc_b21ae268fe
+  level1: 政府发文
+  level2: 其他
+  level3: 其他
+  priority: 66
+  note: 是由政党、政府及各类社会组织等发布的，对相关领域的管理和执行具有指导作用的文件。 其他 以文件、通知、意见、规划等形式出现 注意：企业转发部委工作文件的，归入此类
+    跟"法律法规/部委规章"的区别在于： 其他 政策文件的语言表述相对灵活、具有一定的时效性和灵活性, 其他 法律法规通常以条文形式呈现，具有较强的规范性和逻辑性，表述严谨、准确,稳定性较强，一旦制定不会轻易变动
+    **注意**：企业转发部委工作文件的，归入此类
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 法律法规/部委规章
+    weight: 1.2
+  excludes:
+  - scope: signals
+    algorithm: any
+    match:
+    - state_grid_name
+    weight: 3.0
+- id: doc_6c152493e1
+  level1: 政府发文
+  level2: 国家工作报告
+  level3: 其他
+  priority: 68
+  note: 中共中央、全国人大及其常委会、国务院各部委、最高人民法院、等国家机构发布的工作报告，例如国务院发布的政府工作报告
+  rules:
+  - scope: title_head
+    algorithm: any
+    match: &id010
+    - 国务院
+    - 国家发展改革委
+    - 国家能源局
+    - 财政部
+    - 司法部
+    - 公安部
+    - 教育部
+    - 部委
+    weight: 1.8
+  - scope: title_head
+    algorithm: any
+    match:
+    - 工作报告
+    - 政府工作报告
+    weight: 2.5
+  excludes:
+  - scope: signals
+    algorithm: any
+    match:
+    - state_grid_name
+    weight: 3.0
+- id: doc_262ca861c6
+  level1: 政府发文
+  level2: 国家政策解读
+  level3: 权威解读
+  priority: 71
+  note: 以政策发文的制定单位、主管单位或单位负责人名义的解读
+  rules:
+  - scope: title_head
+    algorithm: any
+    match: *id010
+    weight: 1.8
+  - scope: title_head
+    algorithm: any
+    match:
+    - 解读
+    - 答记者问
+    weight: 2.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 权威解读
+    weight: 2.5
+  excludes:
+  - scope: signals
+    algorithm: any
+    match:
+    - state_grid_name
+    weight: 3.0
+- id: doc_14a81e4e9e
+  level1: 政府发文
+  level2: 国家政策解读
+  level3: 专家解读
+  priority: 71
+  note: 专家以个人名义解读
+  rules:
+  - scope: title_head
+    algorithm: any
+    match: *id010
+    weight: 1.8
+  - scope: title_head
+    algorithm: any
+    match:
+    - 解读
+    - 答记者问
+    weight: 2.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 专家解读
+    weight: 2.5
+  excludes:
+  - scope: signals
+    algorithm: any
+    match:
+    - state_grid_name
+    weight: 3.0
+- id: government_doc_report
+  level1: 政府发文
+  level2: 地方工作报告
+  level3: 其他
+  priority: 82
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 政府工作报告
+    - 工作报告
+    - 专项报告
+    - 人大报告
+    weight: 4.0
+  - scope: signals
+    algorithm: any
+    match:
+    - government_name
+    - meeting_style
+    weight: 1.5
+  note: 地方人大、地方政府、人民法院等地方机构发布的工作报告
+- id: doc_7ad46b87e0
+  level1: 政府发文
+  level2: 地方政策解读
+  level3: 专家解读
+  priority: 71
+  note: 以专家个人名义解读
+  rules:
+  - scope: title_head
+    algorithm: any
+    match:
+    - 省人民政府
+    - 市人民政府
+    - 县人民政府
+    - 自治区人民政府
+    - 地方政府
+    - 地方
+    weight: 1.8
+  - scope: title_head
+    algorithm: any
+    match:
+    - 解读
+    - 答记者问
+    weight: 2.5
+  - scope: title_head
+    algorithm: any
+    match:
+    - 专家解读
+    weight: 2.5
+  excludes:
+  - scope: signals
+    algorithm: any
+    match:
+    - state_grid_name
+    weight: 3.0

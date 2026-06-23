@@ -1,0 +1,924 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>QA 处理与浏览</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/ui/styles.css?v=2026-06-03-2" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">跳到内容</a>
+    <header>
+      <div class="header-row">
+        <h1>问答对生成与浏览控制台</h1>
+        <div class="header-actions">
+          <nav class="nav">
+            <a class="active" href="/ui/index.html" aria-current="page">流水线</a>
+            <a href="/ui/admin.html">管理</a>
+            <a href="/ui/eval.html">评测</a>
+          </nav>
+          <button type="button" class="icon-btn" id="themeToggle" aria-label="切换主题" title="切换主题"></button>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="card">
+        <h2>0. LLM 配置管理</h2>
+        <p class="hint">
+          后端使用启动时的配置，支持多套保存与切换（不会再读取请求里的 api_key/base_url/model）。
+        </p>
+        <div class="form-grid" style="margin-top: 10px">
+          <label>
+            API 基础地址（本页面调用后端用）
+            <input
+              type="text"
+              id="apiBaseUrl"
+              placeholder="例如 http://localhost:12000…"
+              size="28"
+            />
+          </label>
+          <div class="actions-row">
+            <button type="button" id="btnCfgRefresh" class="secondary">刷新配置</button>
+          </div>
+          <span id="cfgStatus" class="hint" aria-live="polite"></span>
+        </div>
+        <div class="env-check-panel" aria-labelledby="envCheckTitle">
+          <div class="env-check-copy">
+            <div class="eyebrow">兼容性自检</div>
+            <h3 id="envCheckTitle">一键检测当前镜像运行环境</h3>
+            <p>
+              检查 API、LLM、OCR、Milvus、CUDA、模型文件、运行目录和关键依赖是否可用，适合服务器部署后快速验收。
+            </p>
+          </div>
+          <div class="env-check-action">
+            <div class="actions-row env-check-row">
+              <button type="button" id="btnEnvironmentCheck" class="env-check-button">开始环境检测</button>
+              <span id="environmentCheckStatus" class="env-check-status" aria-live="polite">尚未检测</span>
+            </div>
+            <div id="environmentCheckSummary" class="env-check-summary" hidden></div>
+          </div>
+          <div id="environmentCheckResults" class="env-check-results" hidden></div>
+        </div>
+        <div class="llm-config-split">
+          <div class="llm-config-panel">
+            <div class="llm-config-title">编辑/新增</div>
+            <div class="llm-config-fields">
+              <label>
+                配置名称
+                <input type="text" id="cfgName" placeholder="如 default 或 glm-prod…" />
+              </label>
+              <label>
+                API Key
+                <input type="text" id="cfgKey" placeholder="如 sk-xxx…" />
+              </label>
+              <label>
+                Base URL
+                <input
+                  type="text"
+                  id="cfgBaseUrl"
+                  placeholder="例如 https://open.bigmodel.cn/api/paas/v4/…"
+                />
+              </label>
+              <label>
+                模型
+                <input type="text" id="cfgModel" placeholder="如 glm-4-flash…" />
+              </label>
+            </div>
+            <div class="actions-row llm-config-actions">
+              <button type="button" id="btnCfgSave">新增/更新</button>
+            </div>
+          </div>
+
+          <div class="llm-config-panel">
+            <div class="llm-config-title">已保存配置</div>
+            <label>
+              选择已有配置
+              <select id="cfgSelect"></select>
+            </label>
+            <p id="cfgActive" class="hint llm-config-active"></p>
+            <div class="actions-row llm-config-actions">
+              <button type="button" id="btnCfgActivate">激活</button>
+              <button type="button" id="btnCfgDelete" class="danger">删除</button>
+            </div>
+            <p class="hint">选择配置后会自动填充到左侧，可编辑后保存。</p>
+          </div>
+        </div>
+
+        <details style="margin-top: 10px">
+          <summary>调试：测试 LLM 响应（查看原始返回）</summary>
+          <div class="form-grid" style="margin-top: 10px">
+            <label>
+              system_prompt
+              <input
+                type="text"
+                id="llmDebugSystemPrompt"
+                value="You are a helpful assistant."
+              />
+            </label>
+            <label>
+              response_format
+              <select id="llmDebugResponseFormat">
+                <option value="json_object" selected>json_object</option>
+                <option value="text">text</option>
+              </select>
+            </label>
+            <label>
+              timeout_seconds
+              <input type="number" id="llmDebugTimeoutSeconds" value="30" min="1" max="600" />
+            </label>
+            <label>
+              max_tokens
+              <input type="number" id="llmDebugMaxTokens" value="256" min="1" max="4096" />
+            </label>
+          </div>
+          <label style="margin-top: 10px">
+            prompt
+            <textarea id="llmDebugPrompt" rows="4">{"ping":"pong"}</textarea>
+          </label>
+          <div class="actions-row" style="margin-top: 10px">
+            <button type="button" id="btnLlmDebug" class="secondary">测试 LLM 响应</button>
+          </div>
+          <pre id="llmDebugOutput"></pre>
+        </details>
+      </section>
+
+      <section class="card">
+        <h2>0.5 OCR 配置管理</h2>
+        <p class="hint">
+          配置后端调用 OCR 的 POST 地址与协议（支持 batch_ocr 与 process_api）。修改后先“新增/更新”，再“激活”使其生效。
+        </p>
+        <div class="form-grid" style="margin-top: 10px">
+          <div class="actions-row">
+            <button type="button" id="btnOcrCfgRefresh" class="secondary">刷新 OCR 配置</button>
+          </div>
+          <span id="ocrCfgStatus" class="hint" aria-live="polite"></span>
+        </div>
+        <div class="llm-config-split">
+          <div class="llm-config-panel">
+            <div class="llm-config-title">编辑/新增</div>
+            <div class="llm-config-fields">
+              <label>
+                配置名称
+                <input type="text" id="ocrCfgName" placeholder="如 default / new-ocr…" />
+              </label>
+              <label>
+                provider
+                <select id="ocrCfgProvider">
+                  <option value="batch_ocr" selected>batch_ocr（批量：files[] → results/errors）</option>
+                  <option value="process_api">process_api（单文件：file → text/file）</option>
+                </select>
+              </label>
+              <label>
+                POST 地址（post_url）
+                <input
+                  type="text"
+                  id="ocrCfgPostUrl"
+                  placeholder="如 http://batch_ocr:8080/batch_ocr 或 http://new-ocr:8000/process…"
+                />
+              </label>
+              <label>
+                默认超时（秒）（timeout_seconds）
+                <input type="number" id="ocrCfgTimeoutSeconds" value="600" min="1" max="3600" step="1" />
+              </label>
+              <label>
+                批量字段名（request.batch_field）
+                <input type="text" id="ocrCfgBatchField" value="files" />
+              </label>
+              <label>
+                单文件字段名（request.file_field）
+                <input type="text" id="ocrCfgFileField" value="file" />
+              </label>
+              <label>
+                额外表单字段（request.extra_form_fields，JSON 对象）
+                <textarea id="ocrCfgExtraFields" rows="3">{}</textarea>
+              </label>
+              <label>
+                响应模式（response.mode）
+                <select id="ocrCfgResponseMode">
+                  <option value="structured_json" selected>structured_json（results/errors）</option>
+                  <option value="text">text（响应体为全文）</option>
+                  <option value="file">file（响应体为文本文件）</option>
+                </select>
+              </label>
+            </div>
+            <div class="actions-row llm-config-actions">
+              <button type="button" id="btnOcrCfgSave">新增/更新</button>
+            </div>
+          </div>
+
+          <div class="llm-config-panel">
+            <div class="llm-config-title">已保存配置</div>
+            <label>
+              选择已有配置
+              <select id="ocrCfgSelect"></select>
+            </label>
+            <p id="ocrCfgActive" class="hint llm-config-active"></p>
+            <div class="actions-row llm-config-actions">
+              <button type="button" id="btnOcrCfgActivate">激活</button>
+              <button type="button" id="btnOcrCfgDelete" class="danger">删除</button>
+              <button type="button" id="btnOcrCfgTest" class="secondary">测试可达</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>1. 完整流水线（统一入口：8B，单文件和批量都可用）</h2>
+        <form id="pipelineForm">
+          <label>
+            上传文件
+            <input
+              type="file"
+              id="pipelineFileInput"
+              multiple
+            />
+          </label>
+          <label>
+            文档解析模式
+            <select id="pipelineProcessingMode">
+              <option value="standard" selected>hao 标准流程（外部 OCR 配置）</option>
+              <option value="integrated">dw+hao 一体流程（内置文档解析与图片理解）</option>
+            </select>
+            <small id="pipelineProcessingModeHint">
+              使用当前激活的 OCR 配置解析 PDF、图片、OFD、DOCX、DOC 后进入 hao 问答流水线。
+            </small>
+          </label>
+          <label id="ocrTimeoutField">
+            OCR 超时（秒）（ocr_timeout_seconds）
+            <input
+              type="number"
+              id="ocrTimeoutSeconds"
+              value="600"
+              min="1"
+              max="3600"
+              step="1"
+            />
+          </label>
+          <details id="integratedDocumentOptions" style="width: 100%" hidden>
+            <summary>内置文档解析参数（dw）</summary>
+            <div class="form-grid" style="margin-top: 10px">
+              <label>
+                <input type="checkbox" id="integratedOcrEnabled" checked />
+                启用 OCR/文档抽取（ocr_enabled）
+              </label>
+              <label>
+                <input type="checkbox" id="integratedOcrFailFast" />
+                任一文件解析失败则整体失败（ocr_fail_fast）
+              </label>
+              <label>
+                <input type="checkbox" id="integratedRemoveWatermark" />
+                OCR 前去水印预处理（remove_watermark）
+              </label>
+              <label>
+                水印渲染 DPI（watermark_dpi）
+                <input type="number" id="integratedWatermarkDpi" value="200" min="72" max="600" step="1" />
+              </label>
+              <label>
+                DOCX 处理策略（docx_strategy）
+                <select id="integratedDocxStrategy">
+                  <option value="pdf" selected>pdf（LibreOffice 转 PDF 后 OCR）</option>
+                  <option value="native">native（直接解析简单 DOCX）</option>
+                </select>
+              </label>
+              <label>
+                图片上下文摘要（image_context_summary_mode）
+                <select id="imageContextSummaryMode">
+                  <option value="lightweight" selected>lightweight</option>
+                  <option value="llm">llm</option>
+                </select>
+              </label>
+              <label>
+                <input type="checkbox" id="imageFitCheckEnabled" checked />
+                图片解析结果契合度判断（image_fit_check_enabled）
+              </label>
+              <label>
+                图片回填最小分数（image_fit_min_score）
+                <input type="number" id="imageFitMinScore" value="0.65" min="0" max="1" step="0.01" />
+              </label>
+            </div>
+          </details>
+          <label>
+            qa_per_chunk
+            <input
+              type="number"
+              id="qaPerChunk"
+              value="1"
+            />
+          </label>
+          <label>
+            增广条数（augment_per_qa）
+            <input
+              type="number"
+              id="augmentPerQa"
+              value="2"
+              min="0"
+              max="10"
+            />
+          </label>
+          <label>
+            <input type="checkbox" id="enableChunkStorage" checked />
+            chunk 入库（enable_chunk_storage，写入 doc_tree_chunks 用于树与溯源）
+          </label>
+          <details style="width: 100%">
+            <summary>Chunking 高级参数</summary>
+            <div class="form-grid" style="margin-top: 10px">
+              <div style="grid-column: 1 / -1; font-weight: 600">通用参数</div>
+              <label>
+                前缀层数（chunking_prefix_max_depth，所有模式共同生效）
+                <input type="number" id="chunkingPrefixMaxDepth" value="4" min="0" max="12" />
+              </label>
+              <label>
+                块大小（chunk_size，所有模式共同生效）
+                <input
+                  type="number"
+                  id="chunkSize"
+                  value="600"
+                  min="1"
+                />
+              </label>
+              <div style="grid-column: 1 / -1; margin-top: 4px; font-weight: 600">模式选择</div>
+              <label>
+                切分方式（chunking_split_type）
+                <select id="chunkingSplitType">
+                  <option value="markdown">markdown（按标题和大纲）</option>
+                  <option value="text">text（按指定分隔符）</option>
+                  <option value="token">token（按 token 长度）</option>
+                  <option value="recursive">recursive（递归分隔）</option>
+                  <option value="code">code（按代码结构）</option>
+                  <option value="custom">custom（按自定义分隔符）</option>
+                </select>
+              </label>
+              <div id="chunkingModeSummary" style="grid-column: 1 / -1; color: var(--text-secondary, #666)">
+                当前模式：按标题和大纲切分；适合政策、制度、合同、报告这类有明确层级结构的文本。
+              </div>
+              <div style="grid-column: 1 / -1; margin-top: 4px; font-weight: 600">当前模式参数</div>
+
+              <div
+                class="chunking-mode-panel"
+                data-chunking-mode="markdown"
+                style="grid-column: 1 / -1"
+              >
+                <div class="form-grid">
+                  <label>
+                    markdown 最小长度（chunking_text_split_min_length）
+                    <input type="number" id="chunkingTextSplitMinLength" min="1" placeholder="默认自动" />
+                  </label>
+                  <label>
+                    markdown 最大长度（chunking_text_split_max_length）
+                    <input type="number" id="chunkingTextSplitMaxLength" min="1" placeholder="默认跟随 chunk_size" />
+                  </label>
+                </div>
+              </div>
+
+              <div
+                class="chunking-mode-panel"
+                data-chunking-mode="text"
+                style="grid-column: 1 / -1; display: none"
+              >
+                <div class="form-grid">
+                  <label>
+                    text 分隔符（chunking_separator）
+                    <input type="text" id="chunkingSeparator" placeholder="默认 \\n\\n" />
+                  </label>
+                  <label>
+                    重叠长度（chunking_chunk_overlap）
+                    <input type="number" id="chunkingChunkOverlap" min="0" placeholder="默认自动" />
+                  </label>
+                </div>
+              </div>
+
+              <div
+                class="chunking-mode-panel"
+                data-chunking-mode="token"
+                style="grid-column: 1 / -1; display: none"
+              >
+                <div class="form-grid">
+                  <label>
+                    重叠长度（chunking_chunk_overlap）
+                    <input type="number" id="chunkingChunkOverlapToken" min="0" placeholder="默认自动" />
+                  </label>
+                </div>
+              </div>
+
+              <div
+                class="chunking-mode-panel"
+                data-chunking-mode="recursive"
+                style="grid-column: 1 / -1; display: none"
+              >
+                <div class="form-grid">
+                  <label>
+                    recursive 分隔符（chunking_separators）
+                    <textarea
+                      id="chunkingSeparators"
+                      rows="2"
+                      placeholder="默认 |, ##, >, -；支持逗号、换行或 JSON 数组"
+                    ></textarea>
+                  </label>
+                  <label>
+                    重叠长度（chunking_chunk_overlap）
+                    <input type="number" id="chunkingChunkOverlapRecursive" min="0" placeholder="默认自动" />
+                  </label>
+                </div>
+              </div>
+
+              <div
+                class="chunking-mode-panel"
+                data-chunking-mode="code"
+                style="grid-column: 1 / -1; display: none"
+              >
+                <div class="form-grid">
+                  <label>
+                    code 语言（chunking_split_language）
+                    <input type="text" id="chunkingSplitLanguage" placeholder="默认 js；例如 python / java / markdown" />
+                  </label>
+                  <label>
+                    重叠长度（chunking_chunk_overlap）
+                    <input type="number" id="chunkingChunkOverlapCode" min="0" placeholder="默认自动" />
+                  </label>
+                </div>
+              </div>
+
+              <div
+                class="chunking-mode-panel"
+                data-chunking-mode="custom"
+                style="grid-column: 1 / -1; display: none"
+              >
+                <div class="form-grid">
+                  <label>
+                    custom 分隔符（chunking_custom_separator）
+                    <input type="text" id="chunkingCustomSeparator" placeholder="默认 ---" />
+                  </label>
+                </div>
+              </div>
+
+              <label style="grid-column: 1 / -1">
+                手工切分点（chunking_manual_split_points）
+                <textarea
+                  id="chunkingManualSplitPoints"
+                  rows="3"
+                  placeholder="可选覆盖项；按字符位置填写，支持 120,480,900 或 JSON 数组；填写后优先于上面的模式"
+                ></textarea>
+                <small>手工切分不是常规模式参数，而是覆盖项；只有你明确填写时才会生效。</small>
+              </label>
+              <label>
+                <input type="checkbox" id="chunkStorageFailFast" />
+                chunk 入库失败即失败（chunk_storage_fail_fast）
+              </label>
+            </div>
+          </details>
+          <label>
+            问答粒度（qa_detail_mode）
+            <select id="qaDetailMode">
+              <option value="point">point（单点事实直答）</option>
+              <option value="summary">summary（总结/对比/推理）</option>
+            </select>
+          </label>
+          <label>
+            知识分类器（knowledge_classifier）
+            <select id="knowledgeClassifier">
+              <option value="doc_level3_rule" selected>新三级规则分类器（默认）</option>
+              <option value="legacy_model">旧本地模型分类器</option>
+            </select>
+            <small>新分类器不占用 GPU；旧分类器仍保留，需要本地模型目录可用。</small>
+          </label>
+          <label>
+            <input type="checkbox" id="useCategoryPromptTemplates" checked />
+            启用分类模板提示词（use_category_prompt_templates）
+            <small>开启后按知识标签选择出题/答案模板；关闭后统一使用通用模板。</small>
+          </label>
+          <label>
+            提示词语言（prompt_language）
+            <select id="promptLanguage">
+              <option value="auto">auto（自动识别）</option>
+              <option value="zh">zh（中文模板）</option>
+              <option value="en">en（英文模板）</option>
+            </select>
+          </label>
+          <label>
+            题型模式
+            <select id="questionTypeMode">
+              <option value="mixed">mixed（混合/随机）</option>
+              <option value="fixed">fixed（仅使用列表首个）</option>
+            </select>
+          </label>
+            <div class="inline-checkbox-group">
+              <span>快捷选择题型（fixed 会自动只保留一个勾选；mixed 默认按列表顺序轮询，可选按权重）</span>
+              <div class="qt-grid">
+                <label><input type="checkbox" name="questionTypeOption" value="简答题" checked /> 简答题</label>
+                <label><input type="checkbox" name="questionTypeOption" value="单选题" /> 单选题</label>
+                <label><input type="checkbox" name="questionTypeOption" value="判断题" /> 判断题</label>
+                <label><input type="checkbox" name="questionTypeOption" value="计算题" /> 计算题</label>
+              </div>
+              <small>未勾选则默认简答题</small>
+            </div>
+            <div class="inline-checkbox-group">
+              <span>快捷权重（mixed 模式使用；留空忽略）</span>
+            <div class="qt-grid">
+              <label>
+                简答题
+                <input type="number" id="weightShort" name="qtWeight" min="0" max="1" step="0.1" placeholder="如 0.6…" />
+              </label>
+              <label>
+                单选题
+                <input type="number" id="weightChoice" name="qtWeight" min="0" max="1" step="0.1" placeholder="如 0.2…" />
+              </label>
+              <label>
+                判断题
+                <input type="number" id="weightJudge" name="qtWeight" min="0" max="1" step="0.1" placeholder="如 0.2…" />
+              </label>
+              <label>
+                计算题
+                <input type="number" id="weightCalc" name="qtWeight" min="0" max="1" step="0.1" placeholder="如 0.1…" />
+              </label>
+            </div>
+            <small>权重仅对已勾选题型生效；填写权重会自动勾选对应题型</small>
+          </div>
+          <div class="inline-checkbox-group">
+            <span>few-shot 示例（可选，模型仅学习风格/语气/长度，不复述答案）</span>
+            <div id="fewShotList"></div>
+            <div class="fewshot-actions">
+              <button type="button" id="addFewShotBtn">添加一行示例</button>
+              <small>可填多行，每行写“示例问题 / 示例答案”，留空则不传</small>
+            </div>
+          </div>
+          <label>
+            <input type="checkbox" id="includeEvaluation" checked />
+            执行问答评估（include_evaluation）
+          </label>
+          <label>
+            评估方式（evaluation_method）
+            <select id="evaluationMethod">
+              <option value="llm">llm</option>
+              <option value="local">local</option>
+              <option value="unsupervised_f1">unsupervised_f1（无监督套件）</option>
+            </select>
+          </label>
+          <label>
+            忠实度陈述句生成（faithfulness_hypothesis_mode）
+            <select id="faithfulnessHypothesisMode">
+              <option value="llm" selected>llm（推荐）</option>
+            </select>
+            <small>仅 evaluation_method=unsupervised_f1 时生效</small>
+          </label>
+          <label>
+            忠实度陈述句改写并发（faithfulness_hypothesis_max_concurrency）
+            <input
+              type="number"
+              id="faithfulnessHypothesisMaxConcurrency"
+              value="8"
+              min="1"
+              step="1"
+            />
+            <small>按“每个文件”生效；批量时总并发约等于 max_concurrency × 该值</small>
+          </label>
+          <label>
+            <input type="checkbox" id="filterByThreshold" checked />
+            按平均分阈值过滤（filter_by_threshold）
+          </label>
+          <label>
+            score_threshold
+            <input
+              type="number"
+              id="scoreThreshold"
+              value="0.7"
+              min="0"
+              max="1"
+              step="0.05"
+            />
+          </label>
+          <label>
+            <input type="checkbox" id="enableVectorStorage" checked />
+            写入 Milvus 向量库（enable_vector_storage）
+          </label>
+          <label>
+            <input type="checkbox" id="syncMode" />
+            同步等待完成（sync_mode，阻塞到任务结束）
+          </label>
+          <label>
+            保存方式（save_mode，仅批量）
+            <select id="saveMode">
+              <option value="separate">separate（分文件保存）</option>
+              <option value="unified">unified（合并输出）</option>
+            </select>
+          </label>
+          <label>
+            最大文件并发（max_concurrency，仅批量，可选）
+            <input
+              type="number"
+              id="maxConcurrency"
+              min="1"
+              placeholder="留空默认 3…"
+            />
+          </label>
+          <label>
+            评估最大并发（eval_max_concurrency，可选）
+            <input
+              type="number"
+              id="evalMaxConcurrency"
+              min="1"
+              placeholder="留空默认 8…"
+            />
+          </label>
+          <label>
+            chunk 生成并发（chunk_max_concurrency，可选）
+            <input
+              type="number"
+              id="chunkMaxConcurrency"
+              min="1"
+              placeholder="留空默认 8…"
+            />
+          </label>
+          <label>
+            增广并发（augment_max_concurrency，可选）
+            <input
+              type="number"
+              id="augmentMaxConcurrency"
+              min="1"
+              placeholder="留空默认 8…"
+            />
+          </label>
+          <div class="actions-row">
+            <button type="submit">开始执行流水线</button>
+            <button type="button" id="cancelTaskBtn" class="secondary">终止当前/指定任务</button>
+          </div>
+        </form>
+        <div class="task-console">
+          <div class="task-console-grid">
+            <label class="task-console-primary">
+              task_id（可查询历史任务）
+              <input type="search" id="taskIdInput" placeholder="输入或粘贴 batch_complete_task_xxx…" />
+            </label>
+            <button type="button" id="btnLoadTaskStatus" class="secondary">查询任务</button>
+            <button type="button" id="btnRestoreLastTask" class="secondary">恢复当前任务</button>
+          </div>
+          <p class="hint" id="pipelineTaskHint">页面会记住最近查看或正在运行的流水线任务。上方“终止当前/指定任务”会优先使用这里填写的 task_id；如果任务已经结束或变成僵尸记录，可直接在下方任务列表里删除记录。</p>
+          <div id="pipelineTaskHistory" class="task-history-list"></div>
+        </div>
+        <div id="pipelineOutputsPanel">
+          <h3>最近一次流水线结果</h3>
+          <p class="hint">
+            如果批量上传了多个文件并选择分开保存，可以在下方对每个源文件单独查看合并
+            JSON 或下载 CSV。若文件已入库或临时结果已过期，按钮会自动隐藏，这时请改到管理页按
+            task_id / 原文件名查询。
+          </p>
+          <div id="pipelineOutputsList"></div>
+        </div>
+        <pre id="pipelineStatus"></pre>
+      </section>
+
+      <section class="card">
+        <h2>1A. Chunk 树与溯源（Tree-Chunking）</h2>
+        <p class="hint">
+          先运行统一流水线入口 8B（并开启 <code>enable_chunk_storage</code>），即可在此按任务查看
+          <code>doc_tree_chunks</code> 中的树结构，并点击 leaf chunk 查看正文与对应 QA（按
+          <code>source==chunk_id</code> 溯源）。
+        </p>
+        <div class="form-grid" style="margin-top: 10px">
+          <label>
+            task_id
+            <input type="text" id="chunkTaskId" placeholder="batch_complete_task_xxx…" />
+          </label>
+          <div class="actions-row">
+            <button type="button" id="btnLoadChunkDocs" class="secondary">加载文档列表</button>
+          </div>
+        </div>
+        <div class="form-grid" style="margin-top: 10px">
+          <label>
+            doc_id
+            <select id="chunkDocSelect"></select>
+          </label>
+          <label>
+            仅看过滤后的 QA
+            <select id="chunkQaOnlyFiltered">
+              <option value="false" selected>false</option>
+              <option value="true">true</option>
+            </select>
+          </label>
+          <div class="actions-row">
+            <button type="button" id="btnLoadChunkTree" class="secondary">加载树</button>
+          </div>
+        </div>
+        <div class="chunk-tree-grid" style="margin-top: 10px">
+          <div class="chunk-tree-box">
+            <div class="hint" style="margin: 0 0 6px 0">Tree</div>
+            <div id="chunkTree"></div>
+          </div>
+          <div class="chunk-tree-box chunk-debug-panel">
+            <div class="chunk-debug-topbar">
+              <div>
+                <div class="hint" style="margin: 0 0 4px 0">调试面板</div>
+                <div id="chunkDebugSummary" class="chunk-debug-summary">请选择左侧 leaf chunk</div>
+              </div>
+              <div class="chunk-debug-tabs" role="tablist" aria-label="Chunk 调试视图">
+                <button
+                  type="button"
+                  id="chunkDebugTabChunk"
+                  class="chunk-debug-tab is-active"
+                  data-debug-view="chunk"
+                  role="tab"
+                  aria-selected="true"
+                >
+                  按 Chunk 看
+                </button>
+                <button
+                  type="button"
+                  id="chunkDebugTabQa"
+                  class="chunk-debug-tab"
+                  data-debug-view="qa"
+                  role="tab"
+                  aria-selected="false"
+                >
+                  按 QA 看
+                </button>
+              </div>
+            </div>
+            <div id="chunkDebugStatus" class="hint chunk-debug-status">等待加载</div>
+            <div id="chunkDebugPanelChunk" class="chunk-debug-view is-active" data-debug-view-panel="chunk">
+              <div id="chunkDebugChunkView"></div>
+            </div>
+            <div id="chunkDebugPanelQa" class="chunk-debug-view" data-debug-view-panel="qa">
+              <div class="chunk-debug-qa-layout">
+                <div class="chunk-debug-qa-list-box">
+                  <div class="hint" style="margin: 0 0 6px 0">QA 列表</div>
+                  <div id="chunkDebugQaList" class="chunk-debug-qa-list"></div>
+                </div>
+                <div class="chunk-debug-qa-detail-box">
+                  <div class="hint" style="margin: 0 0 6px 0">QA 详情</div>
+                  <div id="chunkDebugQaDetail"></div>
+                </div>
+              </div>
+            </div>
+            <pre id="chunkDetailOutput" hidden></pre>
+            <pre id="chunkQaOutput" hidden></pre>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>1B. 三级知识分类（本地模型）</h2>
+        <p class="hint">
+          用 <code>/knowledge-tagging/predict</code> 直接对文本进行三级标签预测；默认使用新三级规则分类器，也可切换旧本地模型。
+        </p>
+        <form id="knowledgeTagForm">
+          <label>
+            文件名（可选）
+            <input type="text" id="knowledgeTagFilename" placeholder="如：GB/T 12345-2024 xxx.pdf…" />
+          </label>
+          <label>
+            知识分类器
+            <select id="knowledgeTagClassifier">
+              <option value="doc_level3_rule" selected>新三级规则分类器</option>
+              <option value="legacy_model">旧本地模型分类器</option>
+            </select>
+          </label>
+          <label>
+            输入文本
+            <textarea id="knowledgeTagText" rows="6" placeholder="粘贴 OCR 后文本（建议前几段即可）…"></textarea>
+          </label>
+          <div class="actions-row">
+            <button type="submit">预测标签</button>
+          </div>
+        </form>
+        <pre id="knowledgeTagOutput"></pre>
+      </section>
+
+      <section class="card">
+        <h2>2. QA 数据管理（新）</h2>
+        <p class="hint">
+          已移除旧版“按 task/file 查询”表单，改为统一的管理视图（列表筛选、语义检索、软删
+          <code>is_active</code>、批量评估与过滤）。
+        </p>
+        <div class="actions-row">
+          <a class="button-link" href="/ui/admin.html">打开管理视图</a>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>3. 加载合并输出 JSON 文件（本地预览）</h2>
+        <p>
+          请选择类似 <code>batch_complete_task_xxx_consolidated_xxx.json</code>
+          的文件，前端将在本地解析并美化展示问答对。
+        </p>
+        <label>
+          选择合并输出 JSON
+          <input type="file" id="localJsonInput" accept="application/json" />
+        </label>
+        <pre id="metaInfo"></pre>
+      </section>
+
+      <section class="card">
+        <h2>4. 问答对结果</h2>
+        <div id="qaResults"></div>
+      </section>
+    </main>
+
+    <div id="chunkQaDetailOverlay" class="drawer-overlay" hidden></div>
+    <aside
+      id="chunkQaDetailModal"
+      class="chunk-qa-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="chunkQaDetailModalTitle"
+      aria-hidden="true"
+      hidden
+    >
+      <div class="drawer-header chunk-qa-modal-header">
+        <div>
+          <div class="hint" style="margin: 0 0 3px 0">QA 检索生成详情</div>
+          <h2 class="drawer-title" id="chunkQaDetailModalTitle">请选择一条 QA</h2>
+        </div>
+        <button
+          type="button"
+          class="icon-btn drawer-close"
+          id="chunkQaDetailModalClose"
+          aria-label="关闭 QA 详情"
+          title="关闭"
+        >
+          <span aria-hidden="true">×</span>
+        </button>
+      </div>
+      <div id="chunkQaDetailModalBody" class="chunk-qa-modal-body"></div>
+    </aside>
+
+    <script src="/ui/ui.js?v=2026-04-05-1"></script>
+    <script src="/ui/app_runtime.js?v=2026-04-16-3"></script>
+    <script src="/ui/app_config.js?v=2026-04-07-2"></script>
+    <script src="/ui/app_render.js?v=2026-04-07-2"></script>
+    <script src="/ui/app_query.js?v=2026-05-21-3"></script>
+    <script src="/ui/app.js?v=2026-06-23-1"></script>
+    <script>
+      (function () {
+        if (window.__QA_UI_APPJS_READY__) return;
+        const btn = document.getElementById('btnLlmDebug');
+        const output = document.getElementById('llmDebugOutput');
+        if (output) output.textContent = '提示：页面脚本未正确加载，已启用兜底测试逻辑。';
+        if (!btn) return;
+
+        function normalizeApiBaseUrl(value, fallbackOrigin) {
+          const v = String(value || '').trim();
+          const origin = String(fallbackOrigin || '').trim();
+          if (!v) return origin;
+          if (v.startsWith('http://') || v.startsWith('https://')) return v;
+          if (v.startsWith('//')) return `${window.location.protocol}${v}`;
+          if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(v)) return v;
+          if (/^[^\/\s]+(:\d+)?$/.test(v)) {
+            const proto = (origin && origin.split('://')[0]) || window.location.protocol.replace(':', '');
+            return `${proto}://${v}`;
+          }
+          return origin;
+        }
+
+        async function fetchJson(url, options) {
+          const resp = await fetch(url, options);
+          const text = await resp.text();
+          let data = null;
+          try {
+            data = text ? JSON.parse(text) : null;
+          } catch (e) {
+            data = { raw: text };
+          }
+          if (!resp.ok) {
+            const detail = data && (data.detail || data.message || data.error);
+            throw new Error(detail || text || resp.statusText || `HTTP ${resp.status}`);
+          }
+          return data;
+        }
+
+        btn.addEventListener('click', async () => {
+          const origin = String(window.location.origin || '').replace(/\/+$/, '');
+          const apiRaw = document.getElementById('apiBaseUrl')?.value || '';
+          const base = normalizeApiBaseUrl(apiRaw, origin).replace(/\/+$/, '');
+          const prompt = document.getElementById('llmDebugPrompt')?.value || '';
+          const systemPrompt = document.getElementById('llmDebugSystemPrompt')?.value || '';
+          const responseFormat = document.getElementById('llmDebugResponseFormat')?.value || 'json_object';
+          const timeoutSeconds = parseInt(document.getElementById('llmDebugTimeoutSeconds')?.value || '30', 10) || 30;
+          const maxTokens = parseInt(document.getElementById('llmDebugMaxTokens')?.value || '256', 10) || 256;
+          if (output) output.textContent = '测试中…';
+          try {
+            const data = await fetchJson(`${base}/llm-debug/chat`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                prompt,
+                system_prompt: systemPrompt,
+                response_format: responseFormat,
+                timeout_seconds: timeoutSeconds,
+                max_tokens: maxTokens,
+              }),
+            });
+            if (output) output.textContent = JSON.stringify(data, null, 2);
+          } catch (err) {
+            if (output) output.textContent = '测试失败：' + String(err);
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,107 @@
+name: qa-flow
+
+x-runtime-environment: &runtime-environment
+  MILVUS_HOST: "127.0.0.1"
+  MILVUS_PORT: "19530"
+  MINIO_ROOT_USER: "${MINIO_ROOT_USER:-minioadmin}"
+  MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-minioadmin}"
+  PYTHONUNBUFFERED: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+  PYTHONIOENCODING: "utf-8"
+  TOKENIZERS_PARALLELISM: "false"
+  APP_RUNTIME_ROOT: "/app/runtime_assets"
+  APP_MODELS_DIR: "/app/runtime_assets/models"
+  APP_OUTPUTS_DIR: "/app/runtime_assets/outputs"
+  APP_UPLOADS_DIR: "/app/runtime_assets/uploads"
+  MODEL_BASE_DIR: "/app/runtime_assets/models/ocr"
+  CLASSIFIER_MODEL_DIR: "/app/runtime_assets/models/image_classifier"
+  CLASSIFIER_CLASS_CONFIG_FILE: "${CLASSIFIER_CLASS_CONFIG_FILE:-}"
+  CLASSIFIER_API_BASE: "http://127.0.0.1:10488"
+  OCR_USE_GPU: "${OCR_USE_GPU:-true}"
+  OCR_REPLACE_IMAGES: "${OCR_REPLACE_IMAGES:-true}"
+  VLM_API_BASE: "${VLM_API_BASE:-}"
+  VLM_MODEL_NAME: "${VLM_MODEL_NAME:-}"
+  VLM_API_KEY: "${VLM_API_KEY:-}"
+  VLM_API_TYPE: "${VLM_API_TYPE:-openai}"
+  VLM_MODEL_VERSION: "${VLM_MODEL_VERSION:-}"
+  SEED_LOCAL_OCR_PROFILE: "${SEED_LOCAL_OCR_PROFILE:-true}"
+  START_CLASSIFIER_SERVICE: "${START_CLASSIFIER_SERVICE:-false}"
+  SOFFICE_BINARY: "/usr/bin/soffice"
+  PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK: "True"
+  TORCH_HOME: "/app/runtime_assets/cache/torch"
+  TRANSFORMERS_CACHE: "/app/runtime_assets/cache/transformers"
+  HF_HOME: "/app/runtime_assets/cache/huggingface"
+  AUTO_EVAL_MAX_ITEMS_PER_REQUEST: "${AUTO_EVAL_MAX_ITEMS_PER_REQUEST:-500}"
+  AUTO_EVAL_BERTSCORE_BATCH_SIZE: "${AUTO_EVAL_BERTSCORE_BATCH_SIZE:-16}"
+  AUTO_EVAL_BERTSCORE_NTHREADS: "${AUTO_EVAL_BERTSCORE_NTHREADS:-16}"
+  AUTO_EVAL_BERTSCORE_LANG: "${AUTO_EVAL_BERTSCORE_LANG:-zh}"
+  NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
+  NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+  LD_LIBRARY_PATH: "/milvus/lib:/usr/lib/libreoffice/program:/usr/lib/x86_64-linux-gnu:/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
+  TERM: "xterm-256color"
+  UVICORN_LOG_LEVEL: "${UVICORN_LOG_LEVEL:-info}"
+  UVICORN_ACCESS_LOG: "${UVICORN_ACCESS_LOG:-true}"
+  PYTHONFAULTHANDLER: "1"
+
+services:
+  qa-flow-runtime:
+    image: qa-flow-runtime:latest
+    container_name: qa-flow-runtime
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    working_dir: /app
+    init: true
+    runtime: nvidia
+    shm_size: "16gb"
+    ports:
+      - "${HAO_API_HOST_PORT:-12000}:12000"
+      - "${DW_OCR_HOST_PORT:-11169}:11169"
+      - "${CLASSIFIER_HOST_PORT:-10488}:10488"
+      - "${MILVUS_HOST_PORT:-12530}:19530"
+      - "${MILVUS_METRICS_HOST_PORT:-12091}:9091"
+      - "${ETCD_HOST_PORT:-12379}:2379"
+      - "${MINIO_API_HOST_PORT:-12900}:9000"
+      - "${MINIO_CONSOLE_HOST_PORT:-12901}:9001"
+    volumes:
+      - ../:/app
+      - ../runtime_assets:/app/runtime_assets
+      - ../runtime_assets/volumes/etcd:/data/etcd
+      - ../runtime_assets/volumes/minio:/data/minio
+      - ../runtime_assets/volumes/milvus:/data/milvus
+    environment: *runtime-environment
+    command:
+      - /bin/bash
+      - /app/docker/start-qa-flow-services.sh
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl -fsS http://127.0.0.1:12000/health >/dev/null
+          && curl -fsS http://127.0.0.1:11169/health >/dev/null
+          && curl -fsS http://127.0.0.1:2379/health >/dev/null
+          && curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null
+          && curl -fsS http://127.0.0.1:9091/healthz >/dev/null
+      interval: 60s
+      timeout: 30s
+      start_period: 180s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "10"
+        compress: "false"
+    networks:
+      default:
+        aliases:
+          - qa-flow-api
+          - qa-flow-ocr
+          - pdf2txt
+
+networks:
+  default:
+    name: apiuse-network

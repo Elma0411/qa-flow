@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>QA 数据管理</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/ui/styles.css?v=2026-05-21-3" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">跳到内容</a>
+    <header>
+      <div class="header-row">
+        <h1>QA 数据管理视图</h1>
+        <div class="header-actions">
+          <nav class="nav">
+            <a href="/ui/index.html">流水线</a>
+            <a class="active" href="/ui/admin.html" aria-current="page">管理</a>
+            <a href="/ui/eval.html">评测</a>
+          </nav>
+          <button type="button" class="icon-btn" id="themeToggle" aria-label="切换主题" title="切换主题"></button>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="card">
+        <h2>0. API 地址</h2>
+        <div class="admin-section-stack">
+          <fieldset class="admin-fieldset">
+            <legend>连接与查询模式</legend>
+            <div class="form-grid">
+              <label>
+                API 基础地址
+                <input type="text" id="apiBaseUrl" placeholder="例如 http://localhost:12000…" size="28" />
+              </label>
+              <div class="actions-row">
+                <span class="muted">查询模式</span>
+                <button type="button" id="btnLoadList">查询列表</button>
+                <button type="button" id="btnSemanticSearch" class="secondary">语义检索</button>
+                <button type="button" id="btnClear" class="secondary">清空条件</button>
+                <span id="statusText" class="hint" aria-live="polite"></span>
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset class="admin-fieldset">
+            <legend>回填入库</legend>
+            <div class="form-grid">
+              <label>
+                回填（升级前增广问句入库）
+                <input
+                  type="text"
+                  id="ingestOutputFile"
+                  placeholder="batch_complete_task_xxx_consolidated_xxx.json…"
+                />
+              </label>
+              <div class="actions-row">
+                <button type="button" id="btnIngestConsolidated" class="secondary">
+                  重新入库（补全增广）
+                </button>
+                <span class="hint">仅重写 Milvus 记录；不会修改 question/answer。</span>
+              </div>
+            </div>
+          </fieldset>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>1. 筛选条件</h2>
+        <form id="filterForm" class="admin-form-stack">
+          <fieldset class="admin-fieldset">
+            <legend>通用筛选</legend>
+            <div class="form-grid">
+              <label>
+                任务ID（task_id）
+                <input type="text" id="fTaskId" size="16" />
+              </label>
+              <label>
+                知识类别（knowledge_category，逗号分隔）
+                <input type="text" id="fCategory" size="16" />
+              </label>
+              <label>
+                题型（question_type，逗号分隔）
+                <input type="text" id="fQType" size="16" />
+              </label>
+              <label>
+                难度（difficulty_level，逗号分隔）
+                <input type="text" id="fDiff" size="16" />
+              </label>
+              <label>
+                保留标记（filtered，true=通过/保留；false=待剔除）
+                <select id="fFiltered">
+                  <option value="all" selected>全部（all）</option>
+                  <option value="true">是（true）</option>
+                  <option value="false">否（false）</option>
+                </select>
+              </label>
+              <label>
+                是否上架（is_active）
+                <select id="fActive">
+                  <option value="true" selected>是（true）</option>
+                  <option value="false">否（false）</option>
+                  <option value="all">全部（all）</option>
+                </select>
+              </label>
+              <label>
+                最低平均分（min_avg_score）
+                <input type="number" id="fMinScore" value="" min="0" max="1" step="0.05" />
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="admin-fieldset" data-query-mode-panel="list">
+            <legend>列表查询参数</legend>
+            <div class="form-grid">
+              <label>
+                原文件名（original_filename）
+                <input type="text" id="fFilename" size="16" />
+              </label>
+              <label>
+                关键字（q）
+                <input type="text" id="fQ" size="18" placeholder="question/answer/source…" />
+              </label>
+              <label>
+                是否已评估（evaluated）
+                <select id="fEvaluated">
+                  <option value="all" selected>全部（all）</option>
+                  <option value="true">是（true）</option>
+                  <option value="false">否（false）</option>
+                </select>
+              </label>
+              <label>
+                审核状态（review_status）
+                <input type="text" id="fReviewStatus" size="10" placeholder="如 approved/deleted…" />
+              </label>
+              <label>
+                页码（page）
+                <input type="number" id="fPage" value="1" min="1" />
+              </label>
+              <label>
+                每页数量（page_size）
+                <input type="number" id="fPageSize" value="20" min="1" max="200" />
+              </label>
+            </div>
+            <div class="actions-row" style="margin-top: 10px">
+              <button type="button" id="btnRunListQuery">执行列表查询</button>
+            </div>
+          </fieldset>
+
+          <fieldset class="admin-fieldset" data-query-mode-panel="semantic" hidden>
+            <legend>语义检索参数</legend>
+            <div class="form-grid">
+              <label>
+                语义检索（semantic_query）
+                <input type="text" id="fSemantic" size="22" placeholder="用于查重/相似题…" />
+              </label>
+              <label>
+                语义 TopK（top_k）
+                <input type="number" id="fTopK" value="30" min="1" max="200" />
+              </label>
+            </div>
+            <div class="actions-row" style="margin-top: 10px">
+              <button type="button" id="btnRunSemanticSearch">执行语义检索</button>
+            </div>
+          </fieldset>
+        </form>
+        <div class="muted" id="metaText"></div>
+      </section>
+
+      <section class="card">
+        <h2>2. 批量操作（对选中项）</h2>
+        <div class="admin-section-stack">
+          <fieldset class="admin-fieldset">
+            <legend>标注与审核</legend>
+            <div class="admin-selected-meta">已选 <span id="selectedCount">0</span> 条</div>
+            <div class="actions-row">
+              <button type="button" id="btnFilteredTrue">标记保留（filtered=true）</button>
+              <button type="button" id="btnFilteredFalse" class="secondary">标记剔除（filtered=false）</button>
+              <button type="button" id="btnSetCategory" class="secondary">设置分类</button>
+              <button type="button" id="btnSetQType" class="secondary">设置题型</button>
+              <button type="button" id="btnSetDiff" class="secondary">设置难度</button>
+              <button type="button" id="btnSetReview" class="secondary">设置 review</button>
+            </div>
+          </fieldset>
+
+          <fieldset class="admin-fieldset">
+            <legend>上下架、删除与导出</legend>
+            <div class="actions-row">
+              <button type="button" id="btnSoftDelete" class="secondary">下架（软删）</button>
+              <button type="button" id="btnRestore" class="secondary">恢复上架</button>
+              <button type="button" id="btnHardDelete" class="secondary">硬删</button>
+              <button type="button" id="btnExport" class="secondary">导出</button>
+            </div>
+          </fieldset>
+
+          <fieldset class="admin-fieldset">
+            <legend>批量评估</legend>
+            <form id="evalForm" class="admin-grid-form">
+              <label>
+                评估方式（method，llm=大模型；local=本地）
+                <select id="evalMethod">
+                  <option value="llm" selected>大模型（llm）</option>
+                  <option value="local">本地（local）</option>
+                </select>
+              </label>
+              <label>
+                强制重评（force，true=忽略已有评估）
+                <select id="evalForce">
+                  <option value="false" selected>false</option>
+                  <option value="true">true</option>
+                </select>
+              </label>
+              <label>
+                自动筛选（auto_filter，true=写回 filtered）
+                <select id="evalAutoFilter">
+                  <option value="false" selected>false</option>
+                  <option value="true">true</option>
+                </select>
+              </label>
+              <label>
+                阈值（threshold，average_score >= 阈值 => filtered=true）
+                <input type="number" id="evalThreshold" value="0.7" min="0" max="1" step="0.05" />
+              </label>
+              <label id="evalCriteriaWrap">
+                LLM 维度（criteria_list，逗号分隔）
+                <input
+                  type="text"
+                  id="evalCriteria"
+                  value="relevance,completeness,accuracy,reasonableness,agnosticism"
+                  size="34"
+                />
+              </label>
+              <div class="actions-row">
+                <button type="button" id="btnEvalStart">开始评估</button>
+              </div>
+            </form>
+            <div class="muted" id="evalLocalMetricsHint" style="display:none">
+              local 评估使用自动指标（EM/Token_F1/ROUGE_L_F1/BLEU/BERTScore），维度固定；不会修改 question/answer。
+            </div>
+          </fieldset>
+
+          <fieldset class="admin-fieldset">
+            <legend>无监督评估（套件）</legend>
+            <form id="unsupForm" class="admin-grid-form">
+              <label>
+                强制重评（force）
+                <select id="unsupForce">
+                  <option value="false" selected>false</option>
+                  <option value="true">true</option>
+                </select>
+              </label>
+              <div class="actions-row">
+                <button type="button" id="btnUnsupStart">开始无监督评估</button>
+              </div>
+            </form>
+            <div class="muted">
+              套件包含：忠实度（NLI）、可回答性（抽取式 QA + no-answer）、覆盖召回（embedding 覆盖）与无监督F1。
+            </div>
+          </fieldset>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>3. 数据列表</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 30px"><input type="checkbox" id="chkAll" aria-label="全选/全不选" /></th>
+                <th style="width: 110px">avg</th>
+                <th style="width: 110px">faith</th>
+                <th style="width: 110px">ans</th>
+                <th style="width: 110px">f1</th>
+                <th style="width: 120px">保留（filtered）</th>
+                <th style="width: 70px">active</th>
+                <th>question</th>
+                <th>answer</th>
+                <th style="width: 160px">category</th>
+                <th style="width: 120px">file</th>
+                <th style="width: 120px">op</th>
+              </tr>
+            </thead>
+            <tbody id="itemsTbody"></tbody>
+          </table>
+        </div>
+        <div class="actions-row" style="margin-top: 10px" id="queryPaginationBar" data-query-mode-panel="list">
+          <button type="button" id="btnPrev" class="secondary">上一页</button>
+          <button type="button" id="btnNext" class="secondary">下一页</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>4. 详情</h2>
+        <div class="admin-detail-grid">
+          <div class="admin-detail-box">
+            <div class="hint" style="margin: 0 0 6px 0">QA</div>
+            <div id="qaDetailPanel" class="detail-panel muted">点击列表中的「详情」查看</div>
+          </div>
+          <div class="admin-detail-box">
+            <div class="hint" style="margin: 0 0 6px 0">Chunk 溯源</div>
+            <div id="chunkDetailPanel" class="detail-panel muted">等待选择 QA…</div>
+          </div>
+        </div>
+        <details style="margin-top: 10px">
+          <summary>调试：原始 JSON</summary>
+          <pre id="detailRawPanel"></pre>
+        </details>
+      </section>
+
+      <section class="card">
+        <h2>5. Jobs</h2>
+        <div class="actions-row">
+          <button type="button" id="btnJobsRefresh" class="secondary">刷新</button>
+        </div>
+        <div id="jobsPanel" class="muted"></div>
+      </section>
+    </main>
+
+    <script src="/ui/ui.js?v=2026-04-05-1"></script>
+    <script src="/ui/admin.js?v=2026-04-16-2"></script>
+  </body>
+</html>
