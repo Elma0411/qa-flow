@@ -22,7 +22,9 @@ class LLMClientProtocol(Protocol):
         messages: List[Dict],
         model: Optional[str] = None,
         temperature: float,
-        max_tokens: Optional[int],
+        max_tokens: Optional[int] = None,
+        response_format: Optional[Any] = None,
+        timeout: Optional[float] = None,
     ) -> str:
         ...
 
@@ -119,4 +121,3 @@ _DEFAULT_POOL = LLMClientPool()
 
 def get_llm_client_pool() -> LLMClientPool:
     return _DEFAULT_POOL
-

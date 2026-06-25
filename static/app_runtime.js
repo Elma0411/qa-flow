@@ -328,6 +328,8 @@ const UI_CACHE_KEY = 'apiuse_ui_cache_v1';
 const UI_CACHE_PAGE = 'index';
 const UI_CACHE_EXCLUDE_IDS = new Set([
   'cfgKey', // LLM API Key 不写入浏览器缓存（避免泄露）
+  'dwVlmApiKey',
+  'integratedVlmApiKey',
 ]);
 
 function restoreUiCache() {

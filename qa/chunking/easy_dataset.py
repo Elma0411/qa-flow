@@ -10,10 +10,10 @@ from hashlib import sha1
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from openai import OpenAI
-
+from app.core.clients import build_llm_client_config
 from app.core.config import CONFIG
-from .easy_dataset_common import _path_stem
+from app.services.llm import get_llm_client_pool
+from .easy_dataset_common import _normalize_filename_to_markdown, _path_stem
 from .easy_dataset_errors import EasyDatasetChunkingError
 from .easy_dataset_manual import manual_split, normalize_split_points, preview_split_points
 from .easy_dataset_preprocessing import preprocess_file
@@ -627,10 +627,7 @@ def split_content(
     }
     if requested_split_type == "markdown" and normalized_content.strip() and correction_enabled:
         try:
-            client = OpenAI(
-                api_key=CONFIG["api_key"],
-                base_url=CONFIG["base_url"],
-            )
+            client = get_llm_client_pool().get_client(build_llm_client_config())
             normalized_content, heading_correction_report = correct_markdown_heading_levels(
                 normalized_content,
                 client=client,

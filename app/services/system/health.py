@@ -14,22 +14,21 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 from urllib.parse import urlparse
 
-from openai import OpenAI
+from typing import Any
 
 from app.core.config import CONFIG
 from app.core.runtime_paths import DEFAULT_KNOWLEDGE_TAGGER_MODEL_DIR
-from qa.common import extract_first_choice_content
 
 
-def test_api_connection(client: OpenAI, model: str) -> Tuple[bool, str]:
+def test_api_connection(client: Any, model: str) -> Tuple[bool, str]:
     try:
-        response = client.chat.completions.create(
+        result = client.create_chat_completion_text(
             model=model,
             messages=[{"role": "user", "content": "请回复'OK'"}],
+            temperature=0.0,
             max_tokens=5,
             timeout=15,
-        )
-        result = extract_first_choice_content(response).strip()
+        ).strip()
         return True, result
     except Exception as exc:
         return False, str(exc)

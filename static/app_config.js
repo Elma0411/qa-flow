@@ -100,6 +100,8 @@ function fillConfigFormFromSelect() {
   $('#cfgKey').value = profile.api_key || '';
   $('#cfgBaseUrl').value = profile.base_url || '';
   $('#cfgModel').value = profile.model || '';
+  if ($('#cfgApiType')) $('#cfgApiType').value = profile.api_type || 'openai';
+  if ($('#cfgModelVersion')) $('#cfgModelVersion').value = profile.model_version || '';
 }
 
 async function handleCfgSave() {
@@ -107,6 +109,8 @@ async function handleCfgSave() {
   const apiKey = $('#cfgKey')?.value.trim();
   const baseUrl = $('#cfgBaseUrl')?.value.trim();
   const model = $('#cfgModel')?.value.trim();
+  const apiType = $('#cfgApiType')?.value.trim() || 'openai';
+  const modelVersion = $('#cfgModelVersion')?.value.trim() || '';
   if (!name || !apiKey || !baseUrl || !model) {
     notify('请填写名称、API Key、Base URL、模型', 'warning');
     return;
@@ -117,7 +121,14 @@ async function handleCfgSave() {
     const data = await fetchJson(`${base}/llm-configs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, api_key: apiKey, base_url: baseUrl, model }),
+      body: JSON.stringify({
+        name,
+        api_key: apiKey,
+        base_url: baseUrl,
+        model,
+        api_type: apiType,
+        model_version: modelVersion,
+      }),
     });
     llmConfigStore = data;
     renderConfigStore();

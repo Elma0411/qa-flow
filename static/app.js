@@ -1,5 +1,87 @@
 window.__QA_UI_APPJS_READY__ = true;
-window.__QA_UI_APPJS_VERSION__ = '2026-06-23-1';
+window.__QA_UI_APPJS_VERSION__ = '2026-06-25-3';
+
+let currentDwJobPoller = null;
+
+const DOC_STAGE_ORDER = [
+  'doc_input',
+  'doc_text_read',
+  'dw_input',
+  'dw_text_read',
+  'input',
+  'format_routing',
+  'format_conversion',
+  'doc_ocr',
+  'dw_ocr',
+  'ocr',
+  'watermark',
+  'ocr_predict',
+  'page_collect',
+  'image_extract',
+  'markdown_merge',
+  'image_replacement',
+  'ocr_output',
+  'doc_marker',
+  'dw_marker',
+  'doc_pre_chunking',
+  'dw_pre_chunking',
+  'doc_chunk_summary',
+  'dw_chunk_summary',
+  'image_classification',
+  'doc_image_analysis',
+  'dw_image_analysis',
+  'image_analysis',
+  'doc_placement',
+  'dw_placement',
+  'text_integration',
+  'document_output',
+  'doc_handoff',
+  'dw_handoff',
+  'completed',
+  'doc_error',
+  'dw_error',
+  'error',
+];
+
+const DOC_STAGE_LABELS = {
+  doc_input: '输入准备',
+  doc_text_read: '文本读取',
+  dw_input: '输入准备',
+  dw_text_read: '文本读取',
+  input: '输入保存',
+  format_routing: '格式识别',
+  format_conversion: '格式转换',
+  doc_ocr: 'OCR/抽取',
+  dw_ocr: 'OCR/抽取',
+  ocr: 'OCR',
+  watermark: '去水印',
+  ocr_predict: 'OCR 模型',
+  page_collect: '页面块收集',
+  image_extract: '图片提取',
+  markdown_merge: 'Markdown 合并',
+  image_replacement: '高质量裁图',
+  ocr_output: 'OCR 输出',
+  doc_marker: '图片标记',
+  dw_marker: '图片标记',
+  doc_pre_chunking: '预切块',
+  dw_pre_chunking: '预切块',
+  doc_chunk_summary: 'chunk 摘要',
+  dw_chunk_summary: 'chunk 摘要',
+  image_classification: '图片分类',
+  doc_image_analysis: '图片理解',
+  dw_image_analysis: '图片理解',
+  image_analysis: '图片理解',
+  doc_placement: '契合度判断',
+  dw_placement: '契合度判断',
+  text_integration: '文本整合',
+  document_output: '结果输出',
+  doc_handoff: '移交问答',
+  dw_handoff: '移交问答',
+  completed: '完成',
+  doc_error: '错误',
+  dw_error: '错误',
+  error: '错误',
+};
 
 initApiBaseUrl();
 restoreUiCache();
@@ -16,6 +98,7 @@ setupEvaluationUI();
 setupQuestionTypeUI();
 setupChunkingModeUI();
 setupDocumentProcessingModeUI();
+setupDwDocumentPanel();
 const cancelTaskBtn = $('#cancelTaskBtn');
 if (cancelTaskBtn) {
   cancelTaskBtn.addEventListener('click', handleCancelTask);
@@ -54,6 +137,7 @@ if (environmentCheckBtn) {
   environmentCheckBtn.addEventListener('click', handleEnvironmentCheck);
 }
 hydratePipelineRuntime().catch(() => {});
+hydrateDwRuntime().catch(() => {});
 
 async function handleEnvironmentCheck() {
   const btn = $('#btnEnvironmentCheck');
@@ -516,8 +600,8 @@ function setupDocumentProcessingModeUI() {
     if (ocrTimeoutField) ocrTimeoutField.style.display = integrated ? 'none' : '';
     if (hintEl) {
       hintEl.textContent = integrated
-        ? '使用 unified 内置的 dw 文档解析、图片理解和回填逻辑，再进入 hao 问答流水线。'
-        : '使用当前激活的 OCR 配置解析 PDF、图片、OFD、DOCX、DOC 后进入 hao 问答流水线。';
+        ? '使用内置文档解析、图片理解和回填逻辑，再进入问答流水线。'
+        : '使用当前激活的 OCR 配置解析 PDF、图片、OFD、DOCX、DOC 后进入问答流水线。';
     }
   }
 
@@ -557,11 +641,25 @@ async function handlePipelineSubmit(e) {
     const integratedOcrEnabled = $('#integratedOcrEnabled')?.checked !== false;
     const integratedOcrFailFast = $('#integratedOcrFailFast')?.checked === true;
     const integratedRemoveWatermark = $('#integratedRemoveWatermark')?.checked === true;
+    const integratedReplaceImages = $('#integratedReplaceImages')?.checked !== false;
     const integratedWatermarkDpi = $('#integratedWatermarkDpi')?.value || '200';
     const integratedDocxStrategy = $('#integratedDocxStrategy')?.value || 'pdf';
     const imageContextSummaryMode = $('#imageContextSummaryMode')?.value || 'lightweight';
+    const integratedEnableImageAnalysis = $('#integratedEnableImageAnalysis')?.checked !== false;
+    const integratedImageAnalysisUseApi = true;
+    const integratedEnableImageClassification = $('#integratedEnableImageClassification')?.checked === true;
+    const integratedClassificationThreshold = $('#integratedClassificationThreshold')?.value || '0';
+    const integratedVlmApiBase = $('#integratedVlmApiBase')?.value || '';
+    const integratedVlmModelName = $('#integratedVlmModelName')?.value || '';
+    const integratedVlmApiKey = $('#integratedVlmApiKey')?.value || '';
+    const integratedVlmApiType = $('#integratedVlmApiType')?.value || '';
+    const integratedVlmModelVersion = $('#integratedVlmModelVersion')?.value || '';
     const imageFitCheckEnabled = $('#imageFitCheckEnabled')?.checked !== false;
     const imageFitMinScore = $('#imageFitMinScore')?.value || '0.65';
+    const docMaxConcurrency = $('#docMaxConcurrency')?.value || '';
+    const ocrMaxConcurrency = $('#ocrMaxConcurrency')?.value || '';
+    const imageAnalysisMaxConcurrency = $('#imageAnalysisMaxConcurrency')?.value || '';
+    const imageFitMaxConcurrency = $('#imageFitMaxConcurrency')?.value || '';
     const qaDetailMode = $('#qaDetailMode')?.value || 'point';
     const knowledgeClassifier = $('#knowledgeClassifier')?.value || 'doc_level3_rule';
     const useCategoryPromptTemplates = $('#useCategoryPromptTemplates')?.checked !== false;
@@ -634,11 +732,29 @@ async function handlePipelineSubmit(e) {
       formData.append('ocr_enabled', integratedOcrEnabled ? 'true' : 'false');
       formData.append('ocr_fail_fast', integratedOcrFailFast ? 'true' : 'false');
       formData.append('remove_watermark', integratedRemoveWatermark ? 'true' : 'false');
+      formData.append('replace_images', integratedReplaceImages ? 'true' : 'false');
       formData.append('watermark_dpi', String(integratedWatermarkDpi || '200'));
       formData.append('docx_strategy', integratedDocxStrategy);
       formData.append('image_context_summary_mode', imageContextSummaryMode);
+      formData.append('enable_image_analysis', integratedEnableImageAnalysis ? 'true' : 'false');
+      formData.append('image_analysis_use_api', integratedImageAnalysisUseApi ? 'true' : 'false');
+      formData.append('enable_image_classification', integratedEnableImageClassification ? 'true' : 'false');
+      formData.append('classification_confidence_threshold', String(integratedClassificationThreshold || '0'));
+      if (String(integratedVlmApiBase).trim()) formData.append('vlm_api_base', integratedVlmApiBase.trim());
+      if (String(integratedVlmModelName).trim()) formData.append('vlm_model_name', integratedVlmModelName.trim());
+      if (String(integratedVlmApiKey).trim()) formData.append('vlm_api_key', integratedVlmApiKey.trim());
+      if (String(integratedVlmApiType).trim()) formData.append('vlm_api_type', integratedVlmApiType.trim());
+      if (String(integratedVlmModelVersion).trim()) formData.append('vlm_model_version', integratedVlmModelVersion.trim());
       formData.append('image_fit_check_enabled', imageFitCheckEnabled ? 'true' : 'false');
       formData.append('image_fit_min_score', String(imageFitMinScore || '0.65'));
+      if (String(docMaxConcurrency).trim()) formData.append('doc_max_concurrency', String(docMaxConcurrency).trim());
+      if (String(ocrMaxConcurrency).trim()) formData.append('ocr_max_concurrency', String(ocrMaxConcurrency).trim());
+      if (String(imageAnalysisMaxConcurrency).trim()) {
+        formData.append('image_analysis_max_concurrency', String(imageAnalysisMaxConcurrency).trim());
+      }
+      if (String(imageFitMaxConcurrency).trim()) {
+        formData.append('image_fit_max_concurrency', String(imageFitMaxConcurrency).trim());
+      }
     }
     formData.append('qa_detail_mode', qaDetailMode);
     formData.append('knowledge_classifier', knowledgeClassifier);
@@ -784,6 +900,7 @@ function applyPipelineStatus(status, { base = '', taskId = '' } = {}) {
   } else {
     clearPipelineOutputsView();
   }
+  renderDwIntegratedProgress(status);
 
   const statusText = String(status?.status || '').trim() || 'unknown';
   const msg = String(status?.message || '').trim();
@@ -1123,6 +1240,681 @@ function renderPipelineOutputsList(base, outputs) {
   });
 
   panel.appendChild(list);
+}
+
+function setupDwDocumentPanel() {
+  const form = $('#dwJobForm');
+  if (form) form.addEventListener('submit', handleDwJobSubmit);
+
+  const loadBtn = $('#dwLoadJobBtn');
+  if (loadBtn) {
+    loadBtn.addEventListener('click', () => {
+      loadDwJobById($('#dwJobIdInput')?.value || '', { resumePolling: true, silent: false }).catch(() => {});
+    });
+  }
+
+  const jobInput = $('#dwJobIdInput');
+  if (jobInput) {
+    jobInput.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      loadDwJobById($('#dwJobIdInput')?.value || '', { resumePolling: true, silent: false }).catch(() => {});
+    });
+  }
+
+  const restoreBtn = $('#dwRestoreJobBtn');
+  if (restoreBtn) {
+    restoreBtn.addEventListener('click', () => {
+      const page = getRuntimePageState();
+      const rememberedId =
+        String(page.activeDwJobId || '').trim() ||
+        String(page.selectedDwJobId || '').trim() ||
+        String($('#dwJobIdInput')?.value || '').trim();
+      if (!rememberedId) {
+        notify('当前没有可恢复的 document_job_id', 'warning');
+        return;
+      }
+      loadDwJobById(rememberedId, { resumePolling: true, silent: false }).catch(() => {});
+    });
+  }
+
+  const cancelBtn = $('#dwCancelJobBtn');
+  if (cancelBtn) cancelBtn.addEventListener('click', handleCancelDwJob);
+
+  const syncBtn = $('#dwSyncToIntegratedBtn');
+  if (syncBtn) syncBtn.addEventListener('click', syncDwOptionsToIntegratedPipeline);
+}
+
+function normalizeDwJobRecord(job) {
+  if (!job || typeof job !== 'object') return null;
+  const jobId = String(job.job_id || '').trim();
+  if (!jobId) return null;
+  return {
+    job_id: jobId,
+    status: String(job.status || ''),
+    message: String(job.message || ''),
+    input_filename: String(job.input_filename || ''),
+    updated_at: job.updated_at ?? job.finished_at ?? job.created_at ?? '',
+    output_format: String(job.output_format || job.params?.output_format || ''),
+  };
+}
+
+function getRecentDwJobs() {
+  const page = getRuntimePageState();
+  return Array.isArray(page.recentDwJobs) ? page.recentDwJobs : [];
+}
+
+function replaceRecentDwJobs(jobs) {
+  const normalized = Array.isArray(jobs)
+    ? jobs
+        .map((job) => normalizeDwJobRecord(job))
+        .filter(Boolean)
+        .slice(0, 12)
+    : [];
+  mutateRuntimePage((page) => {
+    const ids = new Set(normalized.map((job) => job.job_id));
+    page.recentDwJobs = normalized;
+    if (page.selectedDwJobId && !ids.has(String(page.selectedDwJobId || ''))) {
+      page.selectedDwJobId = normalized[0] ? normalized[0].job_id : '';
+    }
+    if (page.activeDwJobId && !ids.has(String(page.activeDwJobId || ''))) {
+      page.activeDwJobId = '';
+    }
+  });
+  return normalized;
+}
+
+function removeRecentDwJob(jobId) {
+  const normalized = String(jobId || '').trim();
+  if (!normalized) return getRecentDwJobs();
+  return mutateRuntimePage((page) => {
+    const prev = Array.isArray(page.recentDwJobs) ? page.recentDwJobs : [];
+    page.recentDwJobs = prev.filter((it) => String(it.job_id || '') !== normalized);
+    if (String(page.selectedDwJobId || '') === normalized) {
+      page.selectedDwJobId = page.recentDwJobs[0] ? String(page.recentDwJobs[0].job_id || '') : '';
+    }
+    if (String(page.activeDwJobId || '') === normalized) {
+      page.activeDwJobId = '';
+    }
+  }).recentDwJobs || [];
+}
+
+function rememberDwJob(job) {
+  const record = normalizeDwJobRecord(job);
+  if (!record) return getRecentDwJobs();
+  return mutateRuntimePage((page) => {
+    const prev = Array.isArray(page.recentDwJobs) ? page.recentDwJobs : [];
+    const merged = [record, ...prev.filter((it) => String(it.job_id || '') !== record.job_id)];
+    page.recentDwJobs = merged.slice(0, 12);
+    page.selectedDwJobId = record.job_id;
+    page.activeDwJobId = isTaskTerminal(record.status)
+      ? (page.activeDwJobId === record.job_id ? '' : page.activeDwJobId || '')
+      : record.job_id;
+  }).recentDwJobs || [];
+}
+
+function setDwJobSelection(jobId, { active = null } = {}) {
+  const normalized = String(jobId || '').trim();
+  const input = $('#dwJobIdInput');
+  if (input && input.value !== normalized) {
+    input.value = normalized;
+    persistUiField(input);
+  }
+  mutateRuntimePage((page) => {
+    page.selectedDwJobId = normalized;
+    if (active === true) page.activeDwJobId = normalized;
+    else if (active === false && page.activeDwJobId === normalized) page.activeDwJobId = '';
+  });
+}
+
+function renderDwJobHistory() {
+  const wrap = $('#dwJobHistory');
+  if (!wrap) return;
+  const jobs = getRecentDwJobs();
+  wrap.replaceChildren();
+  if (!jobs.length) {
+    const empty = document.createElement('div');
+    empty.className = 'task-history-empty';
+    empty.textContent = '暂无最近文档任务。提交一次文档解析或输入 document_job_id 查询后，这里会保留最近记录。';
+    wrap.appendChild(empty);
+    return;
+  }
+
+  jobs.forEach((job) => {
+    const row = document.createElement('div');
+    row.className = 'task-history-item';
+
+    const main = document.createElement('div');
+    main.className = 'task-history-main';
+
+    const title = document.createElement('div');
+    title.className = 'task-history-title';
+    title.appendChild(buildDwStatusPill(job.status || 'unknown'));
+
+    const name = document.createElement('span');
+    name.className = 'task-history-name';
+    name.textContent = job.input_filename || '文档解析';
+    title.appendChild(name);
+
+    const id = document.createElement('div');
+    id.className = 'task-history-id';
+    id.textContent = job.job_id;
+
+    const meta = document.createElement('div');
+    meta.className = 'task-history-meta';
+    meta.textContent = [
+      job.output_format ? `输出: ${job.output_format}` : '',
+      job.updated_at ? `更新: ${fmtRuntimeTime(job.updated_at)}` : '',
+      job.message || '',
+    ].filter(Boolean).join(' | ');
+
+    main.append(title, id, meta);
+
+    const actions = document.createElement('div');
+    actions.className = 'task-history-actions';
+    const viewBtn = document.createElement('button');
+    viewBtn.type = 'button';
+    viewBtn.className = 'secondary';
+    viewBtn.textContent = '查看';
+    viewBtn.addEventListener('click', () => {
+      loadDwJobById(job.job_id, { resumePolling: true, silent: false }).catch(() => {});
+    });
+    actions.appendChild(viewBtn);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'secondary';
+    removeBtn.textContent = '移除';
+    removeBtn.addEventListener('click', () => {
+      removeRecentDwJob(job.job_id);
+      renderDwJobHistory();
+    });
+    actions.appendChild(removeBtn);
+
+    row.append(main, actions);
+    wrap.appendChild(row);
+  });
+}
+
+async function refreshDwJobHistory({ silent = false } = {}) {
+  const base = getApiBaseUrl();
+  try {
+    const data = await fetchJson(`${base}/document-processing/jobs?limit=20`);
+    const jobs = replaceRecentDwJobs(Array.isArray(data?.jobs) ? data.jobs : []);
+    renderDwJobHistory();
+    if (!silent) updateDwJobHint(`已刷新最近文档任务，共 ${jobs.length} 条。`);
+    return jobs;
+  } catch (err) {
+    renderDwJobHistory();
+    if (!silent) updateDwJobHint(`刷新最近文档任务失败：${String(err)}`);
+    return getRecentDwJobs();
+  }
+}
+
+function updateDwJobHint(text) {
+  const hint = $('#dwJobHint');
+  if (!hint) return;
+  hint.textContent =
+    String(text || '').trim() ||
+    '页面会记住最近查看或正在运行的文档任务；一体流程的文档预处理进度会显示在下方。';
+}
+
+function collectDwJobFormData() {
+  const fileInput = $('#dwFileInput');
+  if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
+    throw new Error('请先选择要解析的文档');
+  }
+  const fd = new FormData();
+  fd.append('file', fileInput.files[0]);
+  fd.append('output_format', $('#dwOutputFormat')?.value || 'text');
+  fd.append('docx_strategy', $('#dwDocxStrategy')?.value || 'pdf');
+  fd.append('enable_image_analysis', $('#dwEnableImageAnalysis')?.checked !== false ? 'true' : 'false');
+  fd.append('enable_classification', $('#dwEnableClassification')?.checked ? 'true' : 'false');
+  fd.append('classification_confidence_threshold', $('#dwClassificationThreshold')?.value || '0.9');
+  fd.append('remove_watermark', $('#dwRemoveWatermark')?.checked ? 'true' : 'false');
+  fd.append('watermark_dpi', $('#dwWatermarkDpi')?.value || '200');
+  fd.append('replace_images', $('#dwReplaceImages')?.checked !== false ? 'true' : 'false');
+  fd.append('use_api', $('#dwUseApi')?.checked !== false ? 'true' : 'false');
+
+  [
+    ['vlm_api_base', '#dwVlmApiBase'],
+    ['vlm_model_name', '#dwVlmModelName'],
+    ['vlm_api_key', '#dwVlmApiKey'],
+    ['vlm_api_type', '#dwVlmApiType'],
+    ['vlm_model_version', '#dwVlmModelVersion'],
+  ].forEach(([key, selector]) => {
+    const value = String($(selector)?.value || '').trim();
+    if (value) fd.append(key, value);
+  });
+  return fd;
+}
+
+async function handleDwJobSubmit(e) {
+  e.preventDefault();
+  const btn = e?.submitter || $('#dwJobForm button[type="submit"]');
+  const base = getApiBaseUrl();
+  try {
+    setBtnLoading(btn, true);
+    renderDwJobStatus({ status: 'submitting', message: '正在提交文档任务…' }, { base });
+    const data = await fetchJson(`${base}/document-processing/jobs`, {
+      method: 'POST',
+      body: collectDwJobFormData(),
+    });
+    applyDwJobStatus(data, { base, jobId: data.job_id });
+    if (data.job_id) startDwJobPolling(base, data.job_id);
+    notify('文档任务已提交', 'success');
+  } catch (err) {
+    renderDwJobStatus({ status: 'failed', message: String(err) }, { base });
+    notify(`提交文档任务失败：${String(err)}`, 'error');
+  } finally {
+    setBtnLoading(btn, false);
+  }
+}
+
+async function fetchDwJobMaybe(base, jobId) {
+  const resp = await fetch(`${base}/document-processing/jobs/${encodeURIComponent(jobId)}`);
+  const text = await resp.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch (e) {
+    data = { raw: text };
+  }
+  if (resp.status === 404) return { found: false, data };
+  if (!resp.ok) {
+    const detail = data && (data.detail || data.message || data.error);
+    throw new Error(detail || text || resp.statusText || `HTTP ${resp.status}`);
+  }
+  return { found: true, data };
+}
+
+async function loadDwJobById(jobId, { resumePolling = true, silent = false } = {}) {
+  const normalized = String(jobId || '').trim();
+  if (!normalized) {
+    if (!silent) notify('请先输入 document_job_id', 'warning');
+    return null;
+  }
+  const base = getApiBaseUrl();
+  if (!resumePolling && currentDwJobPoller) {
+    clearInterval(currentDwJobPoller);
+    currentDwJobPoller = null;
+  }
+  try {
+    if (!silent) updateDwJobHint(`正在加载 document_job_id=${normalized}…`);
+    const result = await fetchDwJobMaybe(base, normalized);
+    if (!result.found) {
+      removeRecentDwJob(normalized);
+      renderDwJobHistory();
+      if (!silent) updateDwJobHint(`document_job_id=${normalized} 不存在，已从最近任务移除。`);
+      return null;
+    }
+    const data = result.data;
+    applyDwJobStatus(data, { base, jobId: normalized });
+    if (!isTaskTerminal(data?.status) && resumePolling) {
+      startDwJobPolling(base, normalized);
+    } else if (isTaskTerminal(data?.status) && currentDwJobPoller) {
+      clearInterval(currentDwJobPoller);
+      currentDwJobPoller = null;
+    }
+    return data;
+  } catch (err) {
+    if (!silent) updateDwJobHint(`查询 document_job_id=${normalized} 失败：${String(err)}`);
+    throw err;
+  }
+}
+
+function startDwJobPolling(base, jobId) {
+  const normalized = String(jobId || '').trim();
+  if (!normalized) return;
+  setDwJobSelection(normalized, { active: true });
+  if (currentDwJobPoller) {
+    clearInterval(currentDwJobPoller);
+    currentDwJobPoller = null;
+  }
+  currentDwJobPoller = setInterval(async () => {
+    try {
+      const result = await fetchDwJobMaybe(base, normalized);
+      if (!result.found) {
+        clearInterval(currentDwJobPoller);
+        currentDwJobPoller = null;
+        removeRecentDwJob(normalized);
+        renderDwJobHistory();
+        updateDwJobHint(`document_job_id=${normalized} 不存在，已从最近任务移除。`);
+        return;
+      }
+      const data = result.data;
+      applyDwJobStatus(data, { base, jobId: normalized });
+      if (isTaskTerminal(data?.status)) {
+        clearInterval(currentDwJobPoller);
+        currentDwJobPoller = null;
+      }
+    } catch (err) {
+      clearInterval(currentDwJobPoller);
+      currentDwJobPoller = null;
+      updateDwJobHint(`文档任务轮询异常：${String(err)}`);
+    }
+  }, 2000);
+}
+
+async function handleCancelDwJob() {
+  const page = getRuntimePageState();
+  const jobId =
+    String($('#dwJobIdInput')?.value || '').trim() ||
+    String(page.activeDwJobId || '').trim() ||
+    String(page.selectedDwJobId || '').trim();
+  if (!jobId) {
+    notify('请先输入 document_job_id 或提交过一次文档任务', 'warning');
+    return;
+  }
+  const base = getApiBaseUrl();
+  try {
+    const data = await fetchJson(`${base}/document-processing/jobs/${encodeURIComponent(jobId)}/cancel`, {
+      method: 'POST',
+    });
+    if (data?.job) applyDwJobStatus(data.job, { base, jobId });
+    notify(data?.canceled ? '已请求取消文档任务' : '当前文档任务不可取消', data?.canceled ? 'success' : 'warning');
+  } catch (err) {
+    notify(`取消文档任务失败：${String(err)}`, 'error');
+  }
+}
+
+function applyDwJobStatus(job, { base = '', jobId = '' } = {}) {
+  const normalizedJobId = String(jobId || job?.job_id || '').trim();
+  if (normalizedJobId) setDwJobSelection(normalizedJobId, { active: !isTaskTerminal(job?.status) });
+  rememberDwJob({ job_id: normalizedJobId, ...job });
+  renderDwJobHistory();
+  renderDwJobStatus(job, { base, jobId: normalizedJobId });
+
+  const statusText = String(job?.status || 'unknown');
+  const msg = String(job?.message || '').trim();
+  updateDwJobHint(
+    `当前查看 document_job_id=${normalizedJobId || '-'}（${statusText}${msg ? `，${msg}` : ''}）。`,
+  );
+}
+
+function renderDwJobStatus(job, { base = '', jobId = '' } = {}) {
+  const statusEl = $('#dwJobStatus');
+  if (statusEl) statusEl.textContent = JSON.stringify(job || {}, null, 2);
+  renderDwProgressSummary(job);
+  renderDwProgressFiles($('#dwProgressFiles'), job?.file_progress || {});
+  renderDwOutputLinks(job, { base, jobId });
+}
+
+function renderDwProgressSummary(job) {
+  const wrap = $('#dwProgressSummary');
+  if (!wrap) return;
+  wrap.replaceChildren();
+  if (!job || typeof job !== 'object') {
+    wrap.appendChild(buildDwSummaryChip('状态', '未加载'));
+    return;
+  }
+  wrap.appendChild(buildDwSummaryChip('状态', job.status || 'unknown'));
+  if (job.input_filename) wrap.appendChild(buildDwSummaryChip('文件', job.input_filename));
+  if (job.output_format || job.params?.output_format) {
+    wrap.appendChild(buildDwSummaryChip('输出', job.output_format || job.params.output_format));
+  }
+  const metrics = collectDwProgressMetrics(job.file_progress || {});
+  if (metrics.total_pages !== undefined) wrap.appendChild(buildDwSummaryChip('页数', metrics.total_pages));
+  if (metrics.total_images !== undefined) wrap.appendChild(buildDwSummaryChip('图片', metrics.total_images));
+  if (metrics.analyzed_images !== undefined) wrap.appendChild(buildDwSummaryChip('已理解', metrics.analyzed_images));
+  if (metrics.chunks !== undefined) wrap.appendChild(buildDwSummaryChip('chunk', metrics.chunks));
+  if (metrics.accepted_images !== undefined) wrap.appendChild(buildDwSummaryChip('回填图片', metrics.accepted_images));
+  if (job.updated_at) wrap.appendChild(buildDwSummaryChip('更新', fmtRuntimeTime(job.updated_at)));
+}
+
+function collectDwProgressMetrics(fileProgress) {
+  const metrics = {};
+  Object.values(fileProgress || {}).forEach((fileEntry) => {
+    const stages = fileEntry && typeof fileEntry === 'object' ? fileEntry.stages || {} : {};
+    Object.values(stages || {}).forEach((stage) => {
+      const extra = stage && typeof stage === 'object' ? stage.extra || {} : {};
+      ['total_pages', 'total_images', 'analyzed_images', 'chunks', 'accepted_images'].forEach((key) => {
+        if (extra[key] === undefined || extra[key] === null || extra[key] === '') return;
+        metrics[key] = extra[key];
+      });
+    });
+  });
+  return metrics;
+}
+
+function buildDwSummaryChip(label, value) {
+  const chip = document.createElement('span');
+  chip.className = 'dw-summary-chip';
+  chip.textContent = `${label}: ${String(value ?? '-')}`;
+  return chip;
+}
+
+function renderDwOutputLinks(job, { base = '', jobId = '' } = {}) {
+  const wrap = $('#dwOutputLinks');
+  if (!wrap) return;
+  wrap.replaceChildren();
+  const normalizedJobId = String(jobId || job?.job_id || '').trim();
+  const files = job?.files && typeof job.files === 'object' ? job.files : {};
+  if (!normalizedJobId || !Object.keys(files).length) return;
+  const linkDefs = [
+    ['text', '下载整合文本'],
+    ['markdown', '下载整合 Markdown'],
+    ['ocr_markdown', '下载 OCR Markdown'],
+    ['summary', '下载 OCR summary'],
+    ['image_analysis_summary', '下载图片理解 summary'],
+  ];
+  linkDefs.forEach(([key, label]) => {
+    if (!files[key]) return;
+    const a = document.createElement('a');
+    a.href = `${base}/document-processing/jobs/${encodeURIComponent(normalizedJobId)}/download?file_key=${encodeURIComponent(key)}`;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.textContent = label;
+    wrap.appendChild(a);
+  });
+}
+
+function renderDwProgressFiles(container, fileProgress, { onlyIntegratedDw = false } = {}) {
+  if (!container) return;
+  container.replaceChildren();
+  const entries = Object.entries(fileProgress || {});
+  const rendered = [];
+  entries.forEach(([filename, fileEntry]) => {
+    const stages = fileEntry && typeof fileEntry === 'object' ? fileEntry.stages || {} : {};
+    const stageEntries = Object.entries(stages).filter(([stage]) => {
+      if (!onlyIntegratedDw) return true;
+      const normalizedStage = String(stage || '');
+      return normalizedStage.startsWith('doc_') || normalizedStage.startsWith('dw_') || normalizedStage === 'image_classification';
+    });
+    if (!stageEntries.length) return;
+    rendered.push(buildDwFileProgressItem(filename, fileEntry, stageEntries));
+  });
+  if (!rendered.length) {
+    const empty = document.createElement('div');
+    empty.className = 'task-history-empty';
+    empty.textContent = onlyIntegratedDw ? '当前任务暂无文档预处理进度。' : '暂无文档解析进度。';
+    container.appendChild(empty);
+    return;
+  }
+  rendered.forEach((el) => container.appendChild(el));
+}
+
+function buildDwFileProgressItem(filename, fileEntry, stageEntries) {
+  const item = document.createElement('article');
+  item.className = 'dw-file-progress-item';
+
+  const head = document.createElement('div');
+  head.className = 'dw-file-progress-head';
+  head.appendChild(buildDwStatusPill(fileEntry?.status || 'processing'));
+  const name = document.createElement('div');
+  name.className = 'dw-file-progress-name';
+  name.textContent = String(filename || 'upload');
+  head.appendChild(name);
+  item.appendChild(head);
+
+  const list = document.createElement('div');
+  list.className = 'dw-stage-list';
+  stageEntries
+    .sort(([left], [right]) => {
+      const leftIndex = DOC_STAGE_ORDER.indexOf(left);
+      const rightIndex = DOC_STAGE_ORDER.indexOf(right);
+      return (leftIndex < 0 ? 999 : leftIndex) - (rightIndex < 0 ? 999 : rightIndex);
+    })
+    .forEach(([stage, stageEntry]) => {
+      list.appendChild(buildDwStageRow(stage, stageEntry || {}));
+    });
+  item.appendChild(list);
+  return item;
+}
+
+function buildDwStageRow(stage, entry) {
+  const row = document.createElement('div');
+  row.className = 'dw-stage-row';
+
+  const title = document.createElement('div');
+  title.className = 'dw-stage-title';
+  const chip = document.createElement('span');
+  chip.className = 'dw-stage-chip';
+  chip.dataset.state = String(entry.state || 'processing').toLowerCase();
+  chip.textContent = String(entry.state || 'processing');
+  title.appendChild(chip);
+  const name = document.createElement('span');
+  name.className = 'dw-stage-name';
+  name.textContent = DOC_STAGE_LABELS[stage] || stage;
+  title.appendChild(name);
+
+  const body = document.createElement('div');
+  body.className = 'dw-stage-message';
+  body.textContent = String(entry.message || '');
+  const extraText = formatDwStageExtra(entry.extra || {});
+  if (extraText) {
+    const extra = document.createElement('div');
+    extra.className = 'dw-stage-extra';
+    extra.textContent = extraText;
+    body.appendChild(extra);
+  }
+
+  row.append(title, body);
+  return row;
+}
+
+function buildDwStatusPill(status) {
+  const pill = document.createElement('span');
+  pill.className = 'status-pill';
+  pill.dataset.status = String(status || 'unknown').toLowerCase();
+  pill.textContent = String(status || 'unknown');
+  return pill;
+}
+
+function formatDwStageExtra(extra) {
+  if (!extra || typeof extra !== 'object') return '';
+  const labels = {
+    sub_stage: '子阶段',
+    total_pages: '页',
+    total_images: '图片',
+    analyzed_images: '已理解',
+    failed_images: '失败图片',
+    success_count: '成功',
+    failed_count: '失败',
+    chunks: 'chunk',
+    accepted_images: '接受图片',
+    checked_images: '判断图片',
+    ocr_seconds: 'OCR 秒',
+    image_analysis_seconds: '图片理解秒',
+    elapsed_seconds: '耗时秒',
+    processing_time: '处理秒',
+    error: '错误',
+    image_id: '图片 ID',
+    image_index: '序号',
+    output_chars: '输出字符',
+    prompt_key: 'prompt',
+    mode: '模式',
+    docx_strategy: 'DOCX',
+    requires_ocr: '需 OCR',
+    enabled: '启用',
+    threshold: '阈值',
+    classification_errors: '分类错误',
+  };
+  const parts = [];
+  Object.entries(labels).forEach(([key, label]) => {
+    if (extra[key] === undefined || extra[key] === null || extra[key] === '') return;
+    parts.push(`${label}: ${shortDwValue(extra[key])}`);
+  });
+  return parts.join(' | ');
+}
+
+function shortDwValue(value) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? String(Math.round(value * 100) / 100) : String(value);
+  }
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  return text.length > 220 ? `${text.slice(0, 220)}…` : text;
+}
+
+function renderDwIntegratedProgress(status) {
+  const wrap = $('#dwIntegratedProgress');
+  if (!wrap) return;
+  renderDwProgressFiles(wrap, status?.file_progress || {}, { onlyIntegratedDw: true });
+}
+
+function syncDwOptionsToIntegratedPipeline() {
+  const modeEl = $('#pipelineProcessingMode');
+  if (modeEl) {
+    modeEl.value = 'integrated';
+    modeEl.dispatchEvent(new Event('change', { bubbles: true }));
+    persistUiField(modeEl);
+  }
+  const mappings = [
+    ['#dwRemoveWatermark', '#integratedRemoveWatermark', 'checked'],
+    ['#dwReplaceImages', '#integratedReplaceImages', 'checked'],
+    ['#dwEnableImageAnalysis', '#integratedEnableImageAnalysis', 'checked'],
+    ['#dwEnableClassification', '#integratedEnableImageClassification', 'checked'],
+    ['#dwClassificationThreshold', '#integratedClassificationThreshold', 'value'],
+    ['#dwVlmApiBase', '#integratedVlmApiBase', 'value'],
+    ['#dwVlmModelName', '#integratedVlmModelName', 'value'],
+    ['#dwVlmApiKey', '#integratedVlmApiKey', 'value'],
+    ['#dwVlmApiType', '#integratedVlmApiType', 'value'],
+    ['#dwVlmModelVersion', '#integratedVlmModelVersion', 'value'],
+    ['#dwWatermarkDpi', '#integratedWatermarkDpi', 'value'],
+    ['#dwDocxStrategy', '#integratedDocxStrategy', 'value'],
+  ];
+  mappings.forEach(([sourceSel, targetSel, prop]) => {
+    const source = $(sourceSel);
+    const target = $(targetSel);
+    if (!source || !target) return;
+    if (prop === 'checked') target.checked = source.checked;
+    else if (prop === 'value') {
+      const value = source.value === 'auto' && targetSel === '#integratedDocxStrategy' ? 'pdf' : source.value;
+      target.value = value;
+    }
+    target.dispatchEvent(new Event('change', { bubbles: true }));
+    persistUiField(target);
+  });
+  const details = $('#integratedDocumentOptions');
+  if (details) details.open = true;
+  notify('已同步 dw 参数到完整流水线；请在完整流水线区域选择文件并提交。', 'success');
+}
+
+async function hydrateDwRuntime() {
+  renderDwJobHistory();
+  renderDwIntegratedProgress(null);
+  const recentJobs = await refreshDwJobHistory({ silent: true });
+  const page = getRuntimePageState();
+  const rememberedId =
+    String(page.activeDwJobId || '').trim() ||
+    String(page.selectedDwJobId || '').trim() ||
+    String($('#dwJobIdInput')?.value || '').trim();
+  const recentList = Array.isArray(recentJobs) ? recentJobs : [];
+  const existingIds = new Set(recentList.map((job) => String(job.job_id || '').trim()).filter(Boolean));
+  const targetId = rememberedId && existingIds.has(rememberedId)
+    ? rememberedId
+    : (recentList[0] && String(recentList[0].job_id || '').trim()) || '';
+  if (!targetId) {
+    updateDwJobHint();
+    renderDwJobStatus(null, {});
+    return;
+  }
+  try {
+    await loadDwJobById(targetId, { resumePolling: true, silent: true });
+  } catch {
+    renderDwJobHistory();
+  }
 }
 
 async function hydratePipelineRuntime() {

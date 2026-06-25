@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 
 from app.core import clients
 from app.core.config import CONFIG
+from app.services.llm import normalize_vlm_api_type
 
 
 class LLMConfigStore:
@@ -23,6 +24,8 @@ class LLMConfigStore:
                 "api_key": CONFIG.get("api_key") or "",
                 "base_url": CONFIG.get("base_url") or "",
                 "model": CONFIG.get("model") or "",
+                "api_type": CONFIG.get("api_type") or "openai",
+                "model_version": CONFIG.get("model_version") or "",
             }
             store = {"active": "default", "profiles": {"default": default_profile}}
             self._save_store(store)
@@ -42,8 +45,30 @@ class LLMConfigStore:
                 "api_key": CONFIG.get("api_key") or "",
                 "base_url": CONFIG.get("base_url") or "",
                 "model": CONFIG.get("model") or "",
+                "api_type": CONFIG.get("api_type") or "openai",
+                "model_version": CONFIG.get("model_version") or "",
             }
             store["active"] = "default"
+            self._save_store(store)
+        changed = False
+        for name, profile in list(store["profiles"].items()):
+            if not isinstance(profile, dict):
+                continue
+            if "api_type" not in profile:
+                profile["api_type"] = CONFIG.get("api_type") or "openai"
+                changed = True
+            else:
+                normalized_type = normalize_vlm_api_type(profile.get("api_type"))
+                if profile.get("api_type") != normalized_type:
+                    profile["api_type"] = normalized_type
+                    changed = True
+            if "model_version" not in profile:
+                profile["model_version"] = ""
+                changed = True
+            if not profile.get("name"):
+                profile["name"] = str(name)
+                changed = True
+        if changed:
             self._save_store(store)
         return store
 
@@ -55,15 +80,26 @@ class LLMConfigStore:
     def list_profiles(self) -> Dict[str, object]:
         return self._ensure_store()
 
-    def upsert_profile(self, name: str, api_key: str, base_url: str, model: str) -> Dict[str, object]:
+    def upsert_profile(
+        self,
+        name: str,
+        api_key: str,
+        base_url: str,
+        model: str,
+        api_type: str = "openai",
+        model_version: str = "",
+    ) -> Dict[str, object]:
         if not name:
             raise ValueError("配置名称不能为空")
+        normalized_api_type = normalize_vlm_api_type(api_type)
         store = self._ensure_store()
         store["profiles"][name] = {
             "name": name,
             "api_key": api_key,
             "base_url": base_url,
             "model": model,
+            "api_type": normalized_api_type,
+            "model_version": model_version or "",
         }
         self._save_store(store)
         return store
@@ -85,6 +121,8 @@ class LLMConfigStore:
         CONFIG["api_key"] = profile.get("api_key") or ""
         CONFIG["base_url"] = profile.get("base_url") or ""
         CONFIG["model"] = profile.get("model") or ""
+        CONFIG["api_type"] = normalize_vlm_api_type(profile.get("api_type"))
+        CONFIG["model_version"] = profile.get("model_version") or ""
 
         unsup = CONFIG.get("unsupervised")
         if isinstance(unsup, dict) and not bool(unsup.get("hypothesis_llm_locked", False)):
@@ -106,8 +144,22 @@ def list_profiles() -> Dict[str, object]:
     return LLM_CONFIG_STORE.list_profiles()
 
 
-def upsert_profile(name: str, api_key: str, base_url: str, model: str) -> Dict[str, object]:
-    return LLM_CONFIG_STORE.upsert_profile(name, api_key, base_url, model)
+def upsert_profile(
+    name: str,
+    api_key: str,
+    base_url: str,
+    model: str,
+    api_type: str = "openai",
+    model_version: str = "",
+) -> Dict[str, object]:
+    return LLM_CONFIG_STORE.upsert_profile(
+        name,
+        api_key,
+        base_url,
+        model,
+        api_type,
+        model_version,
+    )
 
 
 def delete_profile(name: str) -> Dict[str, object]:

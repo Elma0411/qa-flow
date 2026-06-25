@@ -73,23 +73,46 @@ This flow keeps the batch endpoint behavior-compatible:
 This flow is exposed as:
 `POST /batch-upload-integrated-document-pipeline`.
 
+Integrated image analysis context is built from the image's own chunk. The VLM
+prompt receives the chunk summary plus chunk text split at
+`[[IMAGE_REF:image_id]]`; immediate OCR `context_before` and `context_after`
+remain available for diagnostics but are not mixed into the VLM prompt context.
+Async integrated requests must create the task status before document
+preprocessing starts. Document preprocessing progress is stored in the normal
+task status `file_progress` map using `doc_*` stage names, then QA stages
+continue in the same per-file stage map.
+
 **OCR-Compatible Flow**
 
-`POST /process -> DocumentPipeline -> PDFPipeline/native DOCX tail -> selected text/markdown output`
+`POST /process -> DocumentPipeline -> PDF conversion when needed -> OCR pipeline -> selected text/markdown output`
 
 This flow must keep `output_format=text|markdown|ocr_markdown` compatible.
+Standalone async document processing is exposed separately through
+`/document-processing/jobs`; it must not change the compatibility behavior of
+`POST /process`.
 
 ## Runtime Configuration Surface
 
 VLM API configuration:
 
+- Frontend LLM profiles persist `api_key`, `base_url`, `model`, `api_type`,
+  and `model_version`. Activating a profile updates the backend runtime config
+  used by the unified `app.services.llm` client path.
+- LLM profile `api_type` supports `openai` and `lmp_cloud`; `model_version` is
+  optional. Advanced client controls remain environment/default driven.
 - Request-level VLM fields, when present, take precedence over environment
   variables.
+- Integrated complete-pipeline requests may pass `vlm_api_base`,
+  `vlm_model_name`, `vlm_api_key`, `vlm_api_type`, and `vlm_model_version` for
+  image understanding. When omitted, integrated preprocessing may fall back to
+  the backend active LLM/VLM configuration.
 - Supported environment variables are `VLM_API_BASE`, `VLM_MODEL_NAME`,
   `VLM_API_KEY`, `VLM_API_TYPE`, and `VLM_MODEL_VERSION`.
 - `VLM_API_TYPE` defaults to `openai`. Endpoint, model, and key have no code
   business defaults; enabling image analysis without them must fail with a clear
   configuration error instead of attempting a hardcoded local endpoint.
+- API keys must not be persisted into task status payloads or frontend
+  localStorage caches.
 
 OCR image replacement:
 
@@ -100,6 +123,33 @@ OCR image replacement:
   environment default.
 - Integrated preprocessing records the resolved value in task status
   (`replace_images`) and each `ocr_summary` item.
+
+Docker API ports:
+
+- `QA_FLOW_API_HOST_PORT` controls the host port mapped to container port
+  `12000` and defaults to `12000`.
+- `OCR_API_HOST_PORT` controls the host port mapped to container port `11169`
+  and defaults to `11169`.
+
+Document preprocessing concurrency:
+
+- `DOC_MAX_CONCURRENCY` controls the default number of uploaded files processed
+  concurrently during integrated document preprocessing. It defaults to `1`.
+- `OCR_MAX_CONCURRENCY` controls the number of concurrent OCR extraction calls
+  admitted by integrated document preprocessing. It defaults to `1`.
+- `IMAGE_ANALYSIS_MAX_CONCURRENCY` controls concurrent VLM image-analysis
+  calls in API mode. It defaults to `1`.
+- `IMAGE_FIT_MAX_CONCURRENCY` controls concurrent image placement-fit checks.
+  It defaults to `1`.
+- `VLM_API_MAX_CONCURRENT_REQUESTS` remains the per shared VLM client request
+  gate. Raising image-analysis concurrency without raising this gate may still
+  serialize calls for the same VLM profile.
+- `POST /batch-upload-integrated-document-pipeline` accepts optional
+  `doc_max_concurrency`, `ocr_max_concurrency`,
+  `image_analysis_max_concurrency`, and `image_fit_max_concurrency` form
+  fields. Request fields override environment defaults for that request.
+- `docx_strategy` is accepted for compatibility, but document processing
+  normalizes DOC and DOCX handling to PDF conversion before OCR.
 
 Image classifier classes:
 
@@ -127,11 +177,11 @@ Stable `OCRResult` fields:
 
 - `pdf_name`: source document name.
 - `total_pages`: page count when known.
-- `markdown_content`: OCR/native markdown content containing image `<div>` tags
+- `markdown_content`: OCR markdown content containing image `<div>` tags
   before integrated marker replacement.
 - `images_info`: ordered list of `ImageInfo`.
 - `figure_titles`: optional figure title metadata.
-- `processing_time`: OCR/native extraction seconds.
+- `processing_time`: OCR extraction seconds.
 - `output_dir`: directory where relative image paths can be resolved.
 - `to_dict()`: serializable summary for status/debug output.
 
@@ -141,7 +191,7 @@ Stable `ImageInfo` fields:
 - `file_path`: absolute path or path relative to `OCRResult.output_dir`.
 - `page_number`: source page number when available.
 - `div_tag`: original markdown image block used for marker replacement.
-- `context_before` and `context_after`: immediate OCR/native context.
+- `context_before` and `context_after`: immediate OCR context.
 
 Rules:
 
@@ -150,6 +200,10 @@ Rules:
 - Keep image paths resolvable until downstream image analysis finishes.
 - If markdown no longer contains image `<div>` tags, provide an equivalent
   stable marker source before integrated chunking.
+- Integrated image understanding should use the chunk summary and marker-split
+  chunk text as its prompt context. Immediate OCR context is retained as
+  metadata and may be used for diagnostics, but should not be concatenated into
+  the image VLM prompt by default.
 - Adding optional fields is allowed when consumers tolerate absence.
 
 ## Contract B: File Content Record
@@ -272,6 +326,10 @@ Required groups:
 - Runtime: `llm_config`, `max_concurrency`, `chunk_max_concurrency`,
   `chunk_max_attempts`, `augment_per_qa`, `augment_max_concurrency`.
 - Classification: `knowledge_classifier`, `use_category_prompt_templates`.
+- Integrated image understanding: `enable_image_analysis`,
+  `enable_image_classification`, `classification_confidence_threshold`,
+  `image_context_summary_mode`, `image_fit_check_enabled`,
+  `image_fit_min_score`, and request-level VLM override fields when present.
 
 Rules:
 
@@ -280,6 +338,46 @@ Rules:
   and `job_context` when they need to be visible after scheduling.
 - Do not add route-only defaults that differ between standard and integrated
   flows unless the difference is documented here.
+- Integrated document progress stages use `file_progress[filename].stages` with
+  stage names prefixed by `doc_` (`doc_input`, `doc_ocr`,
+  `doc_pre_chunking`, `doc_image_analysis`, `doc_placement`, `doc_handoff`,
+  and error variants). They are additive and must not remove later QA stage
+  entries.
+- `doc_handoff` means document preprocessing has produced `file_contents` /
+  `pre_split_chunks` for QA; it is not the terminal state of the full pipeline.
+
+## Contract D1: Standalone Document Job Status
+
+Producer:
+
+- `/document-processing/jobs`
+- `app.services.document_processing.jobs.DocumentProcessingJobManager`
+
+Consumers:
+
+- static frontend document-processing panel
+- operators inspecting persisted job store
+
+Stable job fields:
+
+- `job_id`: document job identifier.
+- `status`: `queued`, `running`, `completed`, `failed`, `canceled`, or
+  temporary cancellation states.
+- `message`: human-readable current status or error reason.
+- `input_filename`: original display filename.
+- `params`: normalized document-processing parameters.
+- `file_progress`: same stage map shape as pipeline task status.
+- `result`: final `DocumentPipeline` result when completed.
+- `files`: existing output file paths keyed by `text`, `markdown`,
+  `ocr_markdown`, `summary`, and `image_analysis_summary` when available.
+
+Rules:
+
+- Job progress callbacks are optional and must never fail the underlying
+  document processing.
+- `files` should only include outputs that exist on disk.
+- `/process` remains the synchronous compatibility endpoint; async job APIs are
+  additive.
 
 ## Contract E: QA Item Output
 

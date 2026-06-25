@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Callable, Dict, Optional
 
 from app.services.document_processing.input_adapters.common import IMAGE_SUFFIXES, PDF_SUFFIXES
 from app.services.document_processing.input_adapters.libreoffice_adapter import convert_to_pdf
@@ -16,13 +16,36 @@ from app.services.document_processing.pipeline import PDFPipeline
 
 logger = logging.getLogger(__name__)
 
-DOCX_STRATEGIES = {"auto", "native", "pdf"}
+DOCX_STRATEGIES = {"pdf"}
 SUPPORTED_DOCUMENT_SUFFIXES = PDF_SUFFIXES | IMAGE_SUFFIXES | {".ofd", ".docx", ".doc"}
+
+
+def _emit_progress(
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]],
+    *,
+    stage: str,
+    state: str,
+    message: str,
+    extra: Optional[Dict[str, Any]] = None,
+) -> None:
+    if progress_callback is None:
+        return
+    try:
+        progress_callback(
+            {
+                "stage": stage,
+                "state": state,
+                "message": message,
+                "extra": extra or {},
+            }
+        )
+    except Exception:
+        logger.debug("Document pipeline progress callback failed", exc_info=True)
 
 
 class DocumentPipeline:
     """
-    Route supported input formats to either PDFPipeline or a native adapter.
+    Route supported input formats to PDFPipeline-backed processing.
     """
 
     def __init__(self, pdf_pipeline: PDFPipeline):
@@ -38,6 +61,7 @@ class DocumentPipeline:
         watermark_dpi: int,
         docx_strategy: str = "auto",
         classification_confidence_threshold: float = 0.0,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         input_path = Path(file_path)
         if not input_path.exists():
@@ -46,6 +70,13 @@ class DocumentPipeline:
         suffix = input_path.suffix.lower()
         if suffix not in SUPPORTED_DOCUMENT_SUFFIXES:
             raise ValueError(f"Unsupported file type: {suffix}")
+        _emit_progress(
+            progress_callback,
+            stage="format_routing",
+            state="processing",
+            message=f"识别输入格式：{suffix.lstrip('.') or 'unknown'}",
+            extra={"suffix": suffix},
+        )
 
         output_dir = Path(custom_output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -59,6 +90,7 @@ class DocumentPipeline:
                 remove_watermark=remove_watermark,
                 watermark_dpi=watermark_dpi,
                 classification_confidence_threshold=classification_confidence_threshold,
+                progress_callback=progress_callback,
             )
             return self._with_metadata(
                 result,
@@ -72,7 +104,15 @@ class DocumentPipeline:
         normalized_dir.mkdir(parents=True, exist_ok=True)
 
         if suffix == ".ofd":
+            _emit_progress(progress_callback, stage="format_conversion", state="processing", message="OFD 转 PDF 中")
             normalized_pdf = Path(ofd_to_pdf(str(input_path), str(normalized_dir)))
+            _emit_progress(
+                progress_callback,
+                stage="format_conversion",
+                state="completed",
+                message="OFD 转 PDF 完成",
+                extra={"normalized_input_path": str(normalized_pdf)},
+            )
             result = self._process_pdf_pipeline(
                 input_path=normalized_pdf,
                 output_dir=output_dir,
@@ -81,6 +121,7 @@ class DocumentPipeline:
                 remove_watermark=remove_watermark,
                 watermark_dpi=watermark_dpi,
                 classification_confidence_threshold=classification_confidence_threshold,
+                progress_callback=progress_callback,
             )
             return self._with_metadata(
                 result,
@@ -91,7 +132,15 @@ class DocumentPipeline:
             )
 
         if suffix == ".doc":
+            _emit_progress(progress_callback, stage="format_conversion", state="processing", message="DOC 转 PDF 中")
             normalized_pdf = Path(convert_to_pdf(str(input_path), str(normalized_dir)))
+            _emit_progress(
+                progress_callback,
+                stage="format_conversion",
+                state="completed",
+                message="DOC 转 PDF 完成",
+                extra={"normalized_input_path": str(normalized_pdf)},
+            )
             result = self._process_pdf_pipeline(
                 input_path=normalized_pdf,
                 output_dir=output_dir,
@@ -100,6 +149,7 @@ class DocumentPipeline:
                 remove_watermark=remove_watermark,
                 watermark_dpi=watermark_dpi,
                 classification_confidence_threshold=classification_confidence_threshold,
+                progress_callback=progress_callback,
             )
             return self._with_metadata(
                 result,
@@ -119,6 +169,7 @@ class DocumentPipeline:
             watermark_dpi=watermark_dpi,
             docx_strategy=docx_strategy,
             classification_confidence_threshold=classification_confidence_threshold,
+            progress_callback=progress_callback,
         )
 
     def _process_docx(
@@ -133,81 +184,20 @@ class DocumentPipeline:
         watermark_dpi: int,
         docx_strategy: str,
         classification_confidence_threshold: float,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         strategy = self._normalize_docx_strategy(docx_strategy)
-
-        if strategy == "pdf":
-            return self._process_docx_as_pdf(
-                input_path=input_path,
-                output_dir=output_dir,
-                normalized_dir=normalized_dir,
-                enable_image_analysis=enable_image_analysis,
-                enable_classification=enable_classification,
-                remove_watermark=remove_watermark,
-                watermark_dpi=watermark_dpi,
-                fallback_reason=None,
-                requested_strategy=strategy,
-                classification_confidence_threshold=classification_confidence_threshold,
-            )
-
-        try:
-            result = self._process_docx_native(
-                input_path=input_path,
-                output_dir=output_dir,
-                enable_image_analysis=enable_image_analysis,
-                enable_classification=enable_classification,
-                classification_confidence_threshold=classification_confidence_threshold,
-            )
-            return self._with_metadata(
-                result,
-                input_type="docx",
-                normalized_input_path=str(input_path),
-                processing_path="docx->native->image_analysis->text_integration",
-                docx_strategy=strategy,
-            )
-        except Exception as exc:
-            if strategy == "native":
-                raise
-
-            logger.warning(
-                "DOCX native processing failed, falling back to PDF conversion: %s",
-                exc,
-                exc_info=True,
-            )
-            return self._process_docx_as_pdf(
-                input_path=input_path,
-                output_dir=output_dir,
-                normalized_dir=normalized_dir,
-                enable_image_analysis=enable_image_analysis,
-                enable_classification=enable_classification,
-                remove_watermark=remove_watermark,
-                watermark_dpi=watermark_dpi,
-                fallback_reason=str(exc),
-                requested_strategy=strategy,
-                classification_confidence_threshold=classification_confidence_threshold,
-            )
-
-    def _process_docx_native(
-        self,
-        *,
-        input_path: Path,
-        output_dir: Path,
-        enable_image_analysis: bool,
-        enable_classification: bool,
-        classification_confidence_threshold: float,
-    ) -> Dict[str, Any]:
-        from app.services.document_processing.input_adapters.docx_native_adapter import parse_docx_to_ocr_result
-
-        ocr_result = parse_docx_to_ocr_result(
-            docx_path=str(input_path),
-            output_dir=str(output_dir),
-        )
-        return self.pdf_pipeline.process_from_ocr_result(
-            ocr_result=ocr_result,
-            custom_output_dir=str(output_dir),
+        return self._process_docx_as_pdf(
+            input_path=input_path,
+            output_dir=output_dir,
+            normalized_dir=normalized_dir,
             enable_image_analysis=enable_image_analysis,
             enable_classification=enable_classification,
+            remove_watermark=remove_watermark,
+            watermark_dpi=watermark_dpi,
+            requested_strategy=strategy,
             classification_confidence_threshold=classification_confidence_threshold,
+            progress_callback=progress_callback,
         )
 
     def _process_docx_as_pdf(
@@ -220,11 +210,19 @@ class DocumentPipeline:
         enable_classification: bool,
         remove_watermark: bool,
         watermark_dpi: int,
-        fallback_reason: str | None,
         requested_strategy: str,
         classification_confidence_threshold: float,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
+        _emit_progress(progress_callback, stage="format_conversion", state="processing", message="DOCX 转 PDF 中")
         normalized_pdf = Path(convert_to_pdf(str(input_path), str(normalized_dir)))
+        _emit_progress(
+            progress_callback,
+            stage="format_conversion",
+            state="completed",
+            message="DOCX 转 PDF 完成",
+            extra={"normalized_input_path": str(normalized_pdf)},
+        )
         result = self._process_pdf_pipeline(
             input_path=normalized_pdf,
             output_dir=output_dir,
@@ -233,6 +231,7 @@ class DocumentPipeline:
             remove_watermark=remove_watermark,
             watermark_dpi=watermark_dpi,
             classification_confidence_threshold=classification_confidence_threshold,
+            progress_callback=progress_callback,
         )
         metadata = self._with_metadata(
             result,
@@ -241,8 +240,6 @@ class DocumentPipeline:
             processing_path="docx->pdf->ocr_pipeline",
             docx_strategy=requested_strategy,
         )
-        if fallback_reason:
-            metadata["docx_native_fallback_reason"] = fallback_reason
         return metadata
 
     def _process_pdf_pipeline(
@@ -255,6 +252,7 @@ class DocumentPipeline:
         remove_watermark: bool,
         watermark_dpi: int,
         classification_confidence_threshold: float,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         return self.pdf_pipeline.process_pdf(
             pdf_path=str(input_path),
@@ -264,16 +262,11 @@ class DocumentPipeline:
             remove_watermark=remove_watermark,
             watermark_dpi=watermark_dpi,
             classification_confidence_threshold=classification_confidence_threshold,
+            progress_callback=progress_callback,
         )
 
     def _normalize_docx_strategy(self, raw_strategy: str) -> str:
-        strategy = str(raw_strategy or "auto").strip().lower()
-        if strategy not in DOCX_STRATEGIES:
-            raise ValueError(
-                f"Unsupported docx_strategy={raw_strategy!r}; expected one of "
-                f"{', '.join(sorted(DOCX_STRATEGIES))}"
-            )
-        return strategy
+        return "pdf"
 
     def _with_metadata(
         self,

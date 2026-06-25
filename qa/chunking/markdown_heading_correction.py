@@ -8,9 +8,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from openai import OpenAI
-
-from qa.common import extract_first_choice_content, safe_response_dump
+from qa.common import safe_response_dump
 
 
 _RE_MARKDOWN_HEADING = re.compile(
@@ -127,7 +125,7 @@ def build_heading_correction_prompt(*, headings_payload: Sequence[Dict[str, Any]
 
 
 def request_heading_level_corrections(
-    client: OpenAI,
+    client: Any,
     *,
     headings: Sequence[MarkdownHeadingLine],
     model: str,
@@ -138,10 +136,10 @@ def request_heading_level_corrections(
         return None
     payload = build_heading_correction_payload(headings)
     prompt = build_heading_correction_prompt(headings_payload=payload)
-    response = client.chat.completions.create(
+    raw_content = client.create_chat_completion_text(
         model=model,
-        temperature=0,
-        timeout=request_timeout,
+        temperature=0.0,
+        timeout=float(request_timeout),
         response_format={"type": "json_object"},
         messages=[
             {
@@ -157,14 +155,13 @@ def request_heading_level_corrections(
             },
         ],
     )
-    raw_content = extract_first_choice_content(response)
     items = _parse_level_items(raw_content)
     if debug_writer:
         debug_writer(
             {
                 "event": "markdown_heading_correction_llm_call",
                 "input_headings": payload,
-                "raw_response": safe_response_dump(response),
+                "raw_response": safe_response_dump(raw_content),
                 "parsed_items": items,
             }
         )
@@ -208,7 +205,7 @@ def apply_heading_level_corrections(
 def correct_markdown_heading_levels(
     markdown_text: str,
     *,
-    client: OpenAI,
+    client: Any,
     model: str,
     request_timeout: int,
     original_filename: str = "",

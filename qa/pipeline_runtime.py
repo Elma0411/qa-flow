@@ -6,8 +6,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from openai import OpenAI
-
 from qa.generation import (
     DEFAULT_MAX_UNIT_CHARS,
     DEFAULT_SEMANTIC_TOP_K,
@@ -182,7 +180,7 @@ def run_one_step_chunk_worker(
     source_chunk_meta: Dict[str, Any],
     evidence_index: QADocumentEvidenceIndex,
     runtime: OneStepPipelineRuntime,
-    client: OpenAI,
+    client: Any,
     debug_writer: Optional[Callable[[Dict[str, Any]], None]],
     item_normalizer_with_reason: Callable[..., Tuple[Optional[Dict[str, Any]], str]],
     source_fact_detail_validator: Callable[..., Tuple[bool, str]],

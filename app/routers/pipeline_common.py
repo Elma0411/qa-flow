@@ -4,7 +4,6 @@
 import csv
 from typing import Any, Dict, List, Optional
 
-from openai import OpenAI
 from pydantic import BaseModel
 
 from app.core.clients import get_default_openai_client
@@ -38,7 +37,7 @@ def _collect_pipeline_output_artifact_paths(status_payload: Dict[str, Any]) -> L
     return collected
 
 
-def get_llm_client() -> OpenAI:
+def get_llm_client():
     return get_default_openai_client()
 
 

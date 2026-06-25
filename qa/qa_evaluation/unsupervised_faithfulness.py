@@ -16,7 +16,7 @@ from app.core.runtime_paths import (
     ERLANGSHEN_NLI_MODEL_NAME,
     resolve_model_reference,
 )
-from qa.common import detect_language, extract_first_choice_content
+from qa.common import detect_language
 from qa.qa_evaluation.unsupervised_runtime import (
     get_or_create_infer_lock,
     release_cached_models_for_device,
@@ -36,11 +36,12 @@ except Exception:  # pragma: no cover - optional dependency
     TRANSFORMERS_AVAILABLE = False
 
 try:
-    from openai import OpenAI  # type: ignore
+    from app.services.llm import VLMClientConfig, create_vlm_client as _create_vlm_client
 
     OPENAI_AVAILABLE = True
 except Exception:  # pragma: no cover - optional dependency
-    OpenAI = None  # type: ignore
+    _create_vlm_client = None  # type: ignore
+    VLMClientConfig = None  # type: ignore
     OPENAI_AVAILABLE = False
 
 
@@ -151,9 +152,9 @@ Output JSON:
 _LLM_CLIENT_LOCAL = threading.local()
 
 
-def _get_llm_client(*, api_key: str, base_url: str) -> Any:
-    if not OPENAI_AVAILABLE or OpenAI is None:
-        raise RuntimeError("OpenAI client is unavailable for hypothesis generation")
+def _get_llm_client(*, api_key: str, base_url: str, model_name: str = "", timeout_seconds: float = 120.0) -> Any:
+    if not OPENAI_AVAILABLE or _create_vlm_client is None:
+        raise RuntimeError("LLM client is unavailable for hypothesis generation")
     key = str(api_key or "").strip()
     url = str(base_url or "").strip()
     if not key:
@@ -163,7 +164,14 @@ def _get_llm_client(*, api_key: str, base_url: str) -> Any:
     cached_key = getattr(_LLM_CLIENT_LOCAL, "api_key", None)
     cached_url = getattr(_LLM_CLIENT_LOCAL, "base_url", None)
     if cached is None or cached_key != key or cached_url != url:
-        client = OpenAI(api_key=key, base_url=url) if url else OpenAI(api_key=key)
+        client = _create_vlm_client(
+            VLMClientConfig.from_values(
+                api_base=url,
+                model_name=model_name or "default",
+                api_key=key,
+                timeout_seconds=timeout_seconds,
+            )
+        )
         _LLM_CLIENT_LOCAL.client = client
         _LLM_CLIENT_LOCAL.api_key = key
         _LLM_CLIENT_LOCAL.base_url = url
@@ -384,16 +392,16 @@ def _llm_build_hypotheses(
     last_error: Optional[str] = None
     for _ in range(max(1, int(max_retries or 1))):
         try:
-            resp = llm_client.chat.completions.create(
+            raw = llm_client.create_chat_completion_text(
                 model=llm_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False, indent=2)},
                 ],
+                temperature=0.0,
                 response_format={"type": "json_object"},
-                timeout=int(request_timeout or 60),
-            )
-            raw = extract_first_choice_content(resp).strip()
+                timeout=float(request_timeout or 60),
+            ).strip()
             parsed = None
             try:
                 parsed = json.loads(raw) if raw else None
@@ -844,8 +852,8 @@ def attach_faithfulness(
     if mode != "llm":
         mode = "llm"
 
-    if not OPENAI_AVAILABLE or OpenAI is None:
-        raise RuntimeError("OpenAI client is unavailable for hypothesis generation")
+    if not OPENAI_AVAILABLE or _create_vlm_client is None:
+        raise RuntimeError("LLM client is unavailable for hypothesis generation")
 
     api_key = str(llm_api_key or DEFAULT_HYPOTHESIS_API_KEY or "").strip()
     base_url = str(llm_base_url or DEFAULT_HYPOTHESIS_BASE_URL or "").strip()

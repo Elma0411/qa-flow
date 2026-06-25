@@ -151,7 +151,7 @@ start_infra_services() {
 }
 
 start_optional_classifier() {
-    if ! is_truthy "${START_CLASSIFIER_SERVICE:-false}"; then
+    if ! is_truthy "${START_CLASSIFIER_SERVICE:-true}"; then
         return 0
     fi
 

@@ -7,7 +7,7 @@ import os
 import time
 from typing import Any, Dict, List, Optional
 
-from openai import OpenAI
+from app.services.llm import LLMClientConfig, get_llm_client_pool
 
 from qa import process_text_to_qa_one_step
 from qa.augmentation import augment_qa_pairs
@@ -374,9 +374,14 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                     "一步式生成问答对中",
                     extra={"debug_file": debug_file},
                 )
-                client = OpenAI(
-                    api_key=llm_config["api_key"],
-                    base_url=llm_config["base_url"],
+                client = get_llm_client_pool().get_client(
+                    LLMClientConfig(
+                        api_base=llm_config.get("base_url"),
+                        model_name=llm_config.get("model"),
+                        api_key=llm_config.get("api_key"),
+                        api_type=llm_config.get("api_type"),
+                        model_version=llm_config.get("model_version"),
+                    )
                 )
                 loop = asyncio.get_running_loop()
                 gen_last_update = 0.0

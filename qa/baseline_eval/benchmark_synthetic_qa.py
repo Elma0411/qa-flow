@@ -12,7 +12,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, Iterable, List, Tuple
 
 import numpy as np
-from openai import OpenAI
+
+from app.services.llm import VLMClientConfig, create_vlm_client
 import hashlib
 import threading
 
@@ -218,15 +219,24 @@ def _build_auto_few_shot(triples: List[Dict[str, Any]], max_examples: int = 4) -
     return examples
 
 
-def _build_generation_client(cfg: Dict[str, Any]) -> OpenAI:
+def _build_generation_client(cfg: Dict[str, Any]):
     """
     生成侧 client：默认优先使用 BENCH_GEN_* / CLI 传入的配置。
     """
-    return OpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"])
+    return create_vlm_client(
+        VLMClientConfig.from_values(
+            api_base=cfg.get("base_url", ""),
+            model_name=cfg.get("model", "default"),
+            api_key=cfg.get("api_key", ""),
+            api_type=cfg.get("api_type"),
+            model_version=cfg.get("model_version"),
+            timeout_seconds=float(cfg.get("request_timeout", 120)),
+        )
+    )
 
 
 def _generate_synthetic_qa_for_context(
-    client: OpenAI,
+    client: Any,
     context: str,
     qa_per_context: int,
     gen_config: Dict[str, Any],
@@ -386,8 +396,8 @@ def _pick_best_aligned_qa_with_cached_candidates(
 
 
 def _evaluate_context_group(
-    judge_client: OpenAI,
-    gen_client: OpenAI,
+    judge_client: Any,
+    gen_client: Any,
     gen_config: Dict[str, Any],
     context: str,
     triples: List[Dict[str, Any]],

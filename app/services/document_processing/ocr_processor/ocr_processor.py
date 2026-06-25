@@ -9,7 +9,7 @@ import json
 import logging
 import threading
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple, Any
+from typing import Callable, List, Dict, Optional, Tuple, Any
 from paddleocr import PPStructureV3
 
 from .watermark_remover import WatermarkRemover
@@ -18,6 +18,29 @@ from .image_replacer import ImageReplacer  # 新增导入
 
 # 配置日志
 logger = logging.getLogger(__name__)
+
+
+def _emit_progress(
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]],
+    *,
+    stage: str,
+    state: str,
+    message: str,
+    extra: Optional[Dict[str, Any]] = None,
+) -> None:
+    if progress_callback is None:
+        return
+    try:
+        progress_callback(
+            {
+                "stage": stage,
+                "state": state,
+                "message": message,
+                "extra": extra or {},
+            }
+        )
+    except Exception:
+        logger.debug("OCR progress callback failed", exc_info=True)
 
 
 def resolve_model_base_dir(model_base_dir: str) -> Path:
@@ -149,6 +172,7 @@ class SimpleOCRProcessor:
         output_dir: str,
         remove_watermark: Optional[bool] = None,
         watermark_dpi: Optional[int] = None,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> OCRResult:
         """
         处理PDF文档的完整流程
@@ -181,6 +205,17 @@ class SimpleOCRProcessor:
 
         logger.info(f"开始处理PDF: {pdf_path_obj.name}")
         logger.info(f"输出目录: {output_dir}")
+        _emit_progress(
+            progress_callback,
+            stage="ocr",
+            state="processing",
+            message="OCR 处理开始",
+            extra={
+                "filename": pdf_path_obj.name,
+                "remove_watermark": effective_remove_watermark,
+                "replace_images": self.replace_images,
+            },
+        )
 
         # 保存原始PDF路径到类属性，用于后续图片替换
         logger.info(f"图片替换: {'启用' if self.replace_images else '禁用'}")
@@ -194,6 +229,7 @@ class SimpleOCRProcessor:
 
         if effective_remove_watermark and watermark_remover:
             logger.info("步骤0: 去除PDF水印...")
+            _emit_progress(progress_callback, stage="watermark", state="processing", message="去水印预处理中")
             try:
                 # 调用水印去除器，水印去除后的PDF会自动保存到output_dir
                 processed_pdf_path = watermark_remover.preprocess(
@@ -205,11 +241,26 @@ class SimpleOCRProcessor:
                 if processed_pdf_path != pdf_path:
                     watermark_removed_pdf_path = processed_pdf_path
                     logger.info(f"水印去除完成，使用处理后的PDF: {watermark_removed_pdf_path}")
+                    _emit_progress(
+                        progress_callback,
+                        stage="watermark",
+                        state="completed",
+                        message="去水印完成",
+                        extra={"processed_path": watermark_removed_pdf_path},
+                    )
                 else:
                     logger.warning("水印去除失败，使用原PDF进行OCR处理")
+                    _emit_progress(progress_callback, stage="watermark", state="completed", message="未生成去水印文件，继续使用原文件")
 
             except Exception as e:
                 logger.error(f"水印去除失败，使用原PDF: {e}")
+                _emit_progress(
+                    progress_callback,
+                    stage="watermark",
+                    state="completed",
+                    message=f"去水印失败，继续使用原文件：{e}",
+                    extra={"error": str(e)},
+                )
                 processed_pdf_path = pdf_path
         if input_kind == "image":
             try:
@@ -232,12 +283,15 @@ class SimpleOCRProcessor:
             # 步骤 1: 使用 PPStructureV3 处理 PDF
             logger.info("步骤 1: 使用 PPStructureV3 进行 PDF 识别...")
             logger.info("Waiting for shared OCR predict lock")
+            _emit_progress(progress_callback, stage="ocr_predict", state="processing", message="等待 OCR 模型识别")
             with self._predict_lock:
                 logger.info("Acquired shared OCR predict lock")
+                _emit_progress(progress_callback, stage="ocr_predict", state="processing", message="OCR 模型识别中")
                 output = self.pipeline.predict(input=str(processed_pdf_path))
 
             # 步骤2: 先收集所有页的块信息，为跨页搜索做准备
             logger.info("步骤2: 收集所有页的块信息...")
+            _emit_progress(progress_callback, stage="page_collect", state="processing", message="收集页面块信息")
             all_pages_blocks = []  # 存储每页的块信息
             all_markdown_pages = []
 
@@ -250,10 +304,25 @@ class SimpleOCRProcessor:
                 md_info = page_result.markdown
                 all_markdown_pages.append(md_info)
                 logger.info(f"收集第 {page_num} 页的块信息: {len(page_blocks)} 个块")
+                _emit_progress(
+                    progress_callback,
+                    stage="page_collect",
+                    state="processing",
+                    message=f"已收集第 {page_num} 页块信息",
+                    extra={"pages_done": page_num, "last_page_blocks": len(page_blocks)},
+                )
+            _emit_progress(
+                progress_callback,
+                stage="page_collect",
+                state="completed",
+                message=f"页面块信息收集完成：{len(all_markdown_pages)} 页",
+                extra={"total_pages": len(all_markdown_pages)},
+            )
 
             # 步骤3: 处理每一页的图片，支持跨页搜索
             all_images_info = []
             all_figure_titles = []
+            _emit_progress(progress_callback, stage="image_extract", state="processing", message="提取图片及上下文")
 
             for page_num, page_result in enumerate(output, 1):
                 logger.info(f"步骤3: 处理第 {page_num} 页的图片...")
@@ -285,11 +354,37 @@ class SimpleOCRProcessor:
                     all_images_info.extend(page_images_info)
                     all_figure_titles.extend(page_titles)
                     logger.info(f"第 {page_num} 页提取了 {len(page_images_info)} 张图片，{len(page_titles)} 个标题")
+                    _emit_progress(
+                        progress_callback,
+                        stage="image_extract",
+                        state="processing",
+                        message=f"第 {page_num} 页提取 {len(page_images_info)} 张图片",
+                        extra={
+                            "pages_done": page_num,
+                            "images_done": len(all_images_info),
+                            "last_page_images": len(page_images_info),
+                        },
+                    )
                 else:
                     logger.info(f"第 {page_num} 页没有图片")
+                    _emit_progress(
+                        progress_callback,
+                        stage="image_extract",
+                        state="processing",
+                        message=f"第 {page_num} 页没有图片",
+                        extra={"pages_done": page_num, "images_done": len(all_images_info)},
+                    )
+            _emit_progress(
+                progress_callback,
+                stage="image_extract",
+                state="completed",
+                message=f"图片提取完成：{len(all_images_info)} 张",
+                extra={"total_images": len(all_images_info), "figure_titles": len(all_figure_titles)},
+            )
 
             # 步骤4: 合并所有页的markdown内容
             logger.info("步骤4: 合并所有页的Markdown内容...")
+            _emit_progress(progress_callback, stage="markdown_merge", state="processing", message="合并 OCR Markdown")
             combined_markdown_result = self.pipeline.concatenate_markdown_pages(all_markdown_pages)
             
             # 兼容不同环境/版本的PaddleOCR返回类型
@@ -298,10 +393,18 @@ class SimpleOCRProcessor:
             # 步骤5: 为图片添加div标签信息
             logger.info("步骤5: 提取图片位置信息...")
             images_with_div_tags = self._extract_image_div_tags(combined_markdown, all_images_info)
+            _emit_progress(
+                progress_callback,
+                stage="markdown_merge",
+                state="completed",
+                message="OCR Markdown 合并完成",
+                extra={"markdown_chars": len(combined_markdown), "images_with_div_tags": len(images_with_div_tags)},
+            )
 
             # 步骤6: 替换图片为原始PDF的高质量图片
             if self.replace_images and self.image_replacer and images_with_div_tags:
                 logger.info("步骤6: 替换图片为原始PDF中的高质量图片...")
+                _emit_progress(progress_callback, stage="image_replacement", state="processing", message="替换 OCR 图片为原文档裁图")
 
                 try:
                     # 创建临时OCR结果用于替换
@@ -329,10 +432,27 @@ class SimpleOCRProcessor:
                     success_count = sum(1 for stat in replacement_stats if stat.get('success', False))
                     logger.info(
                         f"图片替换完成: 成功 {success_count} 张, 失败 {len(replacement_stats) - success_count} 张")
+                    _emit_progress(
+                        progress_callback,
+                        stage="image_replacement",
+                        state="completed",
+                        message=f"图片替换完成：成功 {success_count} 张",
+                        extra={
+                            "success_count": success_count,
+                            "failed_count": len(replacement_stats) - success_count,
+                        },
+                    )
 
                 except Exception as e:
                     logger.error(f"图片替换过程中出错: {e}", exc_info=True)
                     logger.warning("继续使用原始图片，跳过图片替换步骤")
+                    _emit_progress(
+                        progress_callback,
+                        stage="image_replacement",
+                        state="completed",
+                        message=f"图片替换失败，继续使用 OCR 图片：{e}",
+                        extra={"error": str(e)},
+                    )
 
             # 计算处理时间
             processing_time = time.perf_counter() - start_time
@@ -350,12 +470,31 @@ class SimpleOCRProcessor:
 
             # 步骤7: 保存输出文件
             logger.info("步骤7: 保存输出文件...")
+            _emit_progress(progress_callback, stage="ocr_output", state="processing", message="保存 OCR 输出文件")
             self._save_output_files(result, output_dir_obj)
             logger.info(f"PDF处理完成! 共{len(all_markdown_pages)}页, {len(all_images_info)}张图片, 耗时{processing_time:.2f}秒")
+            _emit_progress(
+                progress_callback,
+                stage="ocr",
+                state="completed",
+                message=f"OCR 完成：{len(all_markdown_pages)} 页，{len(all_images_info)} 张图片",
+                extra={
+                    "total_pages": len(all_markdown_pages),
+                    "total_images": len(all_images_info),
+                    "ocr_seconds": processing_time,
+                },
+            )
             return result
 
         except Exception as e:
             logger.error(f"PDF处理失败: {e}")
+            _emit_progress(
+                progress_callback,
+                stage="ocr",
+                state="failed",
+                message=f"OCR 处理失败：{e}",
+                extra={"error": str(e)},
+            )
             raise
 
     def _extract_markdown_string(self, result: Any) -> str:

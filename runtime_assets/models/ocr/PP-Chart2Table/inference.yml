@@ -1,3 +1,0 @@
-mode: paddle
-Global:
-  model_name: PP-Chart2Table

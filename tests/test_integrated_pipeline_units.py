@@ -12,7 +12,15 @@ from app.services.image_understanding.classifier_service.class_config import (
     load_class_configs_from_file,
 )
 from app.services.integrated_pipeline.ocr_worker import resolve_ocr_replace_images
-from app.services.integrated_pipeline.service import IntegratedPipelineRunner
+from app.services.integrated_pipeline.service import (
+    IntegratedPipelineRunner,
+    _format_image_before_context,
+    _chunk_context_around_marker,
+    _format_image_side_context,
+    _map_image_analysis_progress_stage,
+    _normalize_pdf_docx_strategy,
+    _resolve_positive_int,
+)
 from app.services.integrated_pipeline.markers import (
     extract_marker_ids,
     locate_markers_in_chunks,
@@ -57,6 +65,51 @@ class IntegratedPipelineUnitTests(unittest.TestCase):
         )
 
         self.assertEqual({"img_1": 1, "img_2": 2}, locations)
+
+    def test_ocr_markdown_chunking_normalizes_original_pdf_name(self):
+        from qa.chunking.easy_dataset import build_tree_chunks_easy_dataset
+
+        chunks, meta, report = build_tree_chunks_easy_dataset(
+            "# 标题\n\nOCR 正文内容。",
+            chunk_size=80,
+            original_filename="demo2.pdf",
+            task_id="unit-task",
+            doc_id="unit-doc",
+            split_type="text",
+        )
+
+        self.assertEqual(1, len(chunks))
+        self.assertEqual("demo2.pdf", meta[0]["original_filename"])
+        self.assertEqual("text", report["effective_split_type"])
+
+    def test_chunk_context_uses_full_marker_split_without_other_image_refs(self):
+        text = (
+            "标题前缀\n"
+            "图片前第一句。图片前第二句。"
+            "[[IMAGE_REF:img_1]]"
+            "图片后第一句。[[IMAGE_REF:img_2]]图片后第二句。"
+        )
+
+        before, after = _chunk_context_around_marker(text, "[[IMAGE_REF:img_1]]")
+
+        self.assertEqual("标题前缀\n图片前第一句。图片前第二句。", before)
+        self.assertEqual("图片后第一句。图片后第二句。", after)
+
+    def test_format_image_side_context_labels_empty_text(self):
+        self.assertEqual("图片之前内容：\n（无）", _format_image_side_context("图片之前内容", ""))
+
+    def test_format_image_before_context_keeps_chunk_summary(self):
+        formatted = _format_image_before_context("chunk 摘要", "图片前正文")
+
+        self.assertIn("图片所在 chunk 摘要：\nchunk 摘要", formatted)
+        self.assertIn("图片之前内容：\n图片前正文", formatted)
+
+    def test_integrated_image_classification_progress_is_separate_stage(self):
+        self.assertEqual(
+            "image_classification",
+            _map_image_analysis_progress_stage("image_classification"),
+        )
+        self.assertEqual("doc_image_analysis", _map_image_analysis_progress_stage("vlm_call"))
 
     def test_parse_placement_response_applies_threshold(self):
         decision = parse_placement_response(
@@ -182,6 +235,46 @@ class IntegratedPipelineUnitTests(unittest.TestCase):
             replace_images=False,
         )
         self.assertFalse(runner.replace_images)
+
+    def test_integrated_concurrency_uses_request_then_env(self):
+        with patch.dict(os.environ, {"DOC_MAX_CONCURRENCY": "3"}, clear=True):
+            self.assertEqual(
+                3,
+                _resolve_positive_int(
+                    None,
+                    env_name="DOC_MAX_CONCURRENCY",
+                    default=1,
+                    maximum=8,
+                ),
+            )
+            self.assertEqual(
+                5,
+                _resolve_positive_int(
+                    5,
+                    env_name="DOC_MAX_CONCURRENCY",
+                    default=1,
+                    maximum=8,
+                ),
+            )
+            self.assertEqual(
+                8,
+                _resolve_positive_int(
+                    99,
+                    env_name="DOC_MAX_CONCURRENCY",
+                    default=1,
+                    maximum=8,
+                ),
+            )
+
+    def test_docx_strategy_is_forced_to_pdf(self):
+        self.assertEqual("pdf", _normalize_pdf_docx_strategy("native"))
+
+        runner = IntegratedPipelineRunner(
+            task_id="unit-test",
+            chunk_size=10,
+            docx_strategy="native",
+        )
+        self.assertEqual("pdf", runner.docx_strategy)
 
     def test_classifier_classes_use_builtin_fallback_shape(self):
         self.assertEqual(10, len(BUILTIN_CLASS_CONFIGS))

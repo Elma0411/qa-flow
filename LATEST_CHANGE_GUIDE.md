@@ -1,56 +1,55 @@
 # Latest Change Guide
 
-更新时间：2026-06-23（Asia/Shanghai）
+更新时间：2026-06-25（Asia/Shanghai）
 
 ## Objective
 
-Configure the three approved hardcoded surfaces in `qa-flow`: VLM
-connection defaults, OCR image replacement, and image classifier classes.
+Allow the active frontend LLM profile to select the unified LLM client protocol
+without exposing advanced client-tuning parameters.
 
 ## What Changed
 
-- VLM endpoint, model, and key no longer have code-level business defaults.
-  They resolve from API form parameters first and `VLM_API_BASE`,
-  `VLM_MODEL_NAME`, `VLM_API_KEY`, `VLM_API_TYPE`, `VLM_MODEL_VERSION` second.
-- `VLM_API_TYPE` still defaults to `openai`. Missing endpoint/model/key now
-  produces a clear configuration error when image analysis needs VLM.
-- Local OCR image replacement is controlled by `OCR_REPLACE_IMAGES`, defaulting
-  to `true`.
-- `POST /process` and `POST /batch-upload-integrated-document-pipeline` accept
-  optional `replace_images`; request values override the environment default.
-- Integrated task status and `ocr_summary` record the resolved
-  `replace_images` value.
-- The classifier class catalog now loads from `CLASSIFIER_CLASS_CONFIG_FILE`,
-  then `${CLASSIFIER_MODEL_DIR}/classes.json`, then the built-in 10-class
-  fallback.
-- Docker Compose and `docker/runtime-common.sh` now pass through the selected
-  VLM, OCR, and classifier class config environment variables.
+- `llm_configs.json` profiles now support two additional fields:
+  `api_type` and `model_version`.
+- The LLM config API and frontend LLM settings panel can save, display, and
+  activate those fields.
+- Activating a profile writes `api_key`, `base_url`, `model`, `api_type`, and
+  `model_version` into the backend runtime `CONFIG`.
+- Hao-side chunking and QA generation continue to use the unified
+  `app.services.llm` client path, now with the active profile's protocol
+  fields included.
+- Advanced options such as timeout, stream mode, request concurrency, interval,
+  `top_p`, and penalties remain controlled by existing defaults/environment
+  variables, not by `llm_configs`.
+
+## Configuration
+
+For OpenAI-compatible providers, use:
+
+```json
+{
+  "name": "default",
+  "api_key": "...",
+  "base_url": "https://open.bigmodel.cn/api/paas/v4/",
+  "model": "glm-4-flash",
+  "api_type": "openai",
+  "model_version": ""
+}
+```
+
+For LMP Cloud, set `api_type` to `lmp_cloud`. `model_version` is optional and
+is only sent when non-empty.
 
 ## Expected Behavior
 
-- Pure OCR calls can run without VLM env when image analysis is disabled.
-- Image analysis with `use_api=true` requires explicit VLM config through API
-  parameters or environment variables.
-- Unset `OCR_REPLACE_IMAGES` preserves the previous `true` behavior.
-- A present but malformed classifier `classes.json` fails startup; a missing
-  file falls back to the built-in 10 classes.
+- Existing profiles without `api_type` are auto-filled as `openai` when read.
+- New frontend profile saves include `api_type` and `model_version`.
+- Activating an `lmp_cloud` profile makes hao-side markdown heading correction
+  and QA generation use the LMP Cloud client implementation.
 
 ## Validation
 
 ```bash
-python -m compileall app qa scripts
-python -m unittest discover -s tests
-docker compose -f docker/docker-compose.yml config
-docker compose -f docker/docker-compose.debug.yml config
+cd qa-flow
+python -m py_compile app/core/config.py app/core/clients.py app/services/llm_config/store.py app/routers/llm_config.py app/services/pipeline_execution/service.py qa/chunking/easy_dataset.py
 ```
-
-Useful runtime checks:
-
-- Call `/process` with `replace_images=true` and `replace_images=false`, then
-  confirm OCR processor cache keys differ by the value.
-- Call `/batch-upload-integrated-document-pipeline` with
-  `replace_images=false` and confirm task status records `replace_images=false`.
-- Set `CLASSIFIER_CLASS_CONFIG_FILE` to a valid JSON catalog and confirm
-  `GET /classes` returns that catalog.
-- Set VLM env values and run image analysis; the VLM client signature should
-  show the configured `base_url` and `model_name`.

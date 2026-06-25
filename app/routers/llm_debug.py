@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from app.core.clients import get_default_openai_client
 from app.core.config import CONFIG
 from app.services import llm_config as llm_config_service
-from qa.common import extract_first_choice_content, safe_response_dump
+from qa.common import safe_response_dump
 
 router = APIRouter()
 
@@ -68,21 +68,22 @@ async def llm_debug_chat(payload: LlmDebugChatRequest) -> Dict[str, Any]:
 
     client = get_default_openai_client()
 
-    kwargs: Dict[str, Any] = {
-        "model": model,
-        "messages": request["messages"],
-        "timeout": int(payload.timeout_seconds),
-        "max_tokens": int(payload.max_tokens),
-    }
-    if payload.temperature is not None:
-        kwargs["temperature"] = float(payload.temperature)
+    response_format_kwarg: Optional[Dict[str, str]] = None
     if str(payload.response_format or "").strip().lower() == "json_object":
-        kwargs["response_format"] = {"type": "json_object"}
+        response_format_kwarg = {"type": "json_object"}
 
     started = time.time()
     try:
-        resp = await asyncio.to_thread(lambda: client.chat.completions.create(**kwargs))
-        content = extract_first_choice_content(resp)
+        content = await asyncio.to_thread(
+            lambda: client.create_chat_completion_text(
+                model=model,
+                messages=request["messages"],
+                temperature=payload.temperature or 0.0,
+                max_tokens=int(payload.max_tokens),
+                timeout=float(payload.timeout_seconds),
+                response_format=response_format_kwarg,
+            )
+        )
         elapsed_ms = int((time.time() - started) * 1000)
         return {
             "ok": True,
@@ -94,9 +95,9 @@ async def llm_debug_chat(payload: LlmDebugChatRequest) -> Dict[str, Any]:
             },
             "request": request,
             "response": {
-                "response_type": type(resp).__name__,
+                "response_type": "str",
                 "content": content,
-                "response_dump": safe_response_dump(resp),
+                "response_dump": safe_response_dump(content),
             },
             "elapsed_ms": elapsed_ms,
         }

@@ -1,7 +1,6 @@
 # 文件作用：调用大模型生成原始问答的扩展问法和答案变体。
 # 关联说明：依赖 qa.common 和 prompts，作为 augmentation facade 的实现文件。
 
-from openai import OpenAI
 import csv
 import re
 import time
@@ -11,8 +10,9 @@ import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, List, Optional
 
-from qa.common import build_language_instruction, detect_language, extract_first_choice_content
+from qa.common import build_language_instruction, detect_language
 from qa.prompts.qa_augmentation_prompts import build_augment_prompt
+from app.services.llm import LLMClientProtocol, VLMClientConfig, create_vlm_client
 
 # 导入应用配置，优先使用环境变量避免明文 Key
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -68,25 +68,30 @@ def call_api(prompt, idx, total, config=None):
         config = CONFIG
 
     try:
-        client = OpenAI(
-            api_key=config["api_key"],
-            base_url=config["base_url"]
+        client = create_vlm_client(
+            VLMClientConfig.from_values(
+                api_base=config["base_url"],
+                model_name=config["model"],
+                api_key=config["api_key"],
+                api_type=config.get("api_type"),
+                model_version=config.get("model_version"),
+                timeout_seconds=30.0,
+            )
         )
 
-        response = client.chat.completions.create(
+        result = client.create_chat_completion_text(
             model=config["model"],
             messages=[
                 {"role": "system", "content": "你是一个擅长生成问答数据的 AI 助手。"},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.7,
-            stream=False,
-            timeout=30  # 超时设置
+            timeout=30,
         )
 
         duration = time.time() - start_time
         print(f"-> 数据项 {idx}/{total} 响应成功，生成耗时: {duration:.2f}s")
-        return extract_first_choice_content(response)
+        return result
 
     except Exception as e:
         print("——" * 10 + " 错误信息 " + "——" * 10)
@@ -279,7 +284,7 @@ def _parse_augment_response(raw: str) -> List[Dict[str, Any]]:
 
 
 def _augment_single(
-    client: OpenAI,
+    client: LLMClientProtocol,
     qa: Dict[str, Any],
     augment_per_qa: int,
     model: str,
@@ -310,15 +315,15 @@ def _augment_single(
     )
 
     try:
-        resp = client.chat.completions.create(
+        content = client.create_chat_completion_text(
             model=model,
             messages=[
                 {"role": "system", "content": "你是一个擅长语义等价改写的问答增广助手。"},
                 {"role": "user", "content": prompt},
             ],
+            temperature=0.0,
             timeout=45,
         )
-        content = extract_first_choice_content(resp)
         parsed = _parse_augment_response(content)
         results: List[Dict[str, Any]] = []
         seen_questions = set()
@@ -352,7 +357,7 @@ def _augment_single(
 def augment_qa_pairs(
     qa_list: List[Dict[str, Any]],
     augment_per_qa: int,
-    client: OpenAI,
+    client: LLMClientProtocol,
     model: str,
     max_workers: int = 4,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import threading
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from app.core.config import CONFIG
 from app.services.document_processing.input_adapters.common import IMAGE_SUFFIXES, PDF_SUFFIXES
@@ -48,6 +48,7 @@ class OCRWorkerManager:
         watermark_dpi: int = 200,
         replace_images: bool = True,
         use_gpu: bool = True,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> OCRResult:
         input_path = Path(file_path)
         suffix = input_path.suffix.lower()
@@ -62,6 +63,7 @@ class OCRWorkerManager:
                 watermark_dpi=watermark_dpi,
                 replace_images=replace_images,
                 use_gpu=use_gpu,
+                progress_callback=progress_callback,
             )
 
         normalized_dir = output_path / "normalized_input"
@@ -77,6 +79,7 @@ class OCRWorkerManager:
                 watermark_dpi=watermark_dpi,
                 replace_images=replace_images,
                 use_gpu=use_gpu,
+                progress_callback=progress_callback,
             )
         if suffix == ".doc":
             from app.services.document_processing.input_adapters.libreoffice_adapter import convert_to_pdf
@@ -89,13 +92,9 @@ class OCRWorkerManager:
                 watermark_dpi=watermark_dpi,
                 replace_images=replace_images,
                 use_gpu=use_gpu,
+                progress_callback=progress_callback,
             )
         if suffix == ".docx":
-            strategy = str(docx_strategy or "pdf").strip().lower()
-            if strategy == "native":
-                from app.services.document_processing.input_adapters.docx_native_adapter import parse_docx_to_ocr_result
-
-                return parse_docx_to_ocr_result(str(input_path), str(output_path / "ocr_output"))
             from app.services.document_processing.input_adapters.libreoffice_adapter import convert_to_pdf
 
             normalized_pdf = convert_to_pdf(str(input_path), str(normalized_dir))
@@ -106,6 +105,7 @@ class OCRWorkerManager:
                 watermark_dpi=watermark_dpi,
                 replace_images=replace_images,
                 use_gpu=use_gpu,
+                progress_callback=progress_callback,
             )
         raise ValueError(f"Unsupported integrated OCR input type: {suffix}")
 
@@ -118,6 +118,7 @@ class OCRWorkerManager:
         watermark_dpi: int,
         replace_images: bool,
         use_gpu: bool,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> OCRResult:
         processor = self._get_processor(replace_images=replace_images, use_gpu=use_gpu)
         return processor.process_pdf(
@@ -125,6 +126,7 @@ class OCRWorkerManager:
             output_dir=output_dir,
             remove_watermark=remove_watermark,
             watermark_dpi=watermark_dpi,
+            progress_callback=progress_callback,
         )
 
     def _get_processor(self, *, replace_images: bool, use_gpu: bool) -> object:

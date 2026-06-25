@@ -10,7 +10,7 @@
       href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@300;400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/ui/styles.css?v=2026-06-03-2" />
+    <link rel="stylesheet" href="/ui/styles.css?v=2026-06-25-1" />
   </head>
   <body>
     <a class="skip-link" href="#main">跳到内容</a>
@@ -89,6 +89,17 @@
               <label>
                 模型
                 <input type="text" id="cfgModel" placeholder="如 glm-4-flash…" />
+              </label>
+              <label>
+                API 类型
+                <select id="cfgApiType">
+                  <option value="openai">openai</option>
+                  <option value="lmp_cloud">lmp_cloud</option>
+                </select>
+              </label>
+              <label>
+                模型版本
+                <input type="text" id="cfgModelVersion" placeholder="lmp_cloud 可选…" />
               </label>
             </div>
             <div class="actions-row llm-config-actions">
@@ -229,6 +240,123 @@
         </div>
       </section>
 
+      <section class="card" id="dwDocumentPanel">
+        <h2>0.6 文档解析与图片理解</h2>
+        <p class="hint">
+          单独执行 OCR、图片理解、文本整合流程；也会展示一体流程里的文档预处理进度。
+        </p>
+        <form id="dwJobForm">
+          <label>
+            上传文档
+            <input type="file" id="dwFileInput" />
+          </label>
+          <div class="form-grid">
+            <label>
+              输出格式
+              <select id="dwOutputFormat">
+                <option value="text" selected>text（整合纯文本）</option>
+                <option value="markdown">markdown（整合 Markdown）</option>
+                <option value="ocr_markdown">ocr_markdown（原始 OCR Markdown）</option>
+              </select>
+            </label>
+            <label>
+              DOCX 处理策略
+              <select id="dwDocxStrategy">
+                <option value="pdf" selected>pdf（LibreOffice 转 PDF 后 OCR）</option>
+              </select>
+            </label>
+            <label>
+              <input type="checkbox" id="dwEnableImageAnalysis" checked />
+              启用图片理解
+            </label>
+            <label>
+              <input type="checkbox" id="dwEnableClassification" />
+              图片先分类再选择 prompt
+            </label>
+            <label>
+              分类置信阈值
+              <input type="number" id="dwClassificationThreshold" value="0.9" min="0" max="1" step="0.01" />
+            </label>
+            <label>
+              <input type="checkbox" id="dwRemoveWatermark" />
+              OCR 前去水印
+            </label>
+            <label>
+              水印渲染 DPI
+              <input type="number" id="dwWatermarkDpi" value="200" min="72" max="600" step="1" />
+            </label>
+            <label>
+              <input type="checkbox" id="dwReplaceImages" checked />
+              替换为原文档高质量裁图
+            </label>
+            <label>
+              <input type="checkbox" id="dwUseApi" checked />
+              使用 VLM API
+            </label>
+          </div>
+          <details style="width: 100%">
+            <summary>VLM 覆盖参数（可选）</summary>
+            <div class="form-grid" style="margin-top: 10px">
+              <label>
+                API Base
+                <input type="text" id="dwVlmApiBase" placeholder="留空使用后端 VLM_API_BASE…" />
+              </label>
+              <label>
+                模型
+                <input type="text" id="dwVlmModelName" placeholder="留空使用后端 VLM_MODEL_NAME…" />
+              </label>
+              <label>
+                API Key
+                <input type="text" id="dwVlmApiKey" placeholder="留空使用后端 VLM_API_KEY…" />
+              </label>
+              <label>
+                API 类型
+                <select id="dwVlmApiType">
+                  <option value="openai" selected>openai</option>
+                  <option value="lmp_cloud">lmp_cloud</option>
+                </select>
+              </label>
+              <label>
+                模型版本
+                <input type="text" id="dwVlmModelVersion" placeholder="可选…" />
+              </label>
+            </div>
+          </details>
+          <div class="actions-row">
+            <button type="submit">开始文档解析</button>
+            <button type="button" id="dwCancelJobBtn" class="secondary">取消当前文档任务</button>
+            <button type="button" id="dwSyncToIntegratedBtn" class="secondary">同步参数到一体流程</button>
+          </div>
+        </form>
+        <div class="task-console">
+          <div class="task-console-grid">
+            <label class="task-console-primary">
+              document_job_id（可查询历史任务）
+              <input type="search" id="dwJobIdInput" placeholder="输入或粘贴 document_job_xxx…" />
+            </label>
+            <button type="button" id="dwLoadJobBtn" class="secondary">查询文档任务</button>
+            <button type="button" id="dwRestoreJobBtn" class="secondary">恢复当前文档任务</button>
+          </div>
+          <p class="hint" id="dwJobHint">页面会记住最近查看或正在运行的文档任务；一体流程的文档预处理进度会显示在下方。</p>
+          <div id="dwJobHistory" class="task-history-list"></div>
+        </div>
+        <div class="dw-progress-layout">
+          <section class="dw-progress-panel">
+            <h3>独立文档任务进度</h3>
+            <div id="dwProgressSummary" class="dw-progress-summary"></div>
+            <div id="dwProgressFiles" class="dw-file-progress-list"></div>
+            <div id="dwOutputLinks" class="dw-output-links"></div>
+            <pre id="dwJobStatus"></pre>
+          </section>
+          <section class="dw-progress-panel">
+            <h3>一体流程文档预处理进度</h3>
+            <div id="dwIntegratedProgress" class="dw-file-progress-list">
+              <div class="task-history-empty">尚未加载一体流程任务。</div>
+            </div>
+          </section>
+        </div>
+      </section>
+
       <section class="card">
         <h2>1. 完整流水线（统一入口：8B，单文件和批量都可用）</h2>
         <form id="pipelineForm">
@@ -243,11 +371,11 @@
           <label>
             文档解析模式
             <select id="pipelineProcessingMode">
-              <option value="standard" selected>hao 标准流程（外部 OCR 配置）</option>
-              <option value="integrated">dw+hao 一体流程（内置文档解析与图片理解）</option>
+              <option value="standard" selected>标准流程（外部 OCR 配置）</option>
+              <option value="integrated">一体流程（内置文档解析与图片理解）</option>
             </select>
             <small id="pipelineProcessingModeHint">
-              使用当前激活的 OCR 配置解析 PDF、图片、OFD、DOCX、DOC 后进入 hao 问答流水线。
+              使用当前激活的 OCR 配置解析 PDF、图片、OFD、DOCX、DOC 后进入问答流水线。
             </small>
           </label>
           <label id="ocrTimeoutField">
@@ -262,7 +390,7 @@
             />
           </label>
           <details id="integratedDocumentOptions" style="width: 100%" hidden>
-            <summary>内置文档解析参数（dw）</summary>
+            <summary>内置文档解析参数</summary>
             <div class="form-grid" style="margin-top: 10px">
               <label>
                 <input type="checkbox" id="integratedOcrEnabled" checked />
@@ -277,6 +405,10 @@
                 OCR 前去水印预处理（remove_watermark）
               </label>
               <label>
+                <input type="checkbox" id="integratedReplaceImages" checked />
+                替换为原文档高质量裁图（replace_images）
+              </label>
+              <label>
                 水印渲染 DPI（watermark_dpi）
                 <input type="number" id="integratedWatermarkDpi" value="200" min="72" max="600" step="1" />
               </label>
@@ -284,7 +416,6 @@
                 DOCX 处理策略（docx_strategy）
                 <select id="integratedDocxStrategy">
                   <option value="pdf" selected>pdf（LibreOffice 转 PDF 后 OCR）</option>
-                  <option value="native">native（直接解析简单 DOCX）</option>
                 </select>
               </label>
               <label>
@@ -295,6 +426,18 @@
                 </select>
               </label>
               <label>
+                <input type="checkbox" id="integratedEnableImageAnalysis" checked />
+                执行图片理解（enable_image_analysis）
+              </label>
+              <label>
+                <input type="checkbox" id="integratedEnableImageClassification" />
+                图片先分类再选择 prompt（enable_image_classification）
+              </label>
+              <label>
+                图片分类置信阈值（classification_confidence_threshold）
+                <input type="number" id="integratedClassificationThreshold" value="0" min="0" max="1" step="0.01" />
+              </label>
+              <label>
                 <input type="checkbox" id="imageFitCheckEnabled" checked />
                 图片解析结果契合度判断（image_fit_check_enabled）
               </label>
@@ -302,7 +445,52 @@
                 图片回填最小分数（image_fit_min_score）
                 <input type="number" id="imageFitMinScore" value="0.65" min="0" max="1" step="0.01" />
               </label>
+              <label>
+                文档预处理并发（doc_max_concurrency）
+                <input type="number" id="docMaxConcurrency" min="1" max="64" step="1" placeholder="留空使用 compose/env" />
+              </label>
+              <label>
+                OCR 并发（ocr_max_concurrency）
+                <input type="number" id="ocrMaxConcurrency" min="1" max="64" step="1" placeholder="留空使用 compose/env" />
+              </label>
+              <label>
+                图片理解并发（image_analysis_max_concurrency）
+                <input type="number" id="imageAnalysisMaxConcurrency" min="1" max="64" step="1" placeholder="留空使用 compose/env" />
+              </label>
+              <label>
+                图片契合度判断并发（image_fit_max_concurrency）
+                <input type="number" id="imageFitMaxConcurrency" min="1" max="64" step="1" placeholder="留空使用 compose/env" />
+              </label>
             </div>
+            <details style="margin-top: 10px">
+              <summary>图片理解 VLM 覆盖参数（可选）</summary>
+              <div class="form-grid" style="margin-top: 10px">
+                <label>
+                  VLM API Base（vlm_api_base）
+                  <input type="text" id="integratedVlmApiBase" placeholder="留空使用当前后端 LLM/VLM 默认…" />
+                </label>
+                <label>
+                  VLM 模型名（vlm_model_name）
+                  <input type="text" id="integratedVlmModelName" placeholder="留空使用当前后端 LLM/VLM 默认…" />
+                </label>
+                <label>
+                  VLM API Key（vlm_api_key）
+                  <input type="text" id="integratedVlmApiKey" placeholder="留空使用当前后端 LLM/VLM 默认…" />
+                </label>
+                <label>
+                  VLM API 类型（vlm_api_type）
+                  <select id="integratedVlmApiType">
+                    <option value="">默认</option>
+                    <option value="openai">openai</option>
+                    <option value="lmp_cloud">lmp_cloud</option>
+                  </select>
+                </label>
+                <label>
+                  VLM 模型版本（vlm_model_version）
+                  <input type="text" id="integratedVlmModelVersion" placeholder="可选…" />
+                </label>
+              </div>
+            </details>
           </details>
           <label>
             qa_per_chunk
@@ -848,11 +1036,11 @@
     </aside>
 
     <script src="/ui/ui.js?v=2026-04-05-1"></script>
-    <script src="/ui/app_runtime.js?v=2026-04-16-3"></script>
-    <script src="/ui/app_config.js?v=2026-04-07-2"></script>
+    <script src="/ui/app_runtime.js?v=2026-06-25-1"></script>
+    <script src="/ui/app_config.js?v=2026-06-25-1"></script>
     <script src="/ui/app_render.js?v=2026-04-07-2"></script>
     <script src="/ui/app_query.js?v=2026-05-21-3"></script>
-    <script src="/ui/app.js?v=2026-06-23-1"></script>
+    <script src="/ui/app.js?v=2026-06-25-2"></script>
     <script>
       (function () {
         if (window.__QA_UI_APPJS_READY__) return;

@@ -274,7 +274,9 @@ class OpenAICompatibleVLMClient:
         messages: List[Dict],
         model: Optional[str] = None,
         temperature: float,
-        max_tokens: int,
+        max_tokens: Optional[int] = None,
+        response_format: Optional[Any] = None,
+        timeout: Optional[float] = None,
     ) -> str:
         with self._request_gate:
             self._begin_call()
@@ -286,6 +288,18 @@ class OpenAICompatibleVLMClient:
                     raise RuntimeError("VLM API client has been closed")
 
                 request_model = model or self.config.model_name
+                effective_timeout = timeout if timeout is not None else self.config.timeout_seconds
+                # response_format is incompatible with streaming; force non-stream when set
+                if response_format is not None and self.config.stream:
+                    return self._create_nonstream(
+                        client=client,
+                        model=request_model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        response_format=response_format,
+                        timeout=effective_timeout,
+                    )
                 if self.config.stream:
                     return self._stream_chat_completion_text(
                         client=client,
@@ -293,6 +307,7 @@ class OpenAICompatibleVLMClient:
                         messages=messages,
                         temperature=temperature,
                         max_tokens=max_tokens,
+                        timeout=effective_timeout,
                     )
 
                 response = client.chat.completions.create(
@@ -301,6 +316,8 @@ class OpenAICompatibleVLMClient:
                     temperature=temperature,
                     max_tokens=max_tokens,
                     stream=False,
+                    timeout=effective_timeout,
+                    **({"response_format": response_format} if response_format is not None else {}),
                 )
                 return extract_message_text(response)
             finally:
@@ -342,7 +359,8 @@ class OpenAICompatibleVLMClient:
         model: str,
         messages: List[Dict],
         temperature: float,
-        max_tokens: int,
+        max_tokens: Optional[int],
+        timeout: float,
     ) -> str:
         chunks: List[str] = []
         stream = client.chat.completions.create(
@@ -351,12 +369,35 @@ class OpenAICompatibleVLMClient:
             temperature=temperature,
             max_tokens=max_tokens,
             stream=True,
+            timeout=timeout,
         )
         for event in stream:
             piece = extract_stream_delta_text(event)
             if piece:
                 chunks.append(piece)
         return "".join(chunks)
+
+    def _create_nonstream(
+        self,
+        *,
+        client: OpenAI,
+        model: str,
+        messages: List[Dict],
+        temperature: float,
+        max_tokens: Optional[int],
+        response_format: Any,
+        timeout: float,
+    ) -> str:
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=False,
+            response_format=response_format,
+            timeout=timeout,
+        )
+        return extract_message_text(response)
 
 
 class LmpCloudVLMClient:
@@ -403,13 +444,15 @@ class LmpCloudVLMClient:
         messages: List[Dict],
         model: Optional[str] = None,
         temperature: float,
-        max_tokens: Optional[int],
+        max_tokens: Optional[int] = None,
+        response_format: Optional[Any] = None,
+        timeout: Optional[float] = None,
     ) -> str:
         with self._request_gate:
             self._begin_call()
             try:
                 self._throttle_if_needed()
-                payload = {
+                payload: Dict[str, Any] = {
                     "model": model or self.config.model_name,
                     "messages": normalize_lmp_cloud_messages(messages),
                     "stream": bool(self.config.stream),
@@ -419,9 +462,11 @@ class LmpCloudVLMClient:
                 }
                 if max_tokens is not None:
                     payload["max_tokens"] = max_tokens
+                if response_format is not None:
+                    payload["response_format"] = response_format
                 if self.config.model_version:
                     payload["modelVersion"] = self.config.model_version
-                return self._post_chat_completion(payload)
+                return self._post_chat_completion(payload, timeout=timeout)
             finally:
                 self._end_call()
 
@@ -454,7 +499,7 @@ class LmpCloudVLMClient:
                 time.sleep(wait_seconds)
             self._last_request_at = time.perf_counter()
 
-    def _post_chat_completion(self, payload: Dict[str, Any]) -> str:
+    def _post_chat_completion(self, payload: Dict[str, Any], *, timeout: Optional[float] = None) -> str:
         request_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers = {
             "Content-Type": "application/json;charset=utf-8",
@@ -467,8 +512,9 @@ class LmpCloudVLMClient:
             method="POST",
         )
 
+        effective_timeout = timeout if timeout is not None else self.config.timeout_seconds
         try:
-            with urlrequest.urlopen(req, timeout=self.config.timeout_seconds) as response:
+            with urlrequest.urlopen(req, timeout=effective_timeout) as response:
                 content_type = response.headers.get("Content-Type", "")
                 if self.config.stream or "text/event-stream" in content_type.lower():
                     return self._read_event_stream(response)

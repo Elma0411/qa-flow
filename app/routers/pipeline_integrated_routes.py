@@ -3,7 +3,10 @@
 
 import asyncio
 import json
+import os
+import threading
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -28,6 +31,125 @@ from app.services.storage import resolve_batch_concurrency
 
 router = APIRouter()
 _LOCAL_EVAL_COMPAT_FLAG = True
+
+
+class _PersistedUploadFile:
+    def __init__(self, *, path: Path, filename: str, content_type: Optional[str]) -> None:
+        self.path = path
+        self.filename = filename
+        self.content_type = content_type or ""
+        self.file = open(path, "rb")
+
+    async def read(self, size: int = -1) -> bytes:
+        return self.file.read(size)
+
+    def close(self) -> None:
+        try:
+            self.file.close()
+        except Exception:
+            pass
+
+
+def _safe_background_filename(filename: Optional[str], fallback: str) -> str:
+    name = str(filename or fallback).replace("\\", "/").rsplit("/", 1)[-1].strip()
+    return name or fallback
+
+
+def _resolve_concurrency_value(
+    requested: Optional[int],
+    *,
+    env_name: str,
+    default: int,
+    maximum: int = 64,
+) -> int:
+    raw: Any = requested
+    if raw is None:
+        raw = str(os.environ.get(env_name) or "").strip()
+    try:
+        resolved = int(raw)
+    except (TypeError, ValueError):
+        resolved = int(default)
+    return max(1, min(maximum, resolved))
+
+
+async def _persist_uploads_for_background(
+    files: List[UploadFile],
+    *,
+    task_id: str,
+) -> List[_PersistedUploadFile]:
+    upload_dir = Path(str(CONFIG["outputs_dir"])) / "integrated_pipeline" / task_id / "route_uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    persisted: List[_PersistedUploadFile] = []
+    try:
+        for index, upload in enumerate(files):
+            filename = _safe_background_filename(upload.filename, f"upload_{index + 1}.bin")
+            path = upload_dir / f"{index:04d}_{filename}"
+            upload.file.seek(0)
+            content = await upload.read()
+            path.write_bytes(content)
+            upload.file.seek(0)
+            persisted.append(
+                _PersistedUploadFile(
+                    path=path,
+                    filename=filename,
+                    content_type=getattr(upload, "content_type", None),
+                )
+            )
+    except Exception:
+        for item in persisted:
+            item.close()
+        raise
+    return persisted
+
+
+def _close_persisted_uploads(files: List[_PersistedUploadFile]) -> None:
+    for item in files:
+        item.close()
+
+
+def _update_integrated_file_progress(
+    *,
+    status_data: Dict[str, Any],
+    task_id: str,
+    lock: threading.RLock,
+    filename: str,
+    stage: str,
+    state: str,
+    message: str,
+    extra: Optional[Dict[str, Any]] = None,
+) -> None:
+    with lock:
+        file_progress = status_data.setdefault("file_progress", {})
+        file_entry = file_progress.setdefault(
+            filename or "upload",
+            {
+                "status": "queued",
+                "message": "",
+                "stages": {},
+            },
+        )
+        stages = file_entry.setdefault("stages", {})
+        stage_entry = stages.setdefault(stage, {})
+        stage_entry.update(
+            {
+                "state": state,
+                "message": message,
+                "updated_at": now_server_local_iso(),
+            }
+        )
+        if extra:
+            stage_entry.setdefault("extra", {}).update(dict(extra))
+        if state == "failed":
+            file_entry["status"] = "failed"
+        elif stage in {"doc_handoff", "dw_handoff"} and state == "completed":
+            file_entry["status"] = "processing"
+        else:
+            file_entry["status"] = "processing"
+        file_entry["message"] = message
+        status_data["status"] = "processing" if status_data.get("status") in {"queued", "processing"} else status_data.get("status")
+        status_data["message"] = message
+        status_data["updated_at"] = now_server_local_iso()
+        upsert_pipeline_task_status(task_id, status_data)
 
 
 def _decode_chunking_form_text(value: Optional[str]) -> Optional[str]:
@@ -254,11 +376,20 @@ async def batch_upload_integrated_document_pipeline(
         None,
         description="是否用原文档高质量裁图替换 OCR 导出图片；不填读取 OCR_REPLACE_IMAGES，默认 True",
     ),
-    docx_strategy: str = Form("pdf", description="DOCX 处理策略：pdf | native"),
+    docx_strategy: str = Form("pdf", description="DOCX/DOC 处理策略：固定使用 pdf"),
     image_context_summary_mode: str = Form(
         "lightweight",
         description="图片上下文摘要模式：lightweight | llm",
     ),
+    enable_image_analysis: bool = Form(True, description="是否执行图片理解"),
+    image_analysis_use_api: bool = Form(True, description="图片理解是否使用 VLM API"),
+    enable_image_classification: bool = Form(False, description="图片理解前是否先分类选择 prompt"),
+    classification_confidence_threshold: float = Form(0.0, description="图片分类置信阈值，范围 0~1"),
+    vlm_api_base: Optional[str] = Form(None, description="图片理解 VLM API Base；不填使用后端当前 LLM/VLM 默认"),
+    vlm_model_name: Optional[str] = Form(None, description="图片理解 VLM 模型名；不填使用后端当前 LLM/VLM 默认"),
+    vlm_api_key: Optional[str] = Form(None, description="图片理解 VLM API Key；不填使用后端当前 LLM/VLM 默认"),
+    vlm_api_type: Optional[str] = Form(None, description="图片理解 VLM API 类型：openai / lmp_cloud"),
+    vlm_model_version: Optional[str] = Form(None, description="图片理解 VLM 模型版本，可选"),
     image_fit_check_enabled: bool = Form(True, description="是否启用图片解析结果与 chunk 上下文契合度判断"),
     image_fit_min_score: float = Form(0.65, description="图片回填最小契合度分数，范围 0~1"),
     save_mode: str = Form(
@@ -269,6 +400,22 @@ async def batch_upload_integrated_document_pipeline(
     max_concurrency: Optional[int] = Form(
         None,
         description="最大文件并发处理数（默认 3）",
+    ),
+    doc_max_concurrency: Optional[int] = Form(
+        None,
+        description="文档预处理最大文件并发；不填读取 DOC_MAX_CONCURRENCY，默认 1",
+    ),
+    ocr_max_concurrency: Optional[int] = Form(
+        None,
+        description="OCR 最大并发；不填读取 OCR_MAX_CONCURRENCY，默认 1",
+    ),
+    image_analysis_max_concurrency: Optional[int] = Form(
+        None,
+        description="图片理解最大并发；不填读取 IMAGE_ANALYSIS_MAX_CONCURRENCY，默认 1",
+    ),
+    image_fit_max_concurrency: Optional[int] = Form(
+        None,
+        description="图片回填契合度判断最大并发；不填读取 IMAGE_FIT_MAX_CONCURRENCY，默认 1",
     ),
     eval_max_concurrency: Optional[int] = Form(
         None,
@@ -352,56 +499,59 @@ async def batch_upload_integrated_document_pipeline(
         if not include_evaluation:
             filter_by_threshold = False
         resolved_replace_images = resolve_ocr_replace_images(replace_images, default=True)
+        docx_strategy = "pdf"
 
         image_context_summary_mode = str(image_context_summary_mode or "lightweight").strip().lower()
         if image_context_summary_mode not in {"lightweight", "llm"}:
             raise HTTPException(status_code=400, detail="image_context_summary_mode 仅支持 lightweight / llm")
+        try:
+            classification_confidence_threshold = float(classification_confidence_threshold)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="classification_confidence_threshold 必须是数字") from exc
+        classification_confidence_threshold = max(0.0, min(1.0, classification_confidence_threshold))
+        vlm_api_base = str(vlm_api_base or "").strip() or None
+        vlm_model_name = str(vlm_model_name or "").strip() or None
+        vlm_api_key = str(vlm_api_key or "").strip() or None
+        vlm_api_type = str(vlm_api_type or "").strip() or None
+        vlm_model_version = str(vlm_model_version or "").strip() or None
         image_fit_min_score = max(0.0, min(1.0, float(image_fit_min_score)))
 
         batch_task_id = f"integrated_document_task_{int(time.time())}"
         admit_info = admit_gpu_job(batch_task_id, job_type="pipeline")
         if not bool(admit_info.get("accepted")):
             raise HTTPException(status_code=429, detail="GPU 任务排队已满，请稍后重试")
-        try:
-            file_contents, ocr_summary = await resolve_uploaded_files_with_integrated_processing(
-                files,
-                task_id=batch_task_id,
-                chunk_size=chunk_size,
-                ocr_enabled=ocr_enabled,
-                ocr_fail_fast=ocr_fail_fast,
-                image_context_summary_mode=image_context_summary_mode,
-                image_fit_check_enabled=image_fit_check_enabled,
-                image_fit_min_score=image_fit_min_score,
-                remove_watermark=remove_watermark,
-                watermark_dpi=watermark_dpi,
-                replace_images=resolved_replace_images,
-                docx_strategy=docx_strategy,
-                chunking_prefix_max_depth=chunking_prefix_max_depth,
-                chunking_split_type=chunking_split_type,
-                chunking_text_split_min_length=chunking_text_split_min_length,
-                chunking_text_split_max_length=chunking_text_split_max_length,
-                chunking_chunk_overlap=chunking_chunk_overlap,
-                chunking_separator=chunking_separator,
-                chunking_separators=parsed_chunking_separators,
-                chunking_split_language=chunking_split_language,
-                chunking_custom_separator=chunking_custom_separator,
-                chunking_manual_split_points=parsed_manual_split_points,
-                chunking_markdown_heading_correction_enabled=bool(chunking_markdown_heading_correction_enabled),
-            )
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Integrated document preprocessing failed: {str(exc)}")
-        successful_sources = [f for f in file_contents if f["status"] == "success"]
-        if not successful_sources:
-            raise HTTPException(status_code=400, detail="All uploaded files failed to read")
+        persisted_uploads = await _persist_uploads_for_background(files, task_id=batch_task_id)
 
         llm_config = {
             "api_key": CONFIG["api_key"],
             "base_url": CONFIG["base_url"],
             "model": CONFIG["model"],
+            "api_type": CONFIG.get("api_type") or "openai",
+            "model_version": CONFIG.get("model_version") or "",
             "max_retries": CONFIG["max_retries"],
         }
 
         concurrency_limit = resolve_batch_concurrency(max_concurrency)
+        doc_concurrency = _resolve_concurrency_value(
+            doc_max_concurrency,
+            env_name="DOC_MAX_CONCURRENCY",
+            default=1,
+        )
+        ocr_concurrency = _resolve_concurrency_value(
+            ocr_max_concurrency,
+            env_name="OCR_MAX_CONCURRENCY",
+            default=1,
+        )
+        image_analysis_concurrency = _resolve_concurrency_value(
+            image_analysis_max_concurrency,
+            env_name="IMAGE_ANALYSIS_MAX_CONCURRENCY",
+            default=1,
+        )
+        image_fit_concurrency = _resolve_concurrency_value(
+            image_fit_max_concurrency,
+            env_name="IMAGE_FIT_MAX_CONCURRENCY",
+            default=1,
+        )
         eval_concurrency = eval_max_concurrency or 8
         chunk_concurrency = chunk_max_concurrency or 8
         chunk_attempts = max(1, int(chunk_max_attempts or 2))
@@ -455,16 +605,28 @@ async def batch_upload_integrated_document_pipeline(
             "docx_strategy": docx_strategy,
             "integrated_pipeline": True,
             "image_context_summary_mode": image_context_summary_mode,
+            "enable_image_analysis": bool(enable_image_analysis),
+            "image_analysis_use_api": bool(image_analysis_use_api),
+            "enable_image_classification": bool(enable_image_classification),
+            "classification_confidence_threshold": classification_confidence_threshold,
+            "vlm_api_base": vlm_api_base,
+            "vlm_model_name": vlm_model_name,
+            "vlm_api_type": vlm_api_type,
+            "vlm_model_version": vlm_model_version,
             "image_fit_check_enabled": image_fit_check_enabled,
             "image_fit_min_score": image_fit_min_score,
-            "ocr_summary": ocr_summary,
+            "ocr_summary": [],
             "concurrency": concurrency_limit,
             "chunk_concurrency": chunk_concurrency,
             "chunk_max_attempts": chunk_attempts,
             "augment_concurrency": augment_concurrency,
             "evaluation_concurrency": eval_concurrency,
             "file_progress": {},
-            "message": "Task queued, waiting for workers",
+            "doc_max_concurrency": doc_concurrency,
+            "ocr_max_concurrency": ocr_concurrency,
+            "image_analysis_max_concurrency": image_analysis_concurrency,
+            "image_fit_max_concurrency": image_fit_concurrency,
+            "message": "文档预处理排队中",
             "history_source": "artifacts",
             "milvus_task_id": None,
             "artifacts_deleted": False,
@@ -480,9 +642,8 @@ async def batch_upload_integrated_document_pipeline(
         }
         upsert_pipeline_task_status(batch_task_id, status_data)
 
-        job_context = {
+        base_job_context = {
             "task_id": batch_task_id,
-            "file_contents": file_contents,
             "chunk_size": chunk_size,
             "qa_per_chunk": qa_per_chunk,
             "qa_detail_mode": qa_detail_mode,
@@ -526,9 +687,111 @@ async def batch_upload_integrated_document_pipeline(
             "augment_per_qa": augment_per_qa,
         }
 
+        progress_lock = threading.RLock()
+
+        def report_doc_progress(
+            filename: str,
+            stage: str,
+            state: str,
+            message: str,
+            extra: Optional[Dict[str, Any]] = None,
+        ) -> None:
+            _update_integrated_file_progress(
+                status_data=status_data,
+                task_id=batch_task_id,
+                lock=progress_lock,
+                filename=filename,
+                stage=stage,
+                state=state,
+                message=message,
+                extra=extra,
+            )
+
+        async def _run_integrated_job() -> None:
+            try:
+                with progress_lock:
+                    status_data["status"] = "processing"
+                    status_data["message"] = "文档解析预处理中"
+                    status_data["updated_at"] = now_server_local_iso()
+                    upsert_pipeline_task_status(batch_task_id, status_data)
+
+                file_contents, ocr_summary = await resolve_uploaded_files_with_integrated_processing(
+                    persisted_uploads,
+                    task_id=batch_task_id,
+                    chunk_size=chunk_size,
+                    ocr_enabled=ocr_enabled,
+                    ocr_fail_fast=ocr_fail_fast,
+                    image_context_summary_mode=image_context_summary_mode,
+                    image_fit_check_enabled=image_fit_check_enabled,
+                    image_fit_min_score=image_fit_min_score,
+                    remove_watermark=remove_watermark,
+                    watermark_dpi=watermark_dpi,
+                    replace_images=resolved_replace_images,
+                    docx_strategy=docx_strategy,
+                    image_analysis_enabled=enable_image_analysis,
+                    image_analysis_use_api=image_analysis_use_api,
+                    image_analysis_vlm_api_base=vlm_api_base,
+                    image_analysis_vlm_model_name=vlm_model_name,
+                    image_analysis_vlm_api_key=vlm_api_key,
+                    image_analysis_vlm_api_type=vlm_api_type,
+                    image_analysis_vlm_model_version=vlm_model_version,
+                    image_analysis_enable_classification=enable_image_classification,
+                    image_analysis_classification_confidence_threshold=classification_confidence_threshold,
+                    doc_max_concurrency=doc_concurrency,
+                    ocr_max_concurrency=ocr_concurrency,
+                    image_analysis_max_concurrency=image_analysis_concurrency,
+                    image_fit_max_concurrency=image_fit_concurrency,
+                    chunking_prefix_max_depth=chunking_prefix_max_depth,
+                    chunking_split_type=chunking_split_type,
+                    chunking_text_split_min_length=chunking_text_split_min_length,
+                    chunking_text_split_max_length=chunking_text_split_max_length,
+                    chunking_chunk_overlap=chunking_chunk_overlap,
+                    chunking_separator=chunking_separator,
+                    chunking_separators=parsed_chunking_separators,
+                    chunking_split_language=chunking_split_language,
+                    chunking_custom_separator=chunking_custom_separator,
+                    chunking_manual_split_points=parsed_manual_split_points,
+                    chunking_markdown_heading_correction_enabled=bool(chunking_markdown_heading_correction_enabled),
+                    progress_callback=report_doc_progress,
+                )
+                successful_sources = [f for f in file_contents if f["status"] == "success"]
+                if not successful_sources:
+                    raise RuntimeError("All uploaded files failed to read")
+
+                with progress_lock:
+                    status_data["ocr_summary"] = ocr_summary
+                    status_data["message"] = "文档预处理完成，开始完整流水线"
+                    status_data["updated_at"] = now_server_local_iso()
+                    upsert_pipeline_task_status(batch_task_id, status_data)
+
+                job_context = {
+                    **base_job_context,
+                    "file_contents": file_contents,
+                    "status_data": status_data,
+                }
+                await run_batch_complete_pipeline_async(job_context)
+            except asyncio.CancelledError:
+                with progress_lock:
+                    status_data["status"] = "canceled"
+                    status_data["message"] = "任务已取消"
+                    status_data["updated_at"] = now_server_local_iso()
+                    upsert_pipeline_task_status(batch_task_id, status_data)
+                raise
+            except Exception as exc:
+                with progress_lock:
+                    status_data["status"] = "failed"
+                    status_data["message"] = str(exc)
+                    status_data["error"] = str(exc)
+                    status_data["failed_files"] = status_data.get("failed_files") or len(files)
+                    status_data["updated_at"] = now_server_local_iso()
+                    upsert_pipeline_task_status(batch_task_id, status_data)
+                logger.exception("[batch %s] integrated document pipeline failed", batch_task_id)
+            finally:
+                _close_persisted_uploads(persisted_uploads)
+
         if sync_mode:
             try:
-                await run_batch_complete_pipeline_async(job_context)
+                await _run_integrated_job()
                 return get_pipeline_task_status(batch_task_id) or {
                     "task_id": batch_task_id,
                     "status": "failed",
@@ -537,7 +800,7 @@ async def batch_upload_integrated_document_pipeline(
             finally:
                 release_gpu_job(batch_task_id)
 
-        task = asyncio.create_task(run_batch_complete_pipeline_async(job_context))
+        task = asyncio.create_task(_run_integrated_job())
         ACTIVE_BATCH_JOBS[batch_task_id] = task
 
         def _cleanup(_task: asyncio.Task) -> None:
@@ -545,13 +808,13 @@ async def batch_upload_integrated_document_pipeline(
             release_gpu_job(batch_task_id)
 
         task.add_done_callback(_cleanup)
-        logger.info("[batch %s] job scheduled (%d files)", batch_task_id, len(file_contents))
+        logger.info("[batch %s] integrated job scheduled (%d files)", batch_task_id, len(files))
         return {
             "status": "processing",
             "batch_mode": True,
             "integrated_pipeline": True,
             "task_id": batch_task_id,
-            "message": "Batch job scheduled, use task-status to poll progress",
+            "message": "Batch job scheduled; document preprocessing progress is available in task-status",
             "status_store": get_pipeline_store_path(),
             "total_files": len(files),
             "save_mode": save_mode,
@@ -561,19 +824,37 @@ async def batch_upload_integrated_document_pipeline(
             "filter_by_threshold": filter_by_threshold,
             "knowledge_classifier": knowledge_classifier,
             "concurrency": concurrency_limit,
+            "doc_max_concurrency": doc_concurrency,
+            "ocr_max_concurrency": ocr_concurrency,
+            "image_analysis_max_concurrency": image_analysis_concurrency,
+            "image_fit_max_concurrency": image_fit_concurrency,
             "chunking_config": status_data["chunking_config"],
             "image_context_summary_mode": image_context_summary_mode,
+            "enable_image_analysis": bool(enable_image_analysis),
+            "image_analysis_use_api": bool(image_analysis_use_api),
+            "enable_image_classification": bool(enable_image_classification),
+            "classification_confidence_threshold": classification_confidence_threshold,
+            "vlm_api_type": vlm_api_type,
+            "vlm_model_name": vlm_model_name,
             "image_fit_check_enabled": image_fit_check_enabled,
             "image_fit_min_score": image_fit_min_score,
             "replace_images": resolved_replace_images,
         }
     except HTTPException:
         try:
+            _close_persisted_uploads(persisted_uploads)  # type: ignore[name-defined]
+        except Exception:
+            pass
+        try:
             release_gpu_job(batch_task_id)  # type: ignore[name-defined]
         except Exception:
             pass
         raise
     except Exception as exc:
+        try:
+            _close_persisted_uploads(persisted_uploads)  # type: ignore[name-defined]
+        except Exception:
+            pass
         try:
             release_gpu_job(batch_task_id)  # type: ignore[name-defined]
         except Exception:

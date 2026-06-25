@@ -39,9 +39,14 @@ milvus_data/
 /outputs/
 /uploads/
 
+# Runtime assets are local generated/provisioned state. Keep only explicit
+# directory placeholders so the expected tree can be recreated without tracking
+# model metadata, generated outputs, caches, uploads, or service volumes.
+runtime_assets/**
+!runtime_assets/**/
+!runtime_assets/**/.gitkeep
+
 # Large model artifacts should be provisioned outside Git or through Git LFS.
-# Keep runtime_assets directories and model metadata tracked; ignore only the
-# heavy model binaries themselves.
 *.pt
 *.pth
 *.bin

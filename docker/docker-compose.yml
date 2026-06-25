@@ -19,13 +19,18 @@ x-runtime-environment: &runtime-environment
   CLASSIFIER_API_BASE: "http://127.0.0.1:10488"
   OCR_USE_GPU: "${OCR_USE_GPU:-true}"
   OCR_REPLACE_IMAGES: "${OCR_REPLACE_IMAGES:-true}"
+  DOC_MAX_CONCURRENCY: "${DOC_MAX_CONCURRENCY:-1}"
+  OCR_MAX_CONCURRENCY: "${OCR_MAX_CONCURRENCY:-1}"
+  IMAGE_ANALYSIS_MAX_CONCURRENCY: "${IMAGE_ANALYSIS_MAX_CONCURRENCY:-1}"
+  IMAGE_FIT_MAX_CONCURRENCY: "${IMAGE_FIT_MAX_CONCURRENCY:-1}"
   VLM_API_BASE: "${VLM_API_BASE:-}"
   VLM_MODEL_NAME: "${VLM_MODEL_NAME:-}"
   VLM_API_KEY: "${VLM_API_KEY:-}"
   VLM_API_TYPE: "${VLM_API_TYPE:-openai}"
   VLM_MODEL_VERSION: "${VLM_MODEL_VERSION:-}"
+  VLM_API_MAX_CONCURRENT_REQUESTS: "${VLM_API_MAX_CONCURRENT_REQUESTS:-1}"
   SEED_LOCAL_OCR_PROFILE: "${SEED_LOCAL_OCR_PROFILE:-true}"
-  START_CLASSIFIER_SERVICE: "${START_CLASSIFIER_SERVICE:-false}"
+  START_CLASSIFIER_SERVICE: "${START_CLASSIFIER_SERVICE:-true}"
   SOFFICE_BINARY: "/usr/bin/soffice"
   PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK: "True"
   TORCH_HOME: "/app/runtime_assets/cache/torch"
@@ -47,16 +52,13 @@ services:
   qa-flow-runtime:
     image: qa-flow-runtime:latest
     container_name: qa-flow-runtime
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
     working_dir: /app
     init: true
     runtime: nvidia
     shm_size: "16gb"
     ports:
-      - "${HAO_API_HOST_PORT:-12000}:12000"
-      - "${DW_OCR_HOST_PORT:-11169}:11169"
+      - "${QA_FLOW_API_HOST_PORT:-12000}:12000"
+      - "${OCR_API_HOST_PORT:-11169}:11169"
       - "${CLASSIFIER_HOST_PORT:-10488}:10488"
       - "${MILVUS_HOST_PORT:-12530}:19530"
       - "${MILVUS_METRICS_HOST_PORT:-12091}:9091"

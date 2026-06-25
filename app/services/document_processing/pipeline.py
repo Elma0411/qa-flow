@@ -7,7 +7,7 @@ import math
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from app.services.document_processing.ocr_processor.ocr_models import OCRResult
 from app.services.document_processing.ocr_processor.ocr_processor import SimpleOCRProcessor
@@ -22,6 +22,29 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+
+def _emit_progress(
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]],
+    *,
+    stage: str,
+    state: str,
+    message: str,
+    extra: Optional[Dict[str, Any]] = None,
+) -> None:
+    if progress_callback is None:
+        return
+    try:
+        progress_callback(
+            {
+                "stage": stage,
+                "state": state,
+                "message": message,
+                "extra": extra or {},
+            }
+        )
+    except Exception:
+        logger.debug("PDF pipeline progress callback failed", exc_info=True)
 
 
 def _normalize_classification_confidence_threshold(value: Optional[float]) -> float:
@@ -145,6 +168,7 @@ class PDFPipeline:
         enable_classification: bool,
         classification_confidence_threshold: Optional[float],
         completion_label: str,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         pdf_name = ocr_result.pdf_name
         effective_classification_confidence_threshold = (
@@ -158,6 +182,13 @@ class PDFPipeline:
         image_analysis_time = 0.0
 
         if enable_image_analysis and ocr_result.images_info:
+            _emit_progress(
+                progress_callback,
+                stage="image_analysis",
+                state="processing",
+                message=f"图片理解中：共 {len(ocr_result.images_info)} 张图片",
+                extra={"total_images": len(ocr_result.images_info)},
+            )
             analysis_result = analyze_images_simple(
                 ocr_result=ocr_result,
                 output_dir=str(image_analysis_dir),
@@ -172,12 +203,25 @@ class PDFPipeline:
                 classifier_api_base=self.classifier_api_base,
                 classifier_timeout=self.classifier_timeout,
                 classification_confidence_threshold=effective_classification_confidence_threshold,
+                progress_callback=progress_callback,
             )
             image_analysis_time = float(analysis_result.processing_time)
             logger.info(
                 f"Image analysis completed - analyzed: "
                 f"{analysis_result.analyzed_images}/{analysis_result.total_images}, "
                 f"time: {image_analysis_time:.2f}s"
+            )
+            _emit_progress(
+                progress_callback,
+                stage="image_analysis",
+                state="completed",
+                message=f"图片理解完成：{analysis_result.analyzed_images}/{analysis_result.total_images}",
+                extra={
+                    "total_images": analysis_result.total_images,
+                    "analyzed_images": analysis_result.analyzed_images,
+                    "failed_images": analysis_result.total_images - analysis_result.analyzed_images,
+                    "image_analysis_seconds": image_analysis_time,
+                },
             )
         else:
             image_analysis_dir.mkdir(parents=True, exist_ok=True)
@@ -190,9 +234,17 @@ class PDFPipeline:
                 processing_time=0.0,
                 output_dir=image_analysis_dir,
             )
+            _emit_progress(
+                progress_callback,
+                stage="image_analysis",
+                state="completed",
+                message="图片理解跳过",
+                extra={"total_images": len(ocr_result.images_info), "enabled": enable_image_analysis},
+            )
 
         logger.info("Step 3: text integration")
         text_integration_dir = output_dir / "text_integration"
+        _emit_progress(progress_callback, stage="text_integration", state="processing", message="文本整合中")
 
         integration_result = self.text_integrator.integrate(
             ocr_result=ocr_result,
@@ -206,6 +258,18 @@ class PDFPipeline:
             f"Text integration completed - text length: "
             f"{integration_result.integrated_text_length}, "
             f"time: {text_integration_time:.2f}s"
+        )
+        _emit_progress(
+            progress_callback,
+            stage="text_integration",
+            state="completed",
+            message="文本整合完成",
+            extra={
+                "integrated_markdown_length": integration_result.integrated_markdown_length,
+                "integrated_text_length": integration_result.integrated_text_length,
+                "replaced_images": integration_result.replaced_images,
+                "text_integration_seconds": text_integration_time,
+            },
         )
 
         total_time = time.perf_counter() - total_start_time
@@ -263,6 +327,16 @@ class PDFPipeline:
         logger.info(f"Markdown file: {integration_result.markdown_output_file}")
         logger.info(f"Text file: {integration_result.text_output_file}")
         logger.info("=" * 60)
+        _emit_progress(
+            progress_callback,
+            stage="document_output",
+            state="completed",
+            message=f"{completion_label} 完成",
+            extra={
+                "total_processing_time": round(total_time, 2),
+                "stage_processing_times": stage_processing_times,
+            },
+        )
 
         return result
 
@@ -273,6 +347,7 @@ class PDFPipeline:
         enable_image_analysis: bool = True,
         enable_classification: bool = False,
         classification_confidence_threshold: Optional[float] = None,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         ocr_time = float(ocr_result.processing_time)
         total_start_time = time.perf_counter() - ocr_time
@@ -294,6 +369,7 @@ class PDFPipeline:
                 enable_classification=enable_classification,
                 classification_confidence_threshold=classification_confidence_threshold,
                 completion_label="Document tail processing",
+                progress_callback=progress_callback,
             )
         except Exception as e:
             logger.error(f"Processing from OCRResult failed: {e}")
@@ -308,6 +384,7 @@ class PDFPipeline:
         remove_watermark: Optional[bool] = None,
         watermark_dpi: Optional[int] = None,
         classification_confidence_threshold: Optional[float] = None,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         total_start_time = time.perf_counter()
         effective_remove_watermark = (
@@ -343,6 +420,7 @@ class PDFPipeline:
                 output_dir=str(ocr_output_dir),
                 remove_watermark=effective_remove_watermark,
                 watermark_dpi=effective_watermark_dpi,
+                progress_callback=progress_callback,
             )
 
             ocr_time = float(ocr_result.processing_time)
@@ -360,6 +438,7 @@ class PDFPipeline:
                 enable_classification=enable_classification,
                 classification_confidence_threshold=classification_confidence_threshold,
                 completion_label="PDF processing",
+                progress_callback=progress_callback,
             )
 
         except Exception as e:

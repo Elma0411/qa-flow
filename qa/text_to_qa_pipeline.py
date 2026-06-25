@@ -10,8 +10,6 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from openai import OpenAI
-
 from qa.grounding import (
     validate_source_fact_grounding as _validate_source_fact_grounding,
     validate_source_fact_text_detail_mode as _validate_source_fact_text_detail_mode,
@@ -165,7 +163,7 @@ def _build_jsonl_debug_writer(path: Optional[str]) -> Optional[Callable[[Dict[st
 
 
 def process_text_to_qa_one_step(
-    client: OpenAI,
+    client: Any,
     text: str,
     config: Dict[str, Any],
     original_filename: str = "",

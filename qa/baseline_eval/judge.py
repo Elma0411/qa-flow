@@ -7,10 +7,8 @@ import json
 import os
 from typing import Any, Dict
 
-from openai import APIConnectionError, APIError, OpenAI
-
 from app.core.config import CONFIG as APP_CONFIG
-from qa.common import extract_first_choice_content
+from app.services.llm import VLMClientConfig, create_vlm_client
 
 try:
     from app.services import llm_config as llm_config_service  # type: ignore
@@ -59,8 +57,17 @@ def _load_config_from_env() -> Dict[str, Any]:
     return cfg
 
 
-def build_judge_client(config: Dict[str, Any]) -> OpenAI:
-    return OpenAI(api_key=config["api_key"], base_url=config["base_url"])
+def build_judge_client(config: Dict[str, Any]):
+    return create_vlm_client(
+        VLMClientConfig.from_values(
+            api_base=config.get("base_url", ""),
+            model_name=config.get("model", ""),
+            api_key=config.get("api_key", ""),
+            api_type=config.get("api_type"),
+            model_version=config.get("model_version"),
+            timeout_seconds=float(config.get("request_timeout", 90)),
+        )
+    )
 
 
 def build_judge_system_prompt() -> str:
@@ -144,19 +151,19 @@ def judge_pair(
     last_error: Exception | None = None
     for attempt in range(int(config.get("max_retries", 2)) + 1):
         try:
-            resp = client.chat.completions.create(
+            content = client.create_chat_completion_text(
                 model=config["model"],
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
+                temperature=0.0,
                 response_format={"type": "json_object"},
-                timeout=int(config.get("request_timeout", 90)),
-            )
-            content = extract_first_choice_content(resp) or ""
+                timeout=float(config.get("request_timeout", 90)),
+            ) or ""
             data = json.loads(content)
             return _normalize_judge_result(data)
-        except (APIConnectionError, APIError, json.JSONDecodeError, ValueError) as exc:
+        except (json.JSONDecodeError, ValueError, Exception) as exc:
             last_error = exc
         except Exception as exc:  # pragma: no cover
             last_error = exc
@@ -167,4 +174,3 @@ def judge_pair(
         "semantic_equivalence": {"score": 0.0, "reasons": fallback_reason},
         "style_similarity": {"score": 0.0, "reasons": fallback_reason},
     }
-

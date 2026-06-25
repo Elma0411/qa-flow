@@ -15,9 +15,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
-from openai import OpenAI
 
-from qa.common import extract_first_choice_content
+from app.services.llm import VLMClientConfig, create_vlm_client
 
 # 确保可以从项目根目录导入 qa / app 等包
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -274,14 +273,13 @@ def _call_llm(
     last_error: Exception | None = None
     for _attempt in range(max_retries + 1):
         try:
-            resp = client.chat.completions.create(
+            content = client.create_chat_completion_text(
                 model=model,
                 messages=messages,
                 max_tokens=max_new_tokens,
                 temperature=temperature,
-                timeout=timeout_seconds,
-            )
-            content = extract_first_choice_content(resp) or ""
+                timeout=float(timeout_seconds),
+            ) or ""
             if content.strip():
                 return content
         except Exception as exc:  # pragma: no cover
@@ -828,13 +826,22 @@ def main() -> None:
     args = _parse_args()
 
     judge_cfg: Dict[str, Any] = {}
-    judge_client: OpenAI | None = None
+    judge_client: Any = None
     if not args.skip_judge:
         judge_cfg = _load_config_from_env()
         judge_client = build_judge_client(judge_cfg)
 
     gen_cfg = _build_generation_config(args, judge_cfg)
-    gen_client = OpenAI(api_key=gen_cfg["api_key"], base_url=gen_cfg["base_url"])
+    gen_client = create_vlm_client(
+        VLMClientConfig.from_values(
+            api_base=gen_cfg.get("base_url", ""),
+            model_name=gen_cfg.get("model", "default"),
+            api_key=gen_cfg.get("api_key", ""),
+            api_type=gen_cfg.get("api_type"),
+            model_version=gen_cfg.get("model_version"),
+            timeout_seconds=float(gen_cfg.get("request_timeout", 120)),
+        )
+    )
 
     try:
         aligner = QAEvaluator(use_local_models=True)

@@ -13,16 +13,16 @@ pip install -r requirements.txt
 python scripts/start_api.py
 ```
 
-Docker 正式部署使用以下命令启动。该 Compose 会基于 `docker/Dockerfile`
-构建纯依赖镜像，并在同一容器内同时启动 QA Flow API、QA Flow OCR API、etcd、
-MinIO 和 Milvus：
+Docker 正式部署使用以下命令启动。该 Compose 直接使用本机已有的
+`qa-flow-runtime:latest` 镜像，并在同一容器内同时启动 QA Flow API、
+QA Flow OCR API、etcd、MinIO 和 Milvus：
 
 ```bash
-docker compose -f docker/docker-compose.yml up -d --build
+docker compose -f docker/docker-compose.yml up -d
 ```
 
-离线镜像部署时不要使用 `--build`，直接基于已导入的
-`qa-flow-runtime:latest` 启动：
+离线镜像部署同样不要使用 `--build`，需要先确认本机已导入
+`qa-flow-runtime:latest`：
 
 ```bash
 docker compose -f docker/docker-compose.yml up -d
@@ -199,6 +199,10 @@ Milvus 查询结果，而不是继续依赖已过期的 JSON 或 CSV 文件。
 - `POST /ocr-configs/{name}/activate`
 - `DELETE /ocr-configs/{name}`
 - `POST /ocr-configs/{name}/test`
+
+LLM 配置项包含 `name`、`api_key`、`base_url`、`model`，以及可选的
+`api_type` 和 `model_version`。`api_type` 支持 `openai`、`lmp_cloud`；
+其他高级请求参数继续由统一 LLM client 的默认值或环境变量控制。
 
 调试和辅助接口：
 

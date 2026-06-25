@@ -360,6 +360,8 @@ async def batch_upload_complete_pipeline_with_evaluation(
             "api_key": CONFIG["api_key"],
             "base_url": CONFIG["base_url"],
             "model": CONFIG["model"],
+            "api_type": CONFIG.get("api_type") or "openai",
+            "model_version": CONFIG.get("model_version") or "",
             "max_retries": CONFIG["max_retries"],
         }
 

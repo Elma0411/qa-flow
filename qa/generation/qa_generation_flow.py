@@ -9,12 +9,9 @@ import math
 import random
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from openai import OpenAI
-
 from qa.common import (
     build_language_instruction,
     detect_language,
-    extract_first_choice_content,
     safe_response_dump,
 )
 from qa.grounding import normalize_grounding_text, validate_source_fact_grounding
@@ -287,7 +284,7 @@ def _resolve_generation_language(prompt_language: str, text: str) -> Tuple[str, 
 
 def call_candidate_question_llm(
     *,
-    client: OpenAI,
+    client: Any,
     model: str,
     source_chunk_text: str,
     source_chunk_meta: Dict[str, Any],
@@ -328,18 +325,18 @@ def call_candidate_question_llm(
     raw = ""
     parse_error: Optional[str] = None
     try:
-        response = client.chat.completions.create(
+        raw = client.create_chat_completion_text(
             model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ],
+            temperature=0.0,
             response_format={"type": "json_object"},
-            timeout=request_timeout,
-        )
-        response_type = type(response).__name__
-        response_dump = safe_response_dump(response)
-        raw = extract_first_choice_content(response).strip()
+            timeout=float(request_timeout),
+        ).strip()
+        response_type = "str"
+        response_dump = safe_response_dump(raw)
         raw_items = _parse_json_items(raw)
     except Exception as exc:
         parse_error = str(exc)
@@ -409,7 +406,7 @@ def call_candidate_question_llm(
 
 def call_evidence_answer_llm(
     *,
-    client: OpenAI,
+    client: Any,
     model: str,
     candidate: Dict[str, Any],
     generation_unit: Dict[str, Any],
@@ -467,18 +464,18 @@ def call_evidence_answer_llm(
     parse_error: Optional[str] = None
     dropped_reason = ""
     try:
-        response = client.chat.completions.create(
+        raw = client.create_chat_completion_text(
             model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ],
+            temperature=0.0,
             response_format={"type": "json_object"},
-            timeout=request_timeout,
-        )
-        response_type = type(response).__name__
-        response_dump = safe_response_dump(response)
-        raw = extract_first_choice_content(response).strip()
+            timeout=float(request_timeout),
+        ).strip()
+        response_type = "str"
+        response_dump = safe_response_dump(raw)
         raw_items = _parse_json_items(raw)
     except Exception as exc:
         parse_error = str(exc)

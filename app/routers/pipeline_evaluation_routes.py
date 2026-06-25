@@ -13,7 +13,6 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 from qa.qa_evaluation.llm_quality_evaluator import DEFAULT_CONFIG as EVAL_DEFAULT_CONFIG, evaluate_qa_pairs
-from qa.common import extract_first_choice_content
 
 from app.core.clients import build_openai_client
 from app.core.config import LOCAL_EVALUATION_METRICS
@@ -275,12 +274,13 @@ async def upload_evaluate_qa(
         try:
             client = build_openai_client(EVAL_DEFAULT_CONFIG["api_key"], EVAL_DEFAULT_CONFIG["base_url"])
             try:
-                resp = client.chat.completions.create(
+                result = client.create_chat_completion_text(
                     model=EVAL_DEFAULT_CONFIG["model"],
                     messages=[{"role": "user", "content": "测试连接"}],
+                    temperature=0.0,
                     max_tokens=5,
                 )
-                logger.info("评估 API 连接正常: %s", extract_first_choice_content(resp).strip())
+                logger.info("评估 API 连接正常: %s", result.strip())
             except Exception as exc:
                 return JSONResponse(
                     status_code=500,

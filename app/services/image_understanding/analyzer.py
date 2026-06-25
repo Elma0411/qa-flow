@@ -6,10 +6,11 @@ import re
 import time
 import traceback
 import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
     from openai import APIConnectionError, APIStatusError, APITimeoutError
@@ -131,6 +132,23 @@ def _get_env_bool(name: str, default: bool) -> bool:
     if raw is None:
         return default
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _normalize_max_concurrency(
+    value: Optional[int],
+    *,
+    env_name: str,
+    default: int,
+    maximum: int = 64,
+) -> int:
+    raw: Any = value
+    if raw is None:
+        raw = os.getenv(env_name)
+    try:
+        resolved = int(raw)
+    except (TypeError, ValueError):
+        resolved = int(default)
+    return max(1, min(maximum, resolved))
 
 
 def _normalize_confidence_threshold(value: float) -> float:
@@ -429,6 +447,8 @@ class BatchVLMDocParser:
         classifier_api_base: str = None,
         classifier_timeout: int = 30,
         classification_confidence_threshold: float = 0.0,
+        max_concurrency: Optional[int] = None,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ):
         assert len({len(a_contexts), len(b_contexts), len(images_list), len(image_ids)}) == 1
 
@@ -470,6 +490,12 @@ class BatchVLMDocParser:
         self.classification_confidence_threshold = _normalize_confidence_threshold(
             classification_confidence_threshold
         )
+        self.max_concurrency = _normalize_max_concurrency(
+            max_concurrency,
+            env_name="IMAGE_ANALYSIS_MAX_CONCURRENCY",
+            default=1,
+            maximum=64,
+        )
 
         self.current_index = 0
         self.raw_results: Dict[int, str] = {}
@@ -479,6 +505,7 @@ class BatchVLMDocParser:
         self.classification_results: Dict[int, ClassificationResult] = {}
         self.encoded_image_cache: Dict[str, str] = {}
         self._owns_api_client = False
+        self.progress_callback = progress_callback
 
         Path(self.output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -541,6 +568,28 @@ class BatchVLMDocParser:
             except Exception:
                 logger.debug("Failed to close VLM API client", exc_info=True)
 
+    def _emit_progress(
+        self,
+        *,
+        stage: str,
+        state: str,
+        message: str,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if self.progress_callback is None:
+            return
+        try:
+            self.progress_callback(
+                {
+                    "stage": stage,
+                    "state": state,
+                    "message": message,
+                    "extra": extra or {},
+                }
+            )
+        except Exception:
+            logger.debug("Image analyzer progress callback failed", exc_info=True)
+
     def _recreate_api_client(self, reason: str) -> None:
         if not self.use_api:
             return
@@ -582,6 +631,12 @@ class BatchVLMDocParser:
         if not self.enable_classification:
             logger.info("Image classification disabled, using unified prompt for all %s images", len(self.image_ids))
             self.classification_results = default_results
+            self._emit_progress(
+                stage="image_classification",
+                state="completed",
+                message="图片分类跳过，使用统一图片理解 prompt",
+                extra={"enabled": False, "total_images": len(self.image_ids)},
+            )
             return
 
         logger.info(
@@ -589,6 +644,16 @@ class BatchVLMDocParser:
             len(self.image_ids),
             self.classifier_api_base or "default classifier endpoint",
             self.classification_confidence_threshold,
+        )
+        self._emit_progress(
+            stage="image_classification",
+            state="processing",
+            message=f"图片分类中：共 {len(self.image_ids)} 张图片",
+            extra={
+                "enabled": True,
+                "total_images": len(self.image_ids),
+                "threshold": self.classification_confidence_threshold,
+            },
         )
 
         valid_indices: List[int] = []
@@ -629,6 +694,28 @@ class BatchVLMDocParser:
                 )
 
         self.classification_results = default_results
+        success_count = sum(1 for result in default_results.values() if result.status == "success")
+        failed_results = [
+            {
+                "image_id": result.image_id,
+                "error": result.error_message or result.status,
+            }
+            for result in default_results.values()
+            if result.status != "success"
+        ]
+        self._emit_progress(
+            stage="image_classification",
+            state="completed",
+            message=f"图片分类完成：{success_count}/{len(default_results)}",
+            extra={
+                "enabled": True,
+                "total_images": len(default_results),
+                "success_count": success_count,
+                "failed_count": len(default_results) - success_count,
+                "threshold": self.classification_confidence_threshold,
+                "classification_errors": failed_results[:5],
+            },
+        )
 
     def _resolve_prompt(self, index: int):
         classification = self.classification_results.get(
@@ -836,6 +923,18 @@ class BatchVLMDocParser:
                 _, prompt_config = self._resolve_prompt(i)
                 a_context, b_context = self._get_prompt_contexts(i)
                 image_paths = self.images_list[i]
+                self._emit_progress(
+                    stage="image_analysis",
+                    state="processing",
+                    message=f"图片理解中：{i + 1}/{len(self.image_ids)}",
+                    extra={
+                        "image_id": self.image_ids[i],
+                        "image_index": i + 1,
+                        "total_images": len(self.image_ids),
+                        "prompt_key": prompt_config.category_key,
+                        "image_type": prompt_config.display_name,
+                    },
+                )
                 logger.info(
                     "Starting API image analysis image_id=%s prompt=%s image_type=%s images=%s context_before_chars=%s context_after_chars=%s first_image=%s",
                     self.image_ids[i],
@@ -866,6 +965,18 @@ class BatchVLMDocParser:
                         self.error_info[i],
                         time.perf_counter() - image_start,
                     )
+                    self._emit_progress(
+                        stage="image_analysis",
+                        state="processing",
+                        message=f"图片 {self.image_ids[i]} 理解失败：{self.error_info[i]}",
+                        extra={
+                            "image_id": self.image_ids[i],
+                            "image_index": i + 1,
+                            "total_images": len(self.image_ids),
+                            "prompt_key": prompt_config.category_key,
+                            "error": self.error_info[i],
+                        },
+                    )
                     continue
 
                 raw_text = self._normalize_generated_text(i, raw_text)
@@ -878,6 +989,18 @@ class BatchVLMDocParser:
                         prompt_config.category_key,
                         time.perf_counter() - image_start,
                     )
+                    self._emit_progress(
+                        stage="image_analysis",
+                        state="processing",
+                        message=f"图片 {self.image_ids[i]} 返回内容无效",
+                        extra={
+                            "image_id": self.image_ids[i],
+                            "image_index": i + 1,
+                            "total_images": len(self.image_ids),
+                            "prompt_key": prompt_config.category_key,
+                            "error": self.error_info[i],
+                        },
+                    )
                 else:
                     self.raw_results[i] = raw_text
                     logger.info(
@@ -887,6 +1010,18 @@ class BatchVLMDocParser:
                         time.perf_counter() - image_start,
                         len(raw_text),
                         _preview_text(raw_text),
+                    )
+                    self._emit_progress(
+                        stage="image_analysis",
+                        state="processing",
+                        message=f"图片理解完成：{i + 1}/{len(self.image_ids)}",
+                        extra={
+                            "image_id": self.image_ids[i],
+                            "image_index": i + 1,
+                            "total_images": len(self.image_ids),
+                            "prompt_key": prompt_config.category_key,
+                            "output_chars": len(raw_text),
+                        },
                     )
 
                 if self.request_config.inter_request_delay_seconds > 0:
@@ -899,6 +1034,17 @@ class BatchVLMDocParser:
                 self.error_info[i] = f"processing failed: {exc}"
                 self.raw_results[i] = ""
                 logger.exception("Image analysis failed for %s", self.image_ids[i])
+                self._emit_progress(
+                    stage="image_analysis",
+                    state="processing",
+                    message=f"图片 {self.image_ids[i]} 处理异常：{exc}",
+                    extra={
+                        "image_id": self.image_ids[i],
+                        "image_index": i + 1,
+                        "total_images": len(self.image_ids),
+                        "error": str(exc),
+                    },
+                )
 
     def _batch_inference_vllm(self, start: int, end: int):
         messages_list = []
@@ -917,6 +1063,18 @@ class BatchVLMDocParser:
                 len(a_context),
                 len(b_context),
                 self.images_list[i][0] if self.images_list[i] else "",
+            )
+            self._emit_progress(
+                stage="image_analysis",
+                state="processing",
+                message=f"图片理解排队：{i + 1}/{len(self.image_ids)}",
+                extra={
+                    "image_id": self.image_ids[i],
+                    "image_index": i + 1,
+                    "total_images": len(self.image_ids),
+                    "prompt_key": prompt_config.category_key,
+                    "image_type": prompt_config.display_name,
+                },
             )
             messages_list.append(
                 build_vllm_messages(
@@ -937,6 +1095,17 @@ class BatchVLMDocParser:
                 len(indices),
                 time.perf_counter() - batch_start,
             )
+            self._emit_progress(
+                stage="image_analysis",
+                state="processing",
+                message=f"本地 vLLM 图片批次完成：{len(indices)} 张",
+                extra={
+                    "batch_start": start + 1,
+                    "batch_end": end,
+                    "batch_size": len(indices),
+                    "elapsed_seconds": round(time.perf_counter() - batch_start, 2),
+                },
+            )
             for idx, output in zip(indices, outputs):
                 raw_text = self._normalize_generated_text(idx, output.outputs[0].text.strip())
                 if is_invalid_response(raw_text):
@@ -946,6 +1115,17 @@ class BatchVLMDocParser:
                         "Local VLLM produced invalid output image_id=%s",
                         self.image_ids[idx],
                     )
+                    self._emit_progress(
+                        stage="image_analysis",
+                        state="processing",
+                        message=f"图片 {self.image_ids[idx]} 返回内容无效",
+                        extra={
+                            "image_id": self.image_ids[idx],
+                            "image_index": idx + 1,
+                            "total_images": len(self.image_ids),
+                            "error": self.error_info[idx],
+                        },
+                    )
                 else:
                     self.raw_results[idx] = raw_text
                     logger.info(
@@ -954,11 +1134,33 @@ class BatchVLMDocParser:
                         len(raw_text),
                         _preview_text(raw_text),
                     )
+                    self._emit_progress(
+                        stage="image_analysis",
+                        state="processing",
+                        message=f"图片理解完成：{idx + 1}/{len(self.image_ids)}",
+                        extra={
+                            "image_id": self.image_ids[idx],
+                            "image_index": idx + 1,
+                            "total_images": len(self.image_ids),
+                            "output_chars": len(raw_text),
+                        },
+                    )
         except Exception as exc:
             for idx in indices:
                 self.error_info[idx] = f"local vllm inference failed: {exc}"
                 self.raw_results[idx] = ""
                 logger.error("Local vLLM inference failed for %s: %s", self.image_ids[idx], exc)
+                self._emit_progress(
+                    stage="image_analysis",
+                    state="processing",
+                    message=f"图片 {self.image_ids[idx]} 本地 vLLM 推理失败：{exc}",
+                    extra={
+                        "image_id": self.image_ids[idx],
+                        "image_index": idx + 1,
+                        "total_images": len(self.image_ids),
+                        "error": str(exc),
+                    },
+                )
 
     def process_all_automatically(self, batch_size: int = 1) -> AnalysisResult:
         start_time = time.perf_counter()
@@ -971,19 +1173,48 @@ class BatchVLMDocParser:
             self.classification_confidence_threshold,
             self.output_dir,
         )
+        self._emit_progress(
+            stage="image_analysis",
+            state="processing",
+            message=f"图片理解开始：共 {len(self.image_ids)} 张图片",
+            extra={
+                "total_images": len(self.image_ids),
+                "mode": "api" if self.use_api else "local_vllm",
+                "classification_enabled": self.enable_classification,
+                "classification_confidence_threshold": self.classification_confidence_threshold,
+            },
+        )
         self._classify_images()
 
-        while self.current_index < len(self.a_contexts):
-            start = self.current_index
-            end = min(start + batch_size, len(self.a_contexts))
-            logger.info("Analyzing images %s-%s", start, end - 1)
+        if self.use_api and self.max_concurrency > 1 and len(self.a_contexts) > 1:
+            max_workers = min(self.max_concurrency, len(self.a_contexts))
+            logger.info("Analyzing images with API concurrency=%s", max_workers)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_map = {
+                    executor.submit(self._batch_inference_api, index, index + 1): index
+                    for index in range(len(self.a_contexts))
+                }
+                for future in as_completed(future_map):
+                    index = future_map[future]
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        self.error_info[index] = f"processing failed: {exc}"
+                        self.raw_results[index] = ""
+                        logger.exception("Image analysis worker failed for %s", self.image_ids[index])
+            self.current_index = len(self.a_contexts)
+        else:
+            while self.current_index < len(self.a_contexts):
+                start = self.current_index
+                end = min(start + batch_size, len(self.a_contexts))
+                logger.info("Analyzing images %s-%s", start, end - 1)
 
-            if self.use_api:
-                self._batch_inference_api(start, end)
-            else:
-                self._batch_inference_vllm(start, end)
+                if self.use_api:
+                    self._batch_inference_api(start, end)
+                else:
+                    self._batch_inference_vllm(start, end)
 
-            self.current_index = end
+                self.current_index = end
 
         processing_time = time.perf_counter() - start_time
         result = self._pack_results(processing_time=processing_time)
@@ -996,6 +1227,18 @@ class BatchVLMDocParser:
             result.total_images,
             processing_time,
             self.output_dir,
+        )
+        self._emit_progress(
+            stage="image_analysis",
+            state="completed",
+            message=f"图片理解完成：{result.analyzed_images}/{result.total_images}",
+            extra={
+                "total_images": result.total_images,
+                "analyzed_images": result.analyzed_images,
+                "failed_images": result.total_images - result.analyzed_images,
+                "processing_time": processing_time,
+                "output_dir": str(self.output_dir),
+            },
         )
         return result
 
@@ -1112,6 +1355,8 @@ def analyze_images_simple(
     classifier_api_base: str = None,
     classifier_timeout: int = 30,
     classification_confidence_threshold: float = 0.0,
+    max_concurrency: Optional[int] = None,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> AnalysisResult:
     normalized_infos = [_normalize_image_info(info) for info in ocr_result.images_info]
 
@@ -1136,4 +1381,6 @@ def analyze_images_simple(
         classifier_api_base=classifier_api_base,
         classifier_timeout=classifier_timeout,
         classification_confidence_threshold=classification_confidence_threshold,
+        max_concurrency=max_concurrency,
+        progress_callback=progress_callback,
     ).process_all_automatically(batch_size=1)

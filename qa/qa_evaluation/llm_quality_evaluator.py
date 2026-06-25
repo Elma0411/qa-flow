@@ -8,14 +8,14 @@ import os
 import argparse
 from typing import List, Dict, Any, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from openai import OpenAI
-from openai import APIConnectionError, APIError
-from qa.common import build_language_instruction, detect_language, extract_first_choice_content
+
+from qa.common import build_language_instruction, detect_language
 from qa.prompts.llm_quality_evaluation_prompts import (
     SUPPORTED_METRICS,
     get_evaluation_prompts,
     get_system_prompt,
 )
+from app.services.llm import VLMClientConfig, create_vlm_client, get_llm_client_pool, LLMClientConfig
 
 # 默认配置（优先使用环境变量注入，避免明文 Key）
 ENV_API_KEY = os.environ.get("LLM_API_KEY") or ""
@@ -114,21 +114,15 @@ def load_config(args):
 def test_api_connection(client, model: str):
     """API连接测试"""
     try:
-        response = client.chat.completions.create(
+        result = client.create_chat_completion_text(
             model=model,
             messages=[{"role": "user", "content": "请回复'OK'"}],
+            temperature=0.0,
             max_tokens=5,
-            timeout=15
-        )
-        result = extract_first_choice_content(response).strip()
+            timeout=15,
+        ).strip()
         print(f"API连接测试: {result}")
         return True
-    except APIConnectionError:
-        print("网络连接失败，请检查网络设置")
-        return False
-    except APIError as e:
-        print(f"API错误: {e.message}")
-        return False
     except Exception as e:
         print(f"连接测试失败: {str(e)}")
         return False
@@ -476,20 +470,16 @@ def evaluate_metric(client, metric: str, paper_text: str, qa_pair: Dict, config:
                     print(
                         f"评估 {metric} 中... (第{eval_attempt+1}/{evaluation_count}次评估，尝试 {attempt+1}/{config['max_retries']})"
                     )
-                    response = client.chat.completions.create(
+                    raw_response = client.create_chat_completion_text(
                         model=config["model"],
                         messages=[system_prompt, {"role": "user", "content": prompt}],
                         temperature=0.1,
                         max_tokens=2000,
-                        timeout=config["request_timeout"],
+                        timeout=float(config["request_timeout"]),
                     )
-                    raw_response = extract_first_choice_content(response)
                     break
-                except (APIConnectionError, APIError) as e:
-                    print(f"API异常: {str(e)}")
-                    time.sleep(2)
                 except Exception as e:
-                    print(f"未知错误: {str(e)}")
+                    print(f"调用异常: {str(e)}")
                     time.sleep(2)
             if raw_response:
                 raw_history.append(raw_response)
@@ -612,10 +602,16 @@ def main():
     # 加载配置
     config = load_config(args)
     
-    # 初始化客户端
-    client = OpenAI(
-        api_key=config["api_key"],
-        base_url=config["base_url"],
+    # 初始化客户端（使用统一工厂）
+    client = create_vlm_client(
+        VLMClientConfig.from_values(
+            api_base=config["base_url"],
+            model_name=config["model"],
+            api_key=config["api_key"],
+            api_type=config.get("api_type"),
+            model_version=config.get("model_version"),
+            timeout_seconds=float(config.get("request_timeout", 120)),
+        )
     )
     
     # 测试API连接
@@ -716,10 +712,21 @@ def evaluate_qa_pairs(
             merged_cfg["max_retries"] = llm_config["max_retries"]
         if llm_config.get("request_timeout") is not None:
             merged_cfg["request_timeout"] = llm_config["request_timeout"]
+        if llm_config.get("timeout_seconds") is not None:
+            merged_cfg["request_timeout"] = llm_config["timeout_seconds"]
+        for key in ("api_type", "model_version"):
+            if llm_config.get(key) is not None:
+                merged_cfg[key] = llm_config[key]
 
-    client = OpenAI(
-        api_key=merged_cfg["api_key"],
-        base_url=merged_cfg["base_url"],
+    client = create_vlm_client(
+        VLMClientConfig.from_values(
+            api_base=merged_cfg["base_url"],
+            model_name=merged_cfg["model"],
+            api_key=merged_cfg["api_key"],
+            api_type=merged_cfg.get("api_type"),
+            model_version=merged_cfg.get("model_version"),
+            timeout_seconds=float(merged_cfg.get("request_timeout", 120)),
+        )
     )
 
     try:

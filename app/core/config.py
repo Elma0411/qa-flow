@@ -32,6 +32,8 @@ except Exception:
 API_KEY = os.environ.get("LLM_API_KEY", "")
 BASE_URL = os.environ.get("LLM_BASE_URL") or "https://open.bigmodel.cn/api/paas/v4/"
 MODEL = os.environ.get("LLM_MODEL") or "glm-4-flash"
+API_TYPE = os.environ.get("LLM_API_TYPE") or os.environ.get("VLM_API_TYPE") or "openai"
+MODEL_VERSION = os.environ.get("LLM_MODEL_VERSION") or os.environ.get("VLM_MODEL_VERSION") or ""
 
 _UNSUPERVISED_HYPOTHESIS_TIMEOUT_ENV = str(os.environ.get("UNSUPERVISED_HYPOTHESIS_TIMEOUT") or "").strip()
 UNSUPERVISED_HYPOTHESIS_TIMEOUT = (
@@ -155,6 +157,8 @@ CONFIG = {
     "api_key": API_KEY,
     "base_url": BASE_URL,
     "model": MODEL,
+    "api_type": API_TYPE,
+    "model_version": MODEL_VERSION,
     "request_timeout": int(os.environ.get("LLM_REQUEST_TIMEOUT", "120") or 120),
     # 文件路径
     "runtime_root": RUNTIME_ROOT,
