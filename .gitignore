@@ -32,15 +32,16 @@ tmp/
 temp/
 .tmp/
 
-# Runtime data, generated outputs, model caches, and local service volumes
-runtime_assets/
+# Root-level generated outputs and local service volumes outside runtime_assets
 milvus_data/
-volumes/
-output/
-outputs/
-uploads/
+/volumes/
+/output/
+/outputs/
+/uploads/
 
 # Large model artifacts should be provisioned outside Git or through Git LFS.
+# Keep runtime_assets directories and model metadata tracked; ignore only the
+# heavy model binaries themselves.
 *.pt
 *.pth
 *.bin
@@ -54,4 +55,3 @@ uploads/
 # Downloaded dataset archives
 qa/dataset/**/*.tar.gz
 qa/dataset/**/*.tgz
-

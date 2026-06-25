@@ -1,0 +1,7 @@
+{
+  "base_model_name": "hfl/rbt3",
+  "num_level1": 9,
+  "num_level2": 59,
+  "num_leaf": 169,
+  "max_length": 192
+}
