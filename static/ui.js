@@ -1459,6 +1459,143 @@
     }
   }
 
+  function initAppShell() {
+    const header = document.querySelector("body > header");
+    const main = document.querySelector("main");
+    if (!header || !main || document.querySelector(".app-workbar")) return;
+
+    document.body.classList.add("app-shell");
+    const titleText = String(header.querySelector("h1")?.textContent || document.title || "QA Flow").trim();
+    const activeNav = header.querySelector(".nav a.active");
+    const currentSection = String(activeNav?.textContent || "").trim();
+    const themeToggle = document.getElementById("themeToggle");
+
+    const workbar = document.createElement("div");
+    workbar.className = "app-workbar";
+
+    const titleWrap = document.createElement("div");
+    titleWrap.className = "app-workbar-title";
+    const section = document.createElement("div");
+    section.className = "app-workbar-section";
+    section.textContent = currentSection || "QA Flow";
+    const title = document.createElement("h2");
+    title.textContent = titleText;
+    titleWrap.append(section, title);
+
+    const actions = document.createElement("div");
+    actions.className = "app-workbar-actions";
+    const status = document.createElement("span");
+    status.className = "app-runtime-pill";
+    status.textContent = "Docker runtime";
+    actions.appendChild(status);
+    if (themeToggle) actions.appendChild(themeToggle);
+
+    workbar.append(titleWrap, actions);
+    main.insertAdjacentElement("beforebegin", workbar);
+  }
+
+  function initAdminFilterModal() {
+    const form = document.getElementById("filterForm");
+    const section = form ? form.closest("section") : null;
+    if (!form || !section || document.getElementById("adminFiltersModal")) return;
+
+    const launch = document.createElement("div");
+    launch.className = "filter-launch-bar";
+    const copy = document.createElement("div");
+    copy.className = "filter-launch-copy";
+    copy.textContent = "筛选条件已收进 Filters，列表和语义检索共用同一组条件。";
+    const openBtn = document.createElement("button");
+    openBtn.type = "button";
+    openBtn.id = "btnOpenAdminFilters";
+    openBtn.textContent = "Filters";
+    launch.append(copy, openBtn);
+
+    const title = section.querySelector("h2");
+    if (title) title.insertAdjacentElement("afterend", launch);
+    else section.prepend(launch);
+
+    const overlay = document.createElement("div");
+    overlay.id = "adminFiltersOverlay";
+    overlay.className = "drawer-overlay";
+    overlay.hidden = true;
+
+    const modal = document.createElement("aside");
+    modal.id = "adminFiltersModal";
+    modal.className = "settings-modal";
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    modal.setAttribute("aria-labelledby", "adminFiltersTitle");
+    modal.setAttribute("aria-hidden", "true");
+    modal.hidden = true;
+
+    const header = document.createElement("div");
+    header.className = "settings-modal-header";
+    const headCopy = document.createElement("div");
+    const modalTitle = document.createElement("h2");
+    modalTitle.id = "adminFiltersTitle";
+    modalTitle.className = "settings-modal-title";
+    modalTitle.textContent = "Filters";
+    const desc = document.createElement("p");
+    desc.className = "settings-modal-desc";
+    desc.textContent = "按任务、文件、题型、分数、上架状态和语义检索条件筛选 QA 数据。";
+    headCopy.append(modalTitle, desc);
+    const closeTop = document.createElement("button");
+    closeTop.type = "button";
+    closeTop.className = "icon-btn settings-modal-close";
+    closeTop.setAttribute("aria-label", "关闭筛选");
+    closeTop.innerHTML = '<span aria-hidden="true">×</span>';
+    header.append(headCopy, closeTop);
+
+    const body = document.createElement("div");
+    body.className = "settings-modal-body";
+    body.appendChild(form);
+
+    const footer = document.createElement("div");
+    footer.className = "settings-modal-footer";
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "secondary";
+    close.textContent = "Cancel";
+    const apply = document.createElement("button");
+    apply.type = "button";
+    apply.textContent = "Apply";
+    footer.append(close, apply);
+
+    modal.append(header, body, footer);
+    document.body.append(overlay, modal);
+
+    const open = () => {
+      overlay.hidden = false;
+      modal.hidden = false;
+      window.requestAnimationFrame(() => {
+        overlay.classList.add("is-open");
+        modal.classList.add("is-open");
+        modal.setAttribute("aria-hidden", "false");
+        document.body.classList.add("drawer-open");
+      });
+    };
+    const closeModal = () => {
+      overlay.classList.remove("is-open");
+      modal.classList.remove("is-open");
+      modal.setAttribute("aria-hidden", "true");
+      document.body.classList.remove("drawer-open");
+      window.setTimeout(() => {
+        overlay.hidden = true;
+        modal.hidden = true;
+      }, 180);
+    };
+
+    openBtn.addEventListener("click", open);
+    closeTop.addEventListener("click", closeModal);
+    close.addEventListener("click", closeModal);
+    overlay.addEventListener("click", closeModal);
+    apply.addEventListener("click", () => {
+      const activeButton = document.querySelector('[data-query-mode-panel]:not([hidden]) button[id^="btnRun"]');
+      if (activeButton instanceof HTMLButtonElement) activeButton.click();
+      closeModal();
+    });
+  }
+
   function initFormAttrs() {
     const controls = document.querySelectorAll("input[id], textarea[id], select[id]");
     controls.forEach((el) => {
@@ -1598,6 +1735,8 @@
   window.apiuseUi.enhanceTableWrapScroll = enhanceTableWrapScroll;
 
   ready(() => {
+    initAppShell();
+    initAdminFilterModal();
     initTheme();
     initFormAttrs();
     enhanceTableWrapScroll();

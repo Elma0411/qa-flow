@@ -1,5 +1,5 @@
 window.__QA_UI_APPJS_READY__ = true;
-window.__QA_UI_APPJS_VERSION__ = '2026-07-03-1';
+window.__QA_UI_APPJS_VERSION__ = '2026-07-03-2';
 
 let currentDwJobPoller = null;
 
@@ -657,6 +657,12 @@ function closestNodeForSelector(selector, closestSelector) {
 
 function resolveModuleNode(def) {
   if (!def) return null;
+  if (def.heading) {
+    const heading = document.createElement('div');
+    heading.className = 'settings-section-title';
+    heading.textContent = String(def.heading || '');
+    return heading;
+  }
   if (def.node) return def.node;
   if (def.field) return nodeForField(def.field);
   if (def.selector && def.closest) return closestNodeForSelector(def.selector, def.closest);
@@ -792,33 +798,34 @@ function createSettingsDrawer() {
 
   drawer = document.createElement('aside');
   drawer.id = 'moduleSettingsDrawer';
-  drawer.className = 'drawer settings-drawer';
+  drawer.className = 'settings-modal';
   drawer.setAttribute('role', 'dialog');
   drawer.setAttribute('aria-modal', 'true');
   drawer.setAttribute('aria-labelledby', 'moduleSettingsTitle');
   drawer.setAttribute('aria-hidden', 'true');
   drawer.hidden = true;
   drawer.innerHTML = [
-    '<div class="drawer-header settings-drawer-header">',
+    '<div class="settings-modal-header">',
     '<div>',
-    '<div class="settings-drawer-kicker" id="moduleSettingsKicker">参数配置</div>',
-    '<h2 class="drawer-title" id="moduleSettingsTitle">模块配置</h2>',
-    '<p class="settings-drawer-desc" id="moduleSettingsDesc"></p>',
+    '<h2 class="settings-modal-title" id="moduleSettingsTitle">Module settings</h2>',
+    '<p class="settings-modal-desc" id="moduleSettingsDesc"></p>',
     '</div>',
-    '<button type="button" class="icon-btn drawer-close" id="moduleSettingsClose" aria-label="关闭配置" title="关闭">',
+    '<button type="button" class="icon-btn settings-modal-close" id="moduleSettingsClose" aria-label="关闭配置" title="关闭">',
     '<span aria-hidden="true">×</span>',
     '</button>',
     '</div>',
-    '<div class="drawer-body settings-drawer-body" id="moduleSettingsBody"></div>',
-    '<div class="settings-drawer-footer">',
-    '<button type="button" class="secondary" id="moduleSettingsReset">恢复默认</button>',
-    '<button type="button" id="moduleSettingsApply">应用并关闭</button>',
+    '<div class="settings-modal-body" id="moduleSettingsBody"></div>',
+    '<div class="settings-modal-footer">',
+    '<button type="button" class="secondary" id="moduleSettingsReset">Reset</button>',
+    '<button type="button" class="secondary" id="moduleSettingsCloseSecondary">Cancel</button>',
+    '<button type="button" id="moduleSettingsApply">Save</button>',
     '</div>',
   ].join('');
   document.body.appendChild(drawer);
 
   overlay.addEventListener('click', closeSettingsDrawer);
   $('#moduleSettingsClose')?.addEventListener('click', closeSettingsDrawer);
+  $('#moduleSettingsCloseSecondary')?.addEventListener('click', closeSettingsDrawer);
   $('#moduleSettingsApply')?.addEventListener('click', () => {
     if (activeSettingsModule) saveModuleValues(activeSettingsModule);
     closeSettingsDrawer();
@@ -838,7 +845,6 @@ function openSettingsDrawer(module) {
   const { overlay, drawer } = createSettingsDrawer();
   const body = $('#moduleSettingsBody');
   const title = $('#moduleSettingsTitle');
-  const kicker = $('#moduleSettingsKicker');
   const desc = $('#moduleSettingsDesc');
   if (!body) return;
 
@@ -846,7 +852,6 @@ function openSettingsDrawer(module) {
   body.replaceChildren();
   module.nodes.forEach((node) => body.appendChild(node));
   if (title) title.textContent = module.title;
-  if (kicker) kicker.textContent = module.kicker || '参数配置';
   if (desc) desc.textContent = module.description || '';
 
   overlay.hidden = false;
@@ -876,6 +881,14 @@ function closeSettingsDrawer() {
       drawer.hidden = true;
     }
   }, 180);
+}
+
+function openAppModal(module) {
+  openSettingsDrawer(module);
+}
+
+function closeAppModal() {
+  closeSettingsDrawer();
 }
 
 function createModuleCard(module) {
@@ -974,36 +987,17 @@ function setupPipelineModuleConsole() {
     title: '任务参数',
     modules: [
       {
-        key: 'document',
-        kicker: '解析',
-        title: '文档解析',
-        description: '控制标准 OCR 超时、一体流程 OCR、去水印、图片理解和 VLM 覆盖参数。',
+        key: 'pipeline_settings',
+        kicker: 'Settings',
+        title: 'Pipeline settings',
+        description: '配置当前流水线任务的解析、切分、生成、评估、性能和输出。字段仍会按原有后端参数提交。',
         nodes: [
+          { heading: '文档解析' },
           { selector: '#ocrTimeoutField' },
           { selector: '#integratedDocumentOptions' },
-        ],
-        summary: () => {
-          const mode = $('#pipelineProcessingMode')?.value === 'integrated' ? '一体流程' : '标准 OCR';
-          const image = $('#integratedEnableImageAnalysis')?.checked !== false ? '图片理解开' : '图片理解关';
-          return mode === '一体流程' ? `${mode} / ${image}` : `${mode} / 超时 ${$('#ocrTimeoutSeconds')?.value || 600}s`;
-        },
-      },
-      {
-        key: 'chunking',
-        kicker: '切分',
-        title: '切分策略',
-        description: '配置 chunk 大小、标题前缀、切分模式和手工切分点。',
-        nodes: [
+          { heading: '切分' },
           { selector: '#chunkingSplitType', closest: 'details' },
-        ],
-        summary: () => `${$('#chunkingSplitType')?.value || 'markdown'} / ${$('#chunkSize')?.value || 600} 字 / 前缀 ${$('#chunkingPrefixMaxDepth')?.value || 4}`,
-      },
-      {
-        key: 'generation',
-        kicker: '生成',
-        title: '问答生成',
-        description: '配置问答粒度、分类模板、提示词语言、题型、权重、few-shot 和增广数量。',
-        nodes: [
+          { heading: '问答生成' },
           { field: 'augmentPerQa' },
           { field: 'qaDetailMode' },
           { field: 'knowledgeClassifier' },
@@ -1013,53 +1007,21 @@ function setupPipelineModuleConsole() {
           { selector: 'input[name="questionTypeOption"]', closest: '.inline-checkbox-group' },
           { selector: 'input[name="qtWeight"]', closest: '.inline-checkbox-group' },
           { selector: '#fewShotList', closest: '.inline-checkbox-group' },
-        ],
-        summary: () => `${$('#qaDetailMode')?.value || 'point'} / ${checkedQuestionTypesSummary()} / 增广 ${$('#augmentPerQa')?.value || 0}`,
-      },
-      {
-        key: 'evaluation',
-        kicker: '评估',
-        title: '评估与过滤',
-        description: '控制是否评估、评估方式、忠实度改写并发和按阈值过滤。',
-        nodes: [
+          { heading: '评估与过滤' },
           { field: 'includeEvaluation' },
           { field: 'evaluationMethod' },
           { field: 'faithfulnessHypothesisMode' },
           { field: 'faithfulnessHypothesisMaxConcurrency' },
           { field: 'filterByThreshold' },
           { field: 'scoreThreshold' },
-        ],
-        summary: () => {
-          const enabled = $('#includeEvaluation')?.checked ? '评估开' : '评估关';
-          const filter = $('#filterByThreshold')?.checked ? `过滤 ${$('#scoreThreshold')?.value || 0.7}` : '不过滤';
-          return `${enabled} / ${$('#evaluationMethod')?.value || 'llm'} / ${filter}`;
-        },
-      },
-      {
-        key: 'performance',
-        kicker: '性能',
-        title: '并发与尝试',
-        description: '控制文件并发、chunk worker、LLM/VLM API 请求并发、生成尝试次数和增广并发。',
-        nodes: [
+          { heading: '性能' },
           { field: 'maxConcurrency' },
           { field: 'evalMaxConcurrency' },
           { field: 'chunkMaxConcurrency' },
           { field: 'llmMaxConcurrentRequests' },
           { field: 'chunkMaxAttempts' },
           { field: 'augmentMaxConcurrency' },
-        ],
-        summary: () => {
-          const llm = String($('#llmMaxConcurrentRequests')?.value || '').trim() || 'Docker 默认';
-          const chunk = String($('#chunkMaxConcurrency')?.value || '').trim() || '默认 8';
-          return `LLM ${llm} / chunk ${chunk} / 尝试 ${$('#chunkMaxAttempts')?.value || 2}`;
-        },
-      },
-      {
-        key: 'storage',
-        kicker: '输出',
-        title: '存储与输出',
-        description: '控制 QA 入库、chunk 树入库、保存方式和同步等待。',
-        nodes: [
+          { heading: '输出' },
           { field: 'enableVectorStorage' },
           { field: 'enableChunkStorage' },
           { field: 'chunkStorageFailFast' },
@@ -1067,9 +1029,9 @@ function setupPipelineModuleConsole() {
           { field: 'saveMode' },
         ],
         summary: () => {
-          const qa = $('#enableVectorStorage')?.checked ? 'QA 入库' : 'QA 不入库';
-          const chunk = $('#enableChunkStorage')?.checked ? 'chunk 入库' : 'chunk 不入库';
-          return `${qa} / ${chunk} / ${$('#saveMode')?.value || 'separate'}`;
+          const mode = $('#pipelineProcessingMode')?.value === 'integrated' ? '一体流程' : '标准 OCR';
+          const llm = String($('#llmMaxConcurrentRequests')?.value || '').trim() || 'Docker 默认';
+          return `${mode} / ${$('#chunkingSplitType')?.value || 'markdown'} / LLM ${llm}`;
         },
       },
     ],
