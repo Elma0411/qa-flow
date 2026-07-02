@@ -1,5 +1,5 @@
 window.__QA_UI_APPJS_READY__ = true;
-window.__QA_UI_APPJS_VERSION__ = '2026-06-25-3';
+window.__QA_UI_APPJS_VERSION__ = '2026-07-02-1';
 
 let currentDwJobPoller = null;
 
@@ -98,6 +98,7 @@ setupEvaluationUI();
 setupQuestionTypeUI();
 setupChunkingModeUI();
 setupDocumentProcessingModeUI();
+setupFormPresentation();
 setupDwDocumentPanel();
 const cancelTaskBtn = $('#cancelTaskBtn');
 if (cancelTaskBtn) {
@@ -607,6 +608,31 @@ function setupDocumentProcessingModeUI() {
 
   if (modeEl) modeEl.addEventListener('change', sync);
   sync();
+}
+
+function setupFormPresentation() {
+  const labels = Array.from($$('label') || []);
+  labels.forEach((label) => {
+    if (!label || !label.querySelector) return;
+    if (label.querySelector('input[type="checkbox"]')) {
+      label.classList.add('checkbox-field');
+    }
+    if (label.querySelector('input[type="file"]')) {
+      label.classList.add('file-field');
+    }
+  });
+
+  const forms = Array.from($$('main form') || []);
+  forms.forEach((form) => {
+    if (!form.classList.contains('admin-form-stack') && !form.classList.contains('admin-grid-form')) {
+      form.classList.add('console-form');
+    }
+  });
+
+  const detailsList = Array.from($$('main details') || []);
+  detailsList.forEach((details) => {
+    details.classList.add('console-details');
+  });
 }
 
 async function handlePipelineSubmit(e) {

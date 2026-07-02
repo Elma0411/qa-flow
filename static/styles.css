@@ -1,20 +1,20 @@
 /* apiuse UI - data-dense dashboard console (light/dark) */
 :root {
-  --bg: #f6f7fb;
-  --bg2: #eef2ff;
-  --surface: rgba(255, 255, 255, 0.9);
-  --surface-2: rgba(15, 23, 42, 0.04);
+  --bg: #f7f8fb;
+  --bg2: #edf1f7;
+  --surface: rgba(255, 255, 255, 0.94);
+  --surface-2: rgba(15, 23, 42, 0.045);
   --text: #0f172a;
   --muted: #475569;
   --border: rgba(15, 23, 42, 0.12);
   --border-strong: rgba(15, 23, 42, 0.18);
-  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06), 0 10px 25px rgba(15, 23, 42, 0.06);
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05), 0 14px 36px rgba(15, 23, 42, 0.06);
   --accent: #2563eb;
   --accent-2: #3b82f6;
   --danger: #dc2626;
   --success: #16a34a;
   --warning: #d97706;
-  --control-bg: rgba(255, 255, 255, 0.78);
+  --control-bg: rgba(255, 255, 255, 0.88);
   --header-bg: rgba(255, 255, 255, 0.72);
   --code-bg: #f8fafc;
   --code-text: #0f172a;
@@ -55,21 +55,21 @@
 }
 
 html[data-theme="light"] {
-  --bg: #f6f7fb;
-  --bg2: #eef2ff;
-  --surface: rgba(255, 255, 255, 0.9);
-  --surface-2: rgba(15, 23, 42, 0.04);
+  --bg: #f7f8fb;
+  --bg2: #edf1f7;
+  --surface: rgba(255, 255, 255, 0.94);
+  --surface-2: rgba(15, 23, 42, 0.045);
   --text: #0f172a;
   --muted: #475569;
   --border: rgba(15, 23, 42, 0.12);
   --border-strong: rgba(15, 23, 42, 0.18);
-  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06), 0 10px 25px rgba(15, 23, 42, 0.06);
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05), 0 14px 36px rgba(15, 23, 42, 0.06);
   --accent: #2563eb;
   --accent-2: #3b82f6;
   --danger: #dc2626;
   --success: #16a34a;
   --warning: #d97706;
-  --control-bg: rgba(255, 255, 255, 0.78);
+  --control-bg: rgba(255, 255, 255, 0.88);
   --header-bg: rgba(255, 255, 255, 0.72);
   --code-bg: #f8fafc;
   --code-text: #0f172a;
@@ -254,9 +254,9 @@ header h1 {
 }
 
 main {
-  max-width: 1180px;
-  margin: 22px auto;
-  padding: 0 16px;
+  max-width: 1360px;
+  margin: 20px auto 28px;
+  padding: 0 18px;
 }
 
 body.drawer-open {
@@ -335,21 +335,21 @@ body.drawer-open {
 .card {
   background: var(--surface);
   border-radius: var(--radius);
-  padding: 16px;
+  padding: 18px;
   margin-bottom: 16px;
   border: 1px solid var(--border);
   box-shadow: var(--shadow-sm);
-  transition: transform 160ms var(--ease-out), border-color 160ms var(--ease-out), background 180ms var(--ease-out), box-shadow 180ms var(--ease-out);
+  transition: border-color 160ms var(--ease-out), background 180ms var(--ease-out), box-shadow 180ms var(--ease-out);
 }
 
 .card:hover {
-  transform: translateY(-1px);
   border-color: var(--border-strong);
 }
 
 .card h2 {
-  margin: 0 0 8px 0;
+  margin: 0 0 6px 0;
   font-size: 15px;
+  line-height: 1.35;
   letter-spacing: 0.2px;
   text-wrap: balance;
 }
@@ -361,19 +361,36 @@ body.drawer-open {
   margin: 6px 0;
 }
 
+.card > .hint {
+  max-width: 76ch;
+}
+
 .form-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 12px;
-  align-items: end;
+  align-items: start;
+  width: 100%;
 }
 
 form {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 12px;
-  flex-wrap: wrap;
-  align-items: end;
-  margin-bottom: 8px;
+  align-items: start;
+  width: 100%;
+  margin: 12px 0 8px;
+}
+
+form.console-form > .form-grid,
+form.console-form > details,
+form.console-form > .inline-checkbox-group,
+form.console-form > .actions-row,
+form.console-form > .task-console,
+form.console-form > pre,
+form.console-form > textarea,
+form.console-form > #integratedDocumentOptions {
+  grid-column: 1 / -1;
 }
 
 label {
@@ -381,6 +398,57 @@ label {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
+  color: var(--text);
+  font-weight: 580;
+}
+
+label small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+.checkbox-field {
+  min-height: 42px;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 9px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  font-weight: 580;
+}
+
+.checkbox-field small {
+  flex: 1 0 100%;
+  padding-left: 25px;
+}
+
+.checkbox-field input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.file-field input[type="file"] {
+  min-height: 44px;
+  width: 100%;
+  padding: 8px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-2) 48%, transparent);
+}
+
+form.console-form > .file-field {
+  grid-column: 1 / -1;
+  max-width: 520px;
 }
 
 input[type="text"],
@@ -388,6 +456,7 @@ input[type="number"],
 input[type="search"],
 select,
 textarea {
+  width: 100%;
   padding: 10px 10px;
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -396,6 +465,14 @@ textarea {
   outline: none;
   min-height: 44px;
   transition: border-color 160ms var(--ease-out), box-shadow 160ms var(--ease-out), background 160ms var(--ease-out), color 160ms var(--ease-out);
+}
+
+input[type="text"]:hover,
+input[type="number"]:hover,
+input[type="search"]:hover,
+select:hover,
+textarea:hover {
+  border-color: var(--border-strong);
 }
 
 textarea {
@@ -428,6 +505,7 @@ button {
   border-radius: 12px;
   cursor: pointer;
   min-height: 44px;
+  white-space: nowrap;
   transition: transform 120ms var(--ease-out), box-shadow 160ms var(--ease-out), opacity 160ms var(--ease-out);
   box-shadow: 0 8px 18px color-mix(in srgb, var(--accent) 18%, transparent);
 }
@@ -516,7 +594,10 @@ button.danger {
   display: flex;
   gap: 8px;
   align-items: center;
+  justify-content: flex-start;
   flex-wrap: wrap;
+  width: 100%;
+  padding-top: 2px;
 }
 
 .admin-section-stack {
@@ -861,6 +942,27 @@ button.danger {
 }
 
 @media (max-width: 900px) {
+  main {
+    margin-top: 12px;
+    padding: 0 10px;
+  }
+
+  .card {
+    padding: 14px;
+    border-radius: 12px;
+  }
+
+  form,
+  .form-grid,
+  .llm-config-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .actions-row button,
+  .actions-row .button-link {
+    flex: 1 1 180px;
+  }
+
   .task-console-grid,
   .task-history-item,
   .dw-progress-layout,
@@ -880,10 +982,10 @@ button.danger {
   gap: 14px;
   margin: 14px 0;
   padding: 14px;
-  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--accent) 14%, var(--border));
   border-radius: var(--radius);
   background:
-    linear-gradient(135deg, color-mix(in srgb, var(--accent) 8%, transparent), transparent 46%),
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 5%, transparent), transparent 46%),
     color-mix(in srgb, var(--surface) 78%, transparent);
   overflow: hidden;
 }
@@ -1147,8 +1249,8 @@ button.danger {
 .llm-config-panel {
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 12px;
-  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  padding: 14px;
+  background: color-mix(in srgb, var(--surface) 76%, transparent);
 }
 
 .llm-config-title {
@@ -1158,9 +1260,9 @@ button.danger {
 
 .llm-config-fields {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 12px;
-  align-items: end;
+  align-items: start;
 }
 
 .llm-config-actions {
@@ -1367,12 +1469,50 @@ details summary {
   user-select: none;
 }
 
+.console-details {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  padding: 0;
+  overflow: hidden;
+}
+
+.console-details > summary {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 10px 12px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+  border-bottom: 1px solid transparent;
+  background: color-mix(in srgb, var(--surface-2) 58%, transparent);
+}
+
+.console-details[open] > summary {
+  border-bottom-color: var(--border);
+}
+
+.console-details > .form-grid,
+.console-details > label,
+.console-details > .actions-row,
+.console-details > pre {
+  margin: 12px;
+  width: calc(100% - 24px);
+}
+
 .inline-checkbox-group {
   display: grid;
   grid-template-columns: 1fr;
   gap: 6px 8px;
   align-items: center;
   width: 100%;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 68%, transparent);
 }
 
 .qt-grid {

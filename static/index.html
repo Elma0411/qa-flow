@@ -10,7 +10,7 @@
       href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@300;400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/ui/styles.css?v=2026-06-25-1" />
+    <link rel="stylesheet" href="/ui/styles.css?v=2026-07-02-1" />
   </head>
   <body>
     <a class="skip-link" href="#main">跳到内容</a>
@@ -258,40 +258,49 @@
                 <option value="markdown">markdown（整合 Markdown）</option>
                 <option value="ocr_markdown">ocr_markdown（原始 OCR Markdown）</option>
               </select>
+              <small>text 适合直接进入问答生成；markdown 保留标题和图片标记；ocr_markdown 用于排查 OCR 原始结果。</small>
             </label>
             <label>
               DOCX 处理策略
               <select id="dwDocxStrategy">
                 <option value="pdf" selected>pdf（LibreOffice 转 PDF 后 OCR）</option>
               </select>
+              <small>DOCX/DOC 会先转成 PDF，再按统一 OCR 流程处理。</small>
             </label>
             <label>
               <input type="checkbox" id="dwEnableImageAnalysis" checked />
               启用图片理解
+              <small>开启后会对文档图片调用 VLM 解析并回填到文本上下文。</small>
             </label>
             <label>
               <input type="checkbox" id="dwEnableClassification" />
               图片先分类再选择 prompt
+              <small>图片类型差异较大时可开启；会多一次分类判断。</small>
             </label>
             <label>
               分类置信阈值
               <input type="number" id="dwClassificationThreshold" value="0.9" min="0" max="1" step="0.01" />
+              <small>分类置信度低于该值时会走通用图片理解 prompt。</small>
             </label>
             <label>
               <input type="checkbox" id="dwRemoveWatermark" />
               OCR 前去水印
+              <small>适合水印明显影响 OCR 的 PDF；普通文档可关闭以节省时间。</small>
             </label>
             <label>
               水印渲染 DPI
               <input type="number" id="dwWatermarkDpi" value="200" min="72" max="600" step="1" />
+              <small>DPI 越高越清晰但越慢；默认 200 通常够用。</small>
             </label>
             <label>
               <input type="checkbox" id="dwReplaceImages" checked />
               替换为原文档高质量裁图
+              <small>开启后图片理解优先使用原文档裁图，通常比 OCR 导出的图片更清楚。</small>
             </label>
             <label>
               <input type="checkbox" id="dwUseApi" checked />
               使用 VLM API
+              <small>关闭后不会调用远程 VLM API，图片理解能力取决于本地实现。</small>
             </label>
           </div>
           <details style="width: 100%">
@@ -1075,7 +1084,7 @@
     <script src="/ui/app_config.js?v=2026-06-25-1"></script>
     <script src="/ui/app_render.js?v=2026-04-07-2"></script>
     <script src="/ui/app_query.js?v=2026-05-21-3"></script>
-    <script src="/ui/app.js?v=2026-06-25-2"></script>
+    <script src="/ui/app.js?v=2026-07-02-1"></script>
     <script>
       (function () {
         if (window.__QA_UI_APPJS_READY__) return;
