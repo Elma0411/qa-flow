@@ -1464,7 +1464,7 @@
     const main = document.querySelector("main");
     if (!header || !main || document.querySelector(".app-workbar")) return;
 
-    document.body.classList.add("app-shell");
+    document.body.classList.add("app-shell", "qa-workbench-redesign");
     const titleText = String(header.querySelector("h1")?.textContent || document.title || "QA Flow").trim();
     const activeNav = header.querySelector(".nav a.active");
     const currentSection = String(activeNav?.textContent || "").trim();
@@ -1507,7 +1507,7 @@
     const openBtn = document.createElement("button");
     openBtn.type = "button";
     openBtn.id = "btnOpenAdminFilters";
-    openBtn.textContent = "Filters";
+    openBtn.textContent = "筛选条件";
     launch.append(copy, openBtn);
 
     const title = section.querySelector("h2");
@@ -1534,7 +1534,7 @@
     const modalTitle = document.createElement("h2");
     modalTitle.id = "adminFiltersTitle";
     modalTitle.className = "settings-modal-title";
-    modalTitle.textContent = "Filters";
+    modalTitle.textContent = "筛选条件";
     const desc = document.createElement("p");
     desc.className = "settings-modal-desc";
     desc.textContent = "按任务、文件、题型、分数、上架状态和语义检索条件筛选 QA 数据。";
@@ -1555,10 +1555,10 @@
     const close = document.createElement("button");
     close.type = "button";
     close.className = "secondary";
-    close.textContent = "Cancel";
+    close.textContent = "取消";
     const apply = document.createElement("button");
     apply.type = "button";
-    apply.textContent = "Apply";
+    apply.textContent = "应用";
     footer.append(close, apply);
 
     modal.append(header, body, footer);
@@ -1613,6 +1613,39 @@
       if (tag === "textarea") {
         if (!el.getAttribute("autocomplete")) el.setAttribute("autocomplete", "off");
       }
+    });
+  }
+
+  function fileInputSummary(input) {
+    const files = input && input.files ? Array.from(input.files) : [];
+    if (!files.length) return "未选择文件";
+    if (files.length === 1) return files[0].name || "已选择 1 个文件";
+    return `已选择 ${files.length} 个文件`;
+  }
+
+  function enhanceFileInputs(root = document) {
+    const scope = root && root.querySelectorAll ? root : document;
+    Array.from(scope.querySelectorAll('input[type="file"]') || []).forEach((input) => {
+      if (!input || input.dataset.fileEnhanced === "1") return;
+      input.dataset.fileEnhanced = "1";
+      input.classList.add("file-input-native");
+      const picker = document.createElement("span");
+      picker.className = "file-picker-ui";
+      picker.innerHTML = [
+        '<span class="file-picker-button">选择文件</span>',
+        '<span class="file-picker-name">未选择文件</span>',
+      ].join("");
+      input.insertAdjacentElement("afterend", picker);
+      const name = picker.querySelector(".file-picker-name");
+      const sync = () => {
+        if (name) name.textContent = fileInputSummary(input);
+      };
+      picker.addEventListener("click", (event) => {
+        event.preventDefault();
+        input.click();
+      });
+      input.addEventListener("change", sync);
+      sync();
     });
   }
 
@@ -1733,12 +1766,14 @@
   window.apiuseUi.createScoreGroup = createScoreGroup;
   window.apiuseUi.renderUnsupervisedExplain = renderUnsupervisedExplain;
   window.apiuseUi.enhanceTableWrapScroll = enhanceTableWrapScroll;
+  window.apiuseUi.enhanceFileInputs = enhanceFileInputs;
 
   ready(() => {
     initAppShell();
     initAdminFilterModal();
     initTheme();
     initFormAttrs();
+    enhanceFileInputs();
     enhanceTableWrapScroll();
   });
 })();

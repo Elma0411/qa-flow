@@ -4,41 +4,40 @@
 
 ## Objective
 
-把 QA Flow 静态前端调整为接近 Docker Desktop 的桌面应用风格。三页统一使用左侧导航、
-顶部工作区栏、干净的浅色/深色 token、薄边框输入和居中配置 modal；后端接口和字段名
-保持不变。
+把静态前端从“参数长表单”改成更轻的产品工作台：主屏只保留日常启动和查询动作，复杂参数进入独立配置弹窗。视觉上按 Open Design / product UI guidelines 收敛为安静、紧凑、可扫描的控制台风格。
 
 ## What Changed
 
-- `ui.js` 新增共享应用壳增强：
-  - 自动把三页变成左侧导航 + 顶部工作区栏布局。
-  - 顶部栏显示当前页面标题、运行环境提示和主题切换按钮。
-- `styles.css` 新增 Docker-like 覆盖层：
-  - 移除蓝绿背景 glow、玻璃感和过重阴影。
-  - 统一使用 6-8px 圆角、1px 边框、白色 surface、蓝色主按钮。
-  - 输入框、select、textarea、按钮和 modal 都改为更接近桌面应用的密度。
-- 流水线高级参数从多个模块卡片合并为一个 `Pipeline settings` 入口。
-  - 点击后打开居中 modal。
-  - modal 内按文档解析、切分、问答生成、评估与过滤、性能、输出分组。
-  - 继续复用原有字段 id 和本地缓存 `qa_flow_module_settings_v1`。
-- 管理页筛选条件收进 `Filters` 居中 modal。
-  - 原位置保留轻量 filter bar。
-  - `Apply` 会触发当前查询模式下的列表查询或语义检索。
-- 三页静态资源版本号已更新，避免浏览器继续加载旧 CSS/JS。
+- 安装本地 Codex skill：`/home/lich/.codex/skills/web-design-guidelines/SKILL.md`。
+- 流水线页改为生成任务台：
+  - 主屏保留上传、文档解析模式、每块数量、开始/终止任务和运行状态摘要。
+  - Pipeline 参数拆成 6 个独立入口：文档解析、切分、问答生成、评估过滤、性能并发、存储输出。
+  - 每个入口打开居中 modal；字段仍复用原 DOM id，提交参数不变。
+- 评测页降噪：
+  - 主屏只保留上传、预览、启动/终止任务和任务状态。
+  - 解析方式、字段映射、任务参数移动到“评测设置”modal。
+- 通用 UI 改造：
+  - 三页统一使用新的工作台 token、左侧导航、顶部工作栏和无横向溢出的布局。
+  - 文件选择改成中文自定义控件，原生 file input 仍保留用于提交。
+  - 管理页 `Filters` 改为中文“筛选条件”，modal 按中文按钮操作。
+  - 高级字段 helper 文本在 modal 中压缩显示，避免说明文字占满屏幕。
 
 ## Expected Behavior
 
-- `/ui/index.html`、`/ui/admin.html`、`/ui/eval.html` 都显示统一左侧导航和顶部工作区栏。
-- 流水线主屏不再铺开大量高级参数，只保留关键启动项和 `Pipeline settings`。
-- 参数配置和管理筛选都通过居中 modal 完成。
-- API Key 类字段仍不写入模块缓存。
-- 现有流水线提交、文档解析、管理查询和评测任务请求参数保持不变。
+- `/ui/index.html` 第一屏是生成任务台，不再先铺开 LLM/OCR/流水线高级参数。
+- 流水线高级参数分别从模块卡打开，不再用一个超长表单承载所有字段。
+- `/ui/eval.html` 的格式、编码、字段映射和任务参数默认不铺在主页面。
+- `/ui/admin.html` 的筛选条件仍通过弹窗配置，并显示中文按钮。
+- API Key 类字段不进入模块缓存；后端 API、字段名、提交链路不变。
 
 ## Validation
 
 ```bash
 cd /data2/hjk/qa-flow
 node --check static/app.js static/admin.js static/eval.js static/app_config.js static/app_render.js static/app_runtime.js static/ui.js
+git diff --check
 curl http://localhost:12000/test-connection
 curl http://localhost:12000/environment-check
 ```
+
+Playwright 已在本机安装 Chromium 缓存，用于检查三页桌面视口截图和横向溢出。

@@ -1415,6 +1415,143 @@
     }
   }
 
+  function closestNodeFor(id, selector) {
+    const node = $(id);
+    return node && selector ? node.closest(selector) : node;
+  }
+
+  function createEvalSettingsModal() {
+    if ($("evalSettingsModal")) return $("evalSettingsModal");
+    const overlay = document.createElement("div");
+    overlay.id = "evalSettingsOverlay";
+    overlay.className = "drawer-overlay";
+    overlay.hidden = true;
+
+    const modal = document.createElement("aside");
+    modal.id = "evalSettingsModal";
+    modal.className = "settings-modal";
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    modal.setAttribute("aria-labelledby", "evalSettingsTitle");
+    modal.setAttribute("aria-hidden", "true");
+    modal.hidden = true;
+    modal.innerHTML = [
+      '<div class="settings-modal-header">',
+      '<div>',
+      '<h2 class="settings-modal-title" id="evalSettingsTitle">评测设置</h2>',
+      '<p class="settings-modal-desc">配置解析方式、字段映射和任务参数。保存后仍按原接口字段提交。</p>',
+      '</div>',
+      '<button type="button" class="icon-btn settings-modal-close" id="evalSettingsClose" aria-label="关闭设置" title="关闭"><span aria-hidden="true">×</span></button>',
+      '</div>',
+      '<div class="settings-modal-body">',
+      '<div class="settings-tab-layout">',
+      '<div class="settings-tab-nav" role="tablist" aria-label="评测设置分组">',
+      '<button type="button" class="settings-tab-btn is-active" data-eval-tab="parse" role="tab" aria-selected="true">解析</button>',
+      '<button type="button" class="settings-tab-btn" data-eval-tab="mapping" role="tab" aria-selected="false">字段映射</button>',
+      '<button type="button" class="settings-tab-btn" data-eval-tab="runtime" role="tab" aria-selected="false">任务参数</button>',
+      '</div>',
+      '<div class="settings-tab-panels">',
+      '<div class="settings-tab-panel is-active" data-eval-panel="parse" role="tabpanel"></div>',
+      '<div class="settings-tab-panel" data-eval-panel="mapping" role="tabpanel"></div>',
+      '<div class="settings-tab-panel" data-eval-panel="runtime" role="tabpanel"></div>',
+      '</div>',
+      '</div>',
+      '</div>',
+      '<div class="settings-modal-footer">',
+      '<button type="button" class="secondary" id="evalSettingsCancel">取消</button>',
+      '<button type="button" id="evalSettingsSave">保存</button>',
+      '</div>',
+    ].join("");
+    document.body.append(overlay, modal);
+
+    const close = () => {
+      overlay.classList.remove("is-open");
+      modal.classList.remove("is-open");
+      modal.setAttribute("aria-hidden", "true");
+      document.body.classList.remove("drawer-open");
+      window.setTimeout(() => {
+        overlay.hidden = true;
+        modal.hidden = true;
+      }, 180);
+    };
+    const open = () => {
+      overlay.hidden = false;
+      modal.hidden = false;
+      window.requestAnimationFrame(() => {
+        overlay.classList.add("is-open");
+        modal.classList.add("is-open");
+        modal.setAttribute("aria-hidden", "false");
+        document.body.classList.add("drawer-open");
+      });
+    };
+    modal.openEvalSettings = open;
+    modal.closeEvalSettings = close;
+    overlay.addEventListener("click", close);
+    $("evalSettingsClose")?.addEventListener("click", close);
+    $("evalSettingsCancel")?.addEventListener("click", close);
+    $("evalSettingsSave")?.addEventListener("click", close);
+    modal.querySelectorAll("[data-eval-tab]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const key = btn.getAttribute("data-eval-tab") || "";
+        modal.querySelectorAll("[data-eval-tab]").forEach((item) => {
+          item.classList.toggle("is-active", item === btn);
+          item.setAttribute("aria-selected", item === btn ? "true" : "false");
+        });
+        modal.querySelectorAll("[data-eval-panel]").forEach((panel) => {
+          panel.classList.toggle("is-active", panel.getAttribute("data-eval-panel") === key);
+        });
+      });
+    });
+    return modal;
+  }
+
+  function setupEvalWorkbench() {
+    const modal = createEvalSettingsModal();
+    const previewForm = $("previewForm");
+    const uploadSection = previewForm?.closest("section.card");
+    const mappingSection = $("datasetName")?.closest("section.card");
+    if (!modal || !previewForm || !uploadSection || !mappingSection) return;
+
+    const parsePanel = modal.querySelector('[data-eval-panel="parse"]');
+    const mappingPanel = modal.querySelector('[data-eval-panel="mapping"]');
+    const runtimePanel = modal.querySelector('[data-eval-panel="runtime"]');
+
+    ["inputFormat", "encoding", "delimiter", "sheetName", "sampleSize"].forEach((id) => {
+      const node = closestNodeFor(id, "label");
+      if (node) parsePanel.appendChild(node);
+    });
+
+    const mappingPanelSource = mappingSection.querySelector(".eval-panel");
+    if (mappingPanelSource) mappingPanel.appendChild(mappingPanelSource);
+    const runtimePanelSource = Array.from(mappingSection.querySelectorAll(".eval-panel")).find((section) => section.querySelector("#unsupBatchSize"));
+    if (runtimePanelSource) runtimePanel.appendChild(runtimePanelSource);
+
+    const startActions = $("btnStartJob")?.closest(".actions-row");
+    if (startActions) {
+      startActions.classList.add("eval-run-actions");
+      uploadSection.appendChild(startActions);
+    }
+
+    const settingsBar = document.createElement("div");
+    settingsBar.className = "eval-settings-bar";
+    settingsBar.innerHTML = [
+      '<div>',
+      '<strong>评测配置</strong>',
+      '<span>解析方式、字段映射和任务参数已收进设置弹窗。</span>',
+      '</div>',
+      '<button type="button" class="secondary" id="btnOpenEvalSettings">评测设置</button>',
+    ].join("");
+    previewForm.insertAdjacentElement("afterend", settingsBar);
+    $("btnOpenEvalSettings")?.addEventListener("click", () => modal.openEvalSettings?.());
+
+    const heading = uploadSection.querySelector("h2");
+    if (heading) heading.textContent = "上传与预览";
+    uploadSection.classList.add("eval-upload-section");
+    previewForm.classList.add("eval-upload-form");
+    const hint = uploadSection.querySelector(":scope > .hint, :scope > p");
+    if (hint) hint.textContent = "选择数据集文件，先预览列名，再在评测设置里完成字段映射。";
+  }
+
   $("previewForm").addEventListener("submit", doPreview);
   $("btnStartJob").addEventListener("click", startJob);
   $("btnCancelJob").addEventListener("click", cancelJob);
@@ -1440,5 +1577,6 @@
   restoreUiCache();
   initApiBaseUrl();
   bindUiCache();
+  setupEvalWorkbench();
   hydrateEvalRuntime().catch(() => {});
 })();
