@@ -1,5 +1,5 @@
 window.__QA_UI_APPJS_READY__ = true;
-window.__QA_UI_APPJS_VERSION__ = '2026-07-02-1';
+window.__QA_UI_APPJS_VERSION__ = '2026-07-03-1';
 
 let currentDwJobPoller = null;
 
@@ -100,6 +100,7 @@ setupChunkingModeUI();
 setupDocumentProcessingModeUI();
 setupFormPresentation();
 setupDwDocumentPanel();
+setupModuleSettingsUI();
 const cancelTaskBtn = $('#cancelTaskBtn');
 if (cancelTaskBtn) {
   cancelTaskBtn.addEventListener('click', handleCancelTask);
@@ -633,6 +634,561 @@ function setupFormPresentation() {
   detailsList.forEach((details) => {
     details.classList.add('console-details');
   });
+}
+
+// ---------- 模块化参数抽屉 ----------
+
+const MODULE_SETTINGS_CACHE_KEY = 'qa_flow_module_settings_v1';
+const MODULE_SECRET_FIELD_IDS = new Set(['cfgKey', 'dwVlmApiKey', 'integratedVlmApiKey']);
+let activeSettingsModule = null;
+const settingsModules = new Map();
+
+function nodeForField(id) {
+  const el = document.getElementById(String(id || ''));
+  if (!el) return null;
+  return el.closest('label, .inline-checkbox-group, details, .llm-config-split, .form-grid') || el;
+}
+
+function closestNodeForSelector(selector, closestSelector) {
+  const el = document.querySelector(selector);
+  if (!el) return null;
+  return closestSelector ? el.closest(closestSelector) : el;
+}
+
+function resolveModuleNode(def) {
+  if (!def) return null;
+  if (def.node) return def.node;
+  if (def.field) return nodeForField(def.field);
+  if (def.selector && def.closest) return closestNodeForSelector(def.selector, def.closest);
+  if (def.selector) return document.querySelector(def.selector);
+  return null;
+}
+
+function readModuleCache() {
+  try {
+    const raw = window.localStorage.getItem(MODULE_SETTINGS_CACHE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeModuleCache(cache) {
+  try {
+    window.localStorage.setItem(MODULE_SETTINGS_CACHE_KEY, JSON.stringify(cache || {}));
+  } catch {
+    // ignore
+  }
+}
+
+function readFieldValue(el) {
+  if (!el) return null;
+  const type = String(el.type || '').toLowerCase();
+  if (type === 'checkbox') return !!el.checked;
+  if (String(el.tagName || '').toLowerCase() === 'select' || el.value !== undefined) {
+    return String(el.value ?? '');
+  }
+  return null;
+}
+
+function readFieldDefault(el) {
+  if (!el) return null;
+  const type = String(el.type || '').toLowerCase();
+  const tag = String(el.tagName || '').toLowerCase();
+  if (type === 'checkbox') return !!el.defaultChecked;
+  if (tag === 'select') {
+    const selected = Array.from(el.options || []).find((option) => option.defaultSelected);
+    return selected ? String(selected.value ?? '') : String(el.options?.[0]?.value ?? '');
+  }
+  if (tag === 'textarea' || tag === 'input') return String(el.defaultValue ?? '');
+  return readFieldValue(el);
+}
+
+function applyFieldValue(el, value) {
+  if (!el || value === undefined || value === null) return;
+  const type = String(el.type || '').toLowerCase();
+  if (type === 'checkbox') {
+    el.checked = !!value;
+  } else {
+    el.value = String(value);
+  }
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+function collectModuleFields(module) {
+  const fields = [];
+  module.nodes.forEach((node) => {
+    if (!node || !node.querySelectorAll) return;
+    node.querySelectorAll('input[id], select[id], textarea[id]').forEach((el) => {
+      if (!el.id || String(el.type || '').toLowerCase() === 'file') return;
+      fields.push(el);
+    });
+  });
+  return Array.from(new Map(fields.map((el) => [el.id, el])).values());
+}
+
+function moduleValues(module, { defaults = false } = {}) {
+  const values = {};
+  module.fields.forEach((el) => {
+    if (!el.id || MODULE_SECRET_FIELD_IDS.has(el.id)) return;
+    values[el.id] = defaults ? readFieldDefault(el) : readFieldValue(el);
+  });
+  return values;
+}
+
+function applyModuleValues(module, values) {
+  if (!module || !values || typeof values !== 'object') return;
+  module.fields.forEach((el) => {
+    if (!el.id || MODULE_SECRET_FIELD_IDS.has(el.id)) return;
+    if (!Object.prototype.hasOwnProperty.call(values, el.id)) return;
+    applyFieldValue(el, values[el.id]);
+    persistUiField(el);
+  });
+}
+
+function saveModuleValues(module) {
+  if (!module) return;
+  const cache = readModuleCache();
+  cache[module.cacheKey] = {
+    updated_at: new Date().toISOString(),
+    values: moduleValues(module),
+  };
+  writeModuleCache(cache);
+  updateModuleCard(module);
+}
+
+function restoreModuleDefaults(module) {
+  if (!module) return;
+  applyModuleValues(module, moduleValues(module, { defaults: true }));
+  module.fields.forEach((el) => {
+    if (!el.id || !MODULE_SECRET_FIELD_IDS.has(el.id)) return;
+    applyFieldValue(el, readFieldDefault(el));
+  });
+  saveModuleValues(module);
+  notify(`已恢复 ${module.title} 默认值`, 'success');
+}
+
+function restoreModuleCache(modules) {
+  const cache = readModuleCache();
+  modules.forEach((module) => {
+    const entry = cache[module.cacheKey];
+    if (!entry || !entry.values || typeof entry.values !== 'object') return;
+    applyModuleValues(module, entry.values);
+  });
+}
+
+function createSettingsDrawer() {
+  let overlay = $('#moduleSettingsOverlay');
+  let drawer = $('#moduleSettingsDrawer');
+  if (overlay && drawer) return { overlay, drawer };
+
+  overlay = document.createElement('div');
+  overlay.id = 'moduleSettingsOverlay';
+  overlay.className = 'drawer-overlay module-settings-overlay';
+  overlay.hidden = true;
+  document.body.appendChild(overlay);
+
+  drawer = document.createElement('aside');
+  drawer.id = 'moduleSettingsDrawer';
+  drawer.className = 'drawer settings-drawer';
+  drawer.setAttribute('role', 'dialog');
+  drawer.setAttribute('aria-modal', 'true');
+  drawer.setAttribute('aria-labelledby', 'moduleSettingsTitle');
+  drawer.setAttribute('aria-hidden', 'true');
+  drawer.hidden = true;
+  drawer.innerHTML = [
+    '<div class="drawer-header settings-drawer-header">',
+    '<div>',
+    '<div class="settings-drawer-kicker" id="moduleSettingsKicker">参数配置</div>',
+    '<h2 class="drawer-title" id="moduleSettingsTitle">模块配置</h2>',
+    '<p class="settings-drawer-desc" id="moduleSettingsDesc"></p>',
+    '</div>',
+    '<button type="button" class="icon-btn drawer-close" id="moduleSettingsClose" aria-label="关闭配置" title="关闭">',
+    '<span aria-hidden="true">×</span>',
+    '</button>',
+    '</div>',
+    '<div class="drawer-body settings-drawer-body" id="moduleSettingsBody"></div>',
+    '<div class="settings-drawer-footer">',
+    '<button type="button" class="secondary" id="moduleSettingsReset">恢复默认</button>',
+    '<button type="button" id="moduleSettingsApply">应用并关闭</button>',
+    '</div>',
+  ].join('');
+  document.body.appendChild(drawer);
+
+  overlay.addEventListener('click', closeSettingsDrawer);
+  $('#moduleSettingsClose')?.addEventListener('click', closeSettingsDrawer);
+  $('#moduleSettingsApply')?.addEventListener('click', () => {
+    if (activeSettingsModule) saveModuleValues(activeSettingsModule);
+    closeSettingsDrawer();
+  });
+  $('#moduleSettingsReset')?.addEventListener('click', () => {
+    if (activeSettingsModule) restoreModuleDefaults(activeSettingsModule);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && activeSettingsModule) closeSettingsDrawer();
+  });
+  return { overlay, drawer };
+}
+
+function openSettingsDrawer(module) {
+  if (!module) return;
+  if (activeSettingsModule && activeSettingsModule !== module) closeSettingsDrawer();
+  const { overlay, drawer } = createSettingsDrawer();
+  const body = $('#moduleSettingsBody');
+  const title = $('#moduleSettingsTitle');
+  const kicker = $('#moduleSettingsKicker');
+  const desc = $('#moduleSettingsDesc');
+  if (!body) return;
+
+  activeSettingsModule = module;
+  body.replaceChildren();
+  module.nodes.forEach((node) => body.appendChild(node));
+  if (title) title.textContent = module.title;
+  if (kicker) kicker.textContent = module.kicker || '参数配置';
+  if (desc) desc.textContent = module.description || '';
+
+  overlay.hidden = false;
+  drawer.hidden = false;
+  requestAnimationFrame(() => {
+    overlay.classList.add('is-open');
+    drawer.classList.add('is-open');
+    drawer.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('drawer-open');
+  });
+}
+
+function closeSettingsDrawer() {
+  const module = activeSettingsModule;
+  const overlay = $('#moduleSettingsOverlay');
+  const drawer = $('#moduleSettingsDrawer');
+  if (!module || !overlay || !drawer) return;
+  module.nodes.forEach((node) => module.bank.appendChild(node));
+  activeSettingsModule = null;
+  overlay.classList.remove('is-open');
+  drawer.classList.remove('is-open');
+  drawer.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('drawer-open');
+  window.setTimeout(() => {
+    if (!activeSettingsModule) {
+      overlay.hidden = true;
+      drawer.hidden = true;
+    }
+  }, 180);
+}
+
+function createModuleCard(module) {
+  const card = document.createElement('button');
+  card.type = 'button';
+  card.className = 'module-settings-card';
+  card.setAttribute('aria-label', `打开${module.title}配置`);
+  card.innerHTML = [
+    '<span class="module-card-kicker"></span>',
+    '<strong class="module-card-title"></strong>',
+    '<span class="module-card-summary"></span>',
+  ].join('');
+  card.querySelector('.module-card-kicker').textContent = module.kicker || '配置模块';
+  card.querySelector('.module-card-title').textContent = module.title;
+  card.addEventListener('click', () => openSettingsDrawer(module));
+  module.card = card;
+  updateModuleCard(module);
+  return card;
+}
+
+function updateModuleCard(module) {
+  if (!module || !module.card) return;
+  const summary = module.card.querySelector('.module-card-summary');
+  if (summary) summary.textContent = module.summary ? module.summary() : '点击配置';
+}
+
+function registerModuleConsole(options) {
+  const host = options.host;
+  const after = options.after;
+  if (!host || !after) return [];
+  const shell = document.createElement('div');
+  shell.className = 'module-settings-shell';
+  const title = document.createElement('div');
+  title.className = 'module-settings-shell-title';
+  title.textContent = options.title || '参数模块';
+  const grid = document.createElement('div');
+  grid.className = 'module-settings-grid';
+  shell.append(title, grid);
+  after.insertAdjacentElement('afterend', shell);
+
+  const registered = [];
+  options.modules.forEach((def) => {
+    const nodes = (def.nodes || []).map(resolveModuleNode).filter(Boolean);
+    const uniqueNodes = Array.from(new Set(nodes));
+    if (!uniqueNodes.length) return;
+
+    const bank = document.createElement('div');
+    bank.className = 'module-field-bank';
+    bank.hidden = true;
+    bank.dataset.moduleKey = def.key;
+    host.appendChild(bank);
+    uniqueNodes.forEach((node) => bank.appendChild(node));
+
+    const module = {
+      ...def,
+      cacheKey: `${options.scope}.${def.key}`,
+      bank,
+      nodes: uniqueNodes,
+      fields: [],
+      card: null,
+    };
+    module.fields = collectModuleFields(module);
+    module.fields.forEach((el) => {
+      const onChange = () => saveModuleValues(module);
+      el.addEventListener('change', onChange);
+      const type = String(el.type || '').toLowerCase();
+      if (type === 'text' || type === 'number' || type === 'search' || String(el.tagName || '').toLowerCase() === 'textarea') {
+        el.addEventListener('input', onChange);
+      }
+    });
+    settingsModules.set(module.cacheKey, module);
+    grid.appendChild(createModuleCard(module));
+    registered.push(module);
+  });
+
+  restoreModuleCache(registered);
+  registered.forEach(updateModuleCard);
+  return registered;
+}
+
+function checkedQuestionTypesSummary() {
+  const types = Array.from($$('input[name="questionTypeOption"]:checked') || []).map((el) => el.value);
+  return types.length ? types.join('/') : '简答题';
+}
+
+function setupPipelineModuleConsole() {
+  const form = $('#pipelineForm');
+  const modeNode = nodeForField('pipelineProcessingMode');
+  const qaNode = nodeForField('qaPerChunk');
+  if (!form || !modeNode || !qaNode) return;
+  modeNode.insertAdjacentElement('afterend', qaNode);
+  registerModuleConsole({
+    scope: 'pipeline',
+    host: form,
+    after: qaNode,
+    title: '任务参数',
+    modules: [
+      {
+        key: 'document',
+        kicker: '解析',
+        title: '文档解析',
+        description: '控制标准 OCR 超时、一体流程 OCR、去水印、图片理解和 VLM 覆盖参数。',
+        nodes: [
+          { selector: '#ocrTimeoutField' },
+          { selector: '#integratedDocumentOptions' },
+        ],
+        summary: () => {
+          const mode = $('#pipelineProcessingMode')?.value === 'integrated' ? '一体流程' : '标准 OCR';
+          const image = $('#integratedEnableImageAnalysis')?.checked !== false ? '图片理解开' : '图片理解关';
+          return mode === '一体流程' ? `${mode} / ${image}` : `${mode} / 超时 ${$('#ocrTimeoutSeconds')?.value || 600}s`;
+        },
+      },
+      {
+        key: 'chunking',
+        kicker: '切分',
+        title: '切分策略',
+        description: '配置 chunk 大小、标题前缀、切分模式和手工切分点。',
+        nodes: [
+          { selector: '#chunkingSplitType', closest: 'details' },
+        ],
+        summary: () => `${$('#chunkingSplitType')?.value || 'markdown'} / ${$('#chunkSize')?.value || 600} 字 / 前缀 ${$('#chunkingPrefixMaxDepth')?.value || 4}`,
+      },
+      {
+        key: 'generation',
+        kicker: '生成',
+        title: '问答生成',
+        description: '配置问答粒度、分类模板、提示词语言、题型、权重、few-shot 和增广数量。',
+        nodes: [
+          { field: 'augmentPerQa' },
+          { field: 'qaDetailMode' },
+          { field: 'knowledgeClassifier' },
+          { field: 'useCategoryPromptTemplates' },
+          { field: 'promptLanguage' },
+          { field: 'questionTypeMode' },
+          { selector: 'input[name="questionTypeOption"]', closest: '.inline-checkbox-group' },
+          { selector: 'input[name="qtWeight"]', closest: '.inline-checkbox-group' },
+          { selector: '#fewShotList', closest: '.inline-checkbox-group' },
+        ],
+        summary: () => `${$('#qaDetailMode')?.value || 'point'} / ${checkedQuestionTypesSummary()} / 增广 ${$('#augmentPerQa')?.value || 0}`,
+      },
+      {
+        key: 'evaluation',
+        kicker: '评估',
+        title: '评估与过滤',
+        description: '控制是否评估、评估方式、忠实度改写并发和按阈值过滤。',
+        nodes: [
+          { field: 'includeEvaluation' },
+          { field: 'evaluationMethod' },
+          { field: 'faithfulnessHypothesisMode' },
+          { field: 'faithfulnessHypothesisMaxConcurrency' },
+          { field: 'filterByThreshold' },
+          { field: 'scoreThreshold' },
+        ],
+        summary: () => {
+          const enabled = $('#includeEvaluation')?.checked ? '评估开' : '评估关';
+          const filter = $('#filterByThreshold')?.checked ? `过滤 ${$('#scoreThreshold')?.value || 0.7}` : '不过滤';
+          return `${enabled} / ${$('#evaluationMethod')?.value || 'llm'} / ${filter}`;
+        },
+      },
+      {
+        key: 'performance',
+        kicker: '性能',
+        title: '并发与尝试',
+        description: '控制文件并发、chunk worker、LLM/VLM API 请求并发、生成尝试次数和增广并发。',
+        nodes: [
+          { field: 'maxConcurrency' },
+          { field: 'evalMaxConcurrency' },
+          { field: 'chunkMaxConcurrency' },
+          { field: 'llmMaxConcurrentRequests' },
+          { field: 'chunkMaxAttempts' },
+          { field: 'augmentMaxConcurrency' },
+        ],
+        summary: () => {
+          const llm = String($('#llmMaxConcurrentRequests')?.value || '').trim() || 'Docker 默认';
+          const chunk = String($('#chunkMaxConcurrency')?.value || '').trim() || '默认 8';
+          return `LLM ${llm} / chunk ${chunk} / 尝试 ${$('#chunkMaxAttempts')?.value || 2}`;
+        },
+      },
+      {
+        key: 'storage',
+        kicker: '输出',
+        title: '存储与输出',
+        description: '控制 QA 入库、chunk 树入库、保存方式和同步等待。',
+        nodes: [
+          { field: 'enableVectorStorage' },
+          { field: 'enableChunkStorage' },
+          { field: 'chunkStorageFailFast' },
+          { field: 'syncMode' },
+          { field: 'saveMode' },
+        ],
+        summary: () => {
+          const qa = $('#enableVectorStorage')?.checked ? 'QA 入库' : 'QA 不入库';
+          const chunk = $('#enableChunkStorage')?.checked ? 'chunk 入库' : 'chunk 不入库';
+          return `${qa} / ${chunk} / ${$('#saveMode')?.value || 'separate'}`;
+        },
+      },
+    ],
+  });
+}
+
+function setupConfigSectionModules() {
+  const llmSection = $('#cfgName')?.closest('section');
+  const envPanel = llmSection?.querySelector('.env-check-panel');
+  if (llmSection && envPanel) {
+    registerModuleConsole({
+      scope: 'llm',
+      host: llmSection,
+      after: envPanel,
+      title: 'LLM 设置',
+      modules: [
+        {
+          key: 'saved',
+          kicker: '模型',
+          title: 'LLM 配置',
+          description: '新增、编辑、激活或删除后端 LLM 配置。API Key 不写入本地模块缓存。',
+          nodes: [{ selector: '#cfgName', closest: '.llm-config-split' }],
+          summary: () => String($('#cfgActive')?.textContent || '').trim() || '选择或新增模型配置',
+        },
+        {
+          key: 'debug',
+          kicker: '调试',
+          title: 'LLM 响应测试',
+          description: '发送一条轻量测试请求，查看模型连通性和原始返回。',
+          nodes: [{ selector: '#llmDebugPrompt', closest: 'details' }],
+          summary: () => `超时 ${$('#llmDebugTimeoutSeconds')?.value || 30}s / ${$('#llmDebugResponseFormat')?.value || 'json_object'}`,
+        },
+      ],
+    });
+  }
+
+  const ocrSection = $('#ocrCfgName')?.closest('section');
+  const ocrAfter = ocrSection?.querySelector('.form-grid');
+  if (ocrSection && ocrAfter) {
+    registerModuleConsole({
+      scope: 'ocr',
+      host: ocrSection,
+      after: ocrAfter,
+      title: 'OCR 设置',
+      modules: [
+        {
+          key: 'saved',
+          kicker: 'OCR',
+          title: 'OCR 配置',
+          description: '新增、编辑、激活、删除或测试后端 OCR 配置。',
+          nodes: [{ selector: '#ocrCfgName', closest: '.llm-config-split' }],
+          summary: () => String($('#ocrCfgActive')?.textContent || '').trim() || `${$('#ocrCfgProvider')?.value || 'batch_ocr'} / ${$('#ocrCfgTimeoutSeconds')?.value || 600}s`,
+        },
+      ],
+    });
+  }
+}
+
+function setupDwModuleConsole() {
+  const form = $('#dwJobForm');
+  const fileNode = nodeForField('dwFileInput');
+  if (!form || !fileNode) return;
+  registerModuleConsole({
+    scope: 'document_worker',
+    host: form,
+    after: fileNode,
+    title: '文档解析参数',
+    modules: [
+      {
+        key: 'output',
+        kicker: '输出',
+        title: '输出与格式',
+        description: '配置文档解析输出格式和 DOCX/DOC 处理策略。',
+        nodes: [
+          { field: 'dwOutputFormat' },
+          { field: 'dwDocxStrategy' },
+        ],
+        summary: () => `${$('#dwOutputFormat')?.value || 'text'} / ${$('#dwDocxStrategy')?.value || 'pdf'}`,
+      },
+      {
+        key: 'image',
+        kicker: '图片',
+        title: '图片理解',
+        description: '控制图片理解、图片分类、去水印、高质量裁图和 VLM API 开关。',
+        nodes: [
+          { field: 'dwEnableImageAnalysis' },
+          { field: 'dwEnableClassification' },
+          { field: 'dwClassificationThreshold' },
+          { field: 'dwRemoveWatermark' },
+          { field: 'dwWatermarkDpi' },
+          { field: 'dwReplaceImages' },
+          { field: 'dwUseApi' },
+        ],
+        summary: () => {
+          const image = $('#dwEnableImageAnalysis')?.checked ? '图片理解开' : '图片理解关';
+          const api = $('#dwUseApi')?.checked ? 'API 开' : 'API 关';
+          return `${image} / ${api} / 阈值 ${$('#dwClassificationThreshold')?.value || 0.9}`;
+        },
+      },
+      {
+        key: 'vlm',
+        kicker: 'VLM',
+        title: 'VLM 覆盖参数',
+        description: '按本次文档解析任务覆盖 VLM API Base、模型、类型和版本。API Key 不写入本地模块缓存。',
+        nodes: [{ selector: '#dwVlmApiBase', closest: 'details' }],
+        summary: () => String($('#dwVlmModelName')?.value || '').trim() || '使用后端默认 VLM',
+      },
+    ],
+  });
+}
+
+function setupModuleSettingsUI() {
+  createSettingsDrawer();
+  setupConfigSectionModules();
+  setupDwModuleConsole();
+  setupPipelineModuleConsole();
+  const refreshCards = () => settingsModules.forEach((module) => updateModuleCard(module));
+  document.addEventListener('change', refreshCards);
+  document.addEventListener('input', refreshCards);
 }
 
 async function handlePipelineSubmit(e) {
