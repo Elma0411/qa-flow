@@ -1077,6 +1077,7 @@ function openSettingsDrawer(module) {
   renderSettingsModalBody(module, body);
   if (title) title.textContent = module.title;
   if (desc) desc.textContent = module.description || '';
+  drawer.classList.toggle('settings-modal--workspace', module.workspaceModal === true);
 
   overlay.hidden = false;
   drawer.hidden = false;
@@ -1104,6 +1105,7 @@ function closeSettingsDrawer() {
   activeSettingsModule = null;
   overlay.classList.remove('is-open');
   drawer.classList.remove('is-open');
+  drawer.classList.remove('settings-modal--workspace');
   drawer.setAttribute('aria-hidden', 'true');
   document.body.classList.remove('drawer-open');
   window.setTimeout(() => {
@@ -1559,6 +1561,16 @@ function createSummaryChip(label, getValue, options = {}) {
   return item;
 }
 
+function observeSummarySources(refreshSummary) {
+  if (typeof refreshSummary !== 'function' || typeof MutationObserver !== 'function') return;
+  ['cfgActive', 'ocrCfgActive'].forEach((id) => {
+    const node = document.getElementById(id);
+    if (!node) return;
+    const observer = new MutationObserver(refreshSummary);
+    observer.observe(node, { childList: true, subtree: true, characterData: true });
+  });
+}
+
 function moveSectionAfter(section, anchor) {
   if (!section || !anchor || !anchor.parentNode) return;
   anchor.insertAdjacentElement('afterend', section);
@@ -1751,6 +1763,7 @@ function openSectionModal(title, description, section, options = {}) {
     nodes: [section],
     fields: [],
     bank: options.bank || $('#utilitySectionBank') || document.body,
+    workspaceModal: true,
   };
   openSettingsDrawer(module);
 }
@@ -1883,6 +1896,7 @@ function setupWorkbenchHero() {
   });
   document.addEventListener('change', refreshSummary);
   document.addEventListener('input', refreshSummary);
+  observeSummarySources(refreshSummary);
 
   $('#openPipelineSettingsBtn')?.addEventListener('click', () => {
     openPipelineSettingsModal();

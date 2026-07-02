@@ -4638,6 +4638,52 @@ body.qa-workbench-redesign .settings-modal {
   width: min(980px, calc(100vw - 32px));
 }
 
+body.qa-workbench-redesign .settings-modal.settings-modal--workspace {
+  width: min(1240px, calc(100vw - 32px));
+  max-height: min(92vh, 900px);
+}
+
+body.qa-workbench-redesign .settings-modal--workspace .settings-modal-body {
+  padding: 12px 20px 18px;
+}
+
+body.qa-workbench-redesign .settings-modal--workspace .settings-modal-body > .workbench-card,
+body.qa-workbench-redesign .settings-modal--workspace .settings-modal-body > .card {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+body.qa-workbench-redesign .settings-modal--workspace .settings-modal-body > .workbench-card > h2,
+body.qa-workbench-redesign .settings-modal--workspace .settings-modal-body > .card > h2 {
+  display: none;
+}
+
+body.qa-workbench-redesign .settings-modal--workspace .settings-modal-body > .workbench-card > .hint,
+body.qa-workbench-redesign .settings-modal--workspace .settings-modal-body > .card > .hint {
+  margin-bottom: 14px;
+}
+
+body.qa-workbench-redesign .settings-modal--workspace form.console-form,
+body.qa-workbench-redesign .settings-modal--workspace .form-grid {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+body.qa-workbench-redesign .settings-modal--workspace .llm-config-split {
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.8fr);
+}
+
+body.qa-workbench-redesign .settings-modal--workspace .module-settings-grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+body.qa-workbench-redesign .settings-modal--workspace .task-history-list,
+body.qa-workbench-redesign .settings-modal--workspace .dw-progress-panel {
+  max-width: none;
+}
+
 body.qa-workbench-redesign .settings-tab-layout--grouped {
   grid-template-columns: 180px minmax(0, 1fr);
 }
@@ -4671,6 +4717,7 @@ body.qa-workbench-redesign .settings-tab-panel .module-settings-shell {
   body.qa-workbench-redesign .task-console-grid,
   body.qa-workbench-redesign .chunk-tree-grid,
   body.qa-workbench-redesign .workbench-core,
+  body.qa-workbench-redesign .settings-modal--workspace .llm-config-split,
   body.qa-workbench-redesign .settings-tab-layout--grouped {
     grid-template-columns: 1fr;
   }
