@@ -196,7 +196,7 @@ function setTaskSelection(taskId, { active = null } = {}) {
     persistUiField(taskInput);
   }
   const chunkTaskInput = $('#chunkTaskId');
-  if (chunkTaskInput && !chunkTaskInput.value && normalized) {
+  if (chunkTaskInput && normalized && chunkTaskInput.value !== normalized) {
     chunkTaskInput.value = normalized;
     persistUiField(chunkTaskInput);
   }

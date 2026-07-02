@@ -817,6 +817,10 @@ function applyModuleValues(module, values) {
 
 function saveModuleValues(module) {
   if (!module) return;
+  if (!module.cacheKey) {
+    updateModuleCard(module);
+    return;
+  }
   const cache = readModuleCache();
   cache[module.cacheKey] = {
     updated_at: new Date().toISOString(),
@@ -826,7 +830,7 @@ function saveModuleValues(module) {
   updateModuleCard(module);
 }
 
-function restoreModuleDefaults(module) {
+function restoreModuleDefaults(module, options = {}) {
   if (!module) return;
   applyModuleValues(module, moduleValues(module, { defaults: true }));
   module.fields.forEach((el) => {
@@ -834,7 +838,7 @@ function restoreModuleDefaults(module) {
     applyFieldValue(el, readFieldDefault(el));
   });
   saveModuleValues(module);
-  notify(`已恢复 ${module.title} 默认值`, 'success');
+  if (!options.silent) notify(`已恢复 ${module.title} 默认值`, 'success');
 }
 
 function restoreModuleCache(modules) {
@@ -888,16 +892,36 @@ function createSettingsDrawer() {
   $('#moduleSettingsClose')?.addEventListener('click', closeSettingsDrawer);
   $('#moduleSettingsCloseSecondary')?.addEventListener('click', closeSettingsDrawer);
   $('#moduleSettingsApply')?.addEventListener('click', () => {
-    if (activeSettingsModule) saveModuleValues(activeSettingsModule);
+    if (activeSettingsModule) saveActiveSettingsSession(activeSettingsModule);
     closeSettingsDrawer();
   });
   $('#moduleSettingsReset')?.addEventListener('click', () => {
-    if (activeSettingsModule) restoreModuleDefaults(activeSettingsModule);
+    if (activeSettingsModule) restoreActiveSettingsSession(activeSettingsModule);
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && activeSettingsModule) closeSettingsDrawer();
   });
   return { overlay, drawer };
+}
+
+function saveActiveSettingsSession(module) {
+  if (!module) return;
+  if (Array.isArray(module.groupedModules) && module.groupedModules.length) {
+    module.groupedModules.forEach((item) => saveModuleValues(item));
+    notify(`已保存 ${module.title}`, 'success');
+    return;
+  }
+  saveModuleValues(module);
+}
+
+function restoreActiveSettingsSession(module) {
+  if (!module) return;
+  if (Array.isArray(module.groupedModules) && module.groupedModules.length) {
+    module.groupedModules.forEach((item) => restoreModuleDefaults(item, { silent: true }));
+    notify(`已恢复 ${module.title} 默认值`, 'success');
+    return;
+  }
+  restoreModuleDefaults(module);
 }
 
 function groupModuleNodes(module) {
@@ -916,6 +940,10 @@ function groupModuleNodes(module) {
 }
 
 function renderSettingsModalBody(module, body) {
+  if (Array.isArray(module?.groupedModules) && module.groupedModules.length) {
+    renderGroupedSettingsModalBody(module, body);
+    return;
+  }
   const groups = groupModuleNodes(module);
   body.replaceChildren();
   if (groups.length <= 1) {
@@ -970,6 +998,72 @@ function renderSettingsModalBody(module, body) {
   applyCompactFieldCopy(layout);
 }
 
+function renderGroupedSettingsModalBody(session, body) {
+  const modules = (session.groupedModules || []).filter((module) => module && module.nodes && module.nodes.length);
+  body.replaceChildren();
+  if (!modules.length) {
+    const empty = document.createElement('div');
+    empty.className = 'settings-empty';
+    empty.textContent = '暂无可配置参数。';
+    body.appendChild(empty);
+    return;
+  }
+
+  const layout = document.createElement('div');
+  layout.className = 'settings-tab-layout settings-tab-layout--grouped';
+  const nav = document.createElement('div');
+  nav.className = 'settings-tab-nav';
+  nav.setAttribute('role', 'tablist');
+  const panels = document.createElement('div');
+  panels.className = 'settings-tab-panels';
+
+  modules.forEach((module, index) => {
+    const tabId = `settingsGroupTab${index}`;
+    const panelId = `settingsGroupPanel${index}`;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `settings-tab-btn${index === 0 ? ' is-active' : ''}`;
+    button.textContent = module.title || `配置 ${index + 1}`;
+    button.setAttribute('role', 'tab');
+    button.setAttribute('id', tabId);
+    button.setAttribute('aria-controls', panelId);
+    button.setAttribute('aria-selected', index === 0 ? 'true' : 'false');
+
+    const panel = document.createElement('div');
+    panel.className = `settings-tab-panel${index === 0 ? ' is-active' : ''}`;
+    panel.id = panelId;
+    panel.setAttribute('role', 'tabpanel');
+    panel.setAttribute('aria-labelledby', tabId);
+
+    const head = document.createElement('div');
+    head.className = 'settings-panel-head';
+    const title = document.createElement('h3');
+    title.textContent = module.title || `配置 ${index + 1}`;
+    const desc = document.createElement('p');
+    desc.textContent = module.description || '';
+    head.append(title, desc);
+    panel.appendChild(head);
+    module.nodes.forEach((node) => panel.appendChild(node));
+
+    button.addEventListener('click', () => {
+      nav.querySelectorAll('.settings-tab-btn').forEach((btn) => {
+        btn.classList.toggle('is-active', btn === button);
+        btn.setAttribute('aria-selected', btn === button ? 'true' : 'false');
+      });
+      panels.querySelectorAll('.settings-tab-panel').forEach((item) => {
+        item.classList.toggle('is-active', item === panel);
+      });
+    });
+
+    nav.appendChild(button);
+    panels.appendChild(panel);
+  });
+
+  layout.append(nav, panels);
+  body.appendChild(layout);
+  applyCompactFieldCopy(layout);
+}
+
 function openSettingsDrawer(module) {
   if (!module) return;
   if (activeSettingsModule && activeSettingsModule !== module) closeSettingsDrawer();
@@ -999,7 +1093,14 @@ function closeSettingsDrawer() {
   const overlay = $('#moduleSettingsOverlay');
   const drawer = $('#moduleSettingsDrawer');
   if (!module || !overlay || !drawer) return;
-  module.nodes.forEach((node) => module.bank.appendChild(node));
+  if (Array.isArray(module.groupedModules) && module.groupedModules.length) {
+    module.groupedModules.forEach((item) => {
+      if (!item || !item.bank || !Array.isArray(item.nodes)) return;
+      item.nodes.forEach((node) => item.bank.appendChild(node));
+    });
+  } else {
+    module.nodes.forEach((node) => module.bank.appendChild(node));
+  }
   activeSettingsModule = null;
   overlay.classList.remove('is-open');
   drawer.classList.remove('is-open');
@@ -1019,6 +1120,38 @@ function openAppModal(module) {
 
 function closeAppModal() {
   closeSettingsDrawer();
+}
+
+function modulesByKeys(keys) {
+  return (keys || []).map((key) => settingsModules.get(key)).filter(Boolean);
+}
+
+function openSettingsGroup(title, description, moduleKeys) {
+  const modules = modulesByKeys(moduleKeys);
+  if (!modules.length) return;
+  openSettingsDrawer({
+    title,
+    description,
+    groupedModules: modules,
+    nodes: [],
+    fields: [],
+    bank: null,
+  });
+}
+
+function openPipelineSettingsModal() {
+  openSettingsGroup(
+    '任务设置',
+    '按生成流程分区配置文档解析、切分、生成、评估、性能和输出。保存后只影响后续提交的任务。',
+    [
+      'pipeline.document',
+      'pipeline.chunking',
+      'pipeline.generation',
+      'pipeline.evaluation',
+      'pipeline.performance',
+      'pipeline.output',
+    ],
+  );
 }
 
 function createModuleCard(module) {
@@ -1401,9 +1534,276 @@ function createSummaryItem(label, getValue, options = {}) {
   return item;
 }
 
+function createSummaryChip(label, getValue, options = {}) {
+  const item = document.createElement('button');
+  item.type = 'button';
+  item.className = 'summary-chip';
+  item.innerHTML = [
+    '<span class="summary-chip-label"></span>',
+    '<strong class="summary-chip-value"></strong>',
+  ].join('');
+  item.querySelector('.summary-chip-label').textContent = label;
+  const render = () => {
+    const value = typeof getValue === 'function' ? getValue() : getValue;
+    item.querySelector('.summary-chip-value').textContent = String(value || '未设置');
+  };
+  render();
+  item.addEventListener('click', () => {
+    if (options.moduleKey) {
+      const module = settingsModules.get(options.moduleKey);
+      if (module) openSettingsDrawer(module);
+    }
+    if (options.openPipelineSettings) openPipelineSettingsModal();
+  });
+  item.render = render;
+  return item;
+}
+
 function moveSectionAfter(section, anchor) {
   if (!section || !anchor || !anchor.parentNode) return;
   anchor.insertAdjacentElement('afterend', section);
+}
+
+function setSectionTitle(section, title, description) {
+  if (!section) return;
+  const heading = section.querySelector('h2, h3');
+  if (heading && title) heading.textContent = title;
+  const hint = section.querySelector(':scope > .hint, :scope > p');
+  if (hint && description !== undefined) hint.textContent = description;
+}
+
+function createPanelShell(title, description, className) {
+  const section = document.createElement('section');
+  section.className = className || 'card';
+  const head = document.createElement('div');
+  head.className = 'section-head';
+  const copy = document.createElement('div');
+  const h2 = document.createElement('h2');
+  h2.textContent = title || '';
+  const p = document.createElement('p');
+  p.className = 'hint';
+  p.textContent = description || '';
+  copy.append(h2, p);
+  head.appendChild(copy);
+  section.appendChild(head);
+  return section;
+}
+
+function activateTaskTab(name) {
+  const root = $('#pipelineTaskWorkspace');
+  if (!root) return;
+  const target = String(name || 'status');
+  root.querySelectorAll('.task-tab-btn').forEach((btn) => {
+    const active = btn.dataset.taskTab === target;
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  root.querySelectorAll('.task-tab-panel').forEach((panel) => {
+    panel.classList.toggle('is-active', panel.dataset.taskPanel === target);
+  });
+}
+
+function setupTaskWorkspace(pipelineSection) {
+  if (!pipelineSection || $('#pipelineTaskWorkspace')) return null;
+  const taskConsole = pipelineSection.querySelector('.task-console');
+  const outputsPanel = $('#pipelineOutputsPanel');
+  const statusPanel = $('#pipelineStatus');
+  if (!taskConsole || !outputsPanel || !statusPanel) return null;
+
+  const workspace = createPanelShell(
+    '当前任务',
+    '提交、恢复或查询任务后，在这里看进度、耗时、输出文件和历史记录。',
+    'card current-task-card',
+  );
+  workspace.id = 'pipelineTaskWorkspace';
+  const head = workspace.querySelector('.section-head');
+  const tabs = document.createElement('div');
+  tabs.className = 'task-tab-nav';
+  tabs.setAttribute('role', 'tablist');
+  [
+    ['status', '进度耗时'],
+    ['outputs', '输出文件'],
+    ['history', '任务历史'],
+  ].forEach(([key, label], index) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `task-tab-btn${index === 0 ? ' is-active' : ''}`;
+    btn.dataset.taskTab = key;
+    btn.setAttribute('role', 'tab');
+    btn.setAttribute('aria-selected', index === 0 ? 'true' : 'false');
+    btn.textContent = label;
+    btn.addEventListener('click', () => activateTaskTab(key));
+    tabs.appendChild(btn);
+  });
+  if (head) head.appendChild(tabs);
+
+  const panels = document.createElement('div');
+  panels.className = 'task-tab-panels';
+
+  const statusWrap = document.createElement('div');
+  statusWrap.className = 'task-tab-panel is-active';
+  statusWrap.dataset.taskPanel = 'status';
+  const statusEmpty = document.createElement('div');
+  statusEmpty.className = 'current-task-empty';
+  statusEmpty.textContent = '等待提交任务。开始执行后会显示进度、阶段耗时和 chunk 明细。';
+  statusPanel.appendChild(statusEmpty);
+  statusWrap.appendChild(statusPanel);
+
+  const outputsWrap = document.createElement('div');
+  outputsWrap.className = 'task-tab-panel';
+  outputsWrap.dataset.taskPanel = 'outputs';
+  setSectionTitle(outputsPanel, '输出文件', '查看合并 JSON、下载 CSV 或跳转入库记录。');
+  outputsWrap.appendChild(outputsPanel);
+
+  const historyWrap = document.createElement('div');
+  historyWrap.className = 'task-tab-panel';
+  historyWrap.dataset.taskPanel = 'history';
+  historyWrap.appendChild(taskConsole);
+
+  panels.append(statusWrap, outputsWrap, historyWrap);
+  workspace.appendChild(panels);
+  pipelineSection.insertAdjacentElement('afterend', workspace);
+  return workspace;
+}
+
+function setupReviewWorkspace({ anchor, chunkSection, qaResultsSection }) {
+  if (!anchor || $('#pipelineReviewWorkspace')) return null;
+  const review = createPanelShell(
+    '结果检查',
+    '围绕当前任务做溯源检查和 QA 预览。没有任务结果时这里保持安静。',
+    'card review-workspace is-empty',
+  );
+  review.id = 'pipelineReviewWorkspace';
+  const body = document.createElement('div');
+  body.className = 'review-grid';
+
+  if (chunkSection) {
+    setSectionTitle(chunkSection, 'Chunk 溯源', '按当前 task_id 查看树结构，点击 leaf chunk 检查正文和对应 QA。');
+    chunkSection.classList.add('review-panel', 'review-panel--chunk');
+    body.appendChild(chunkSection);
+  }
+  if (qaResultsSection) {
+    setSectionTitle(qaResultsSection, 'QA 预览', '');
+    qaResultsSection.classList.add('review-panel', 'review-panel--qa');
+    body.appendChild(qaResultsSection);
+  }
+
+  const empty = document.createElement('div');
+  empty.className = 'review-empty';
+  empty.textContent = '任务完成或加载结果后会在这里显示溯源和问答预览。';
+  review.append(empty, body);
+  anchor.insertAdjacentElement('afterend', review);
+  const refresh = () => refreshReviewWorkspaceState();
+  ['qaResults', 'chunkTree'].forEach((id) => {
+    const node = document.getElementById(id);
+    if (!node || typeof MutationObserver !== 'function') return;
+    const observer = new MutationObserver(refresh);
+    observer.observe(node, { childList: true, subtree: true, characterData: true });
+  });
+  ['taskIdInput', 'chunkTaskId'].forEach((id) => {
+    const node = document.getElementById(id);
+    if (!node) return;
+    node.addEventListener('input', refresh);
+    node.addEventListener('change', refresh);
+  });
+  refreshReviewWorkspaceState();
+  return review;
+}
+
+function refreshReviewWorkspaceState() {
+  const review = $('#pipelineReviewWorkspace');
+  if (!review) return;
+  const selectedTask = String($('#taskIdInput')?.value || $('#chunkTaskId')?.value || lastTaskId || '').trim();
+  const qaText = String($('#qaResults')?.textContent || '').trim();
+  const chunkText = String($('#chunkTree')?.textContent || '').trim();
+  const hasQa = !!qaText && qaText !== '没有结果';
+  const hasChunk = !!chunkText;
+  review.classList.toggle('is-empty', !(selectedTask || hasQa || hasChunk));
+}
+
+function makeToolCard(title, description, actionLabel, onClick, options = {}) {
+  const card = document.createElement('article');
+  card.className = 'tool-card';
+  const icon = document.createElement('span');
+  icon.className = 'tool-card-icon';
+  icon.textContent = options.icon || title.slice(0, 1);
+  const copy = document.createElement('div');
+  copy.className = 'tool-card-copy';
+  const h3 = document.createElement('h3');
+  h3.textContent = title;
+  const p = document.createElement('p');
+  p.textContent = description || '';
+  copy.append(h3, p);
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = options.primary ? '' : 'secondary';
+  btn.textContent = actionLabel || '打开';
+  btn.addEventListener('click', onClick);
+  card.append(icon, copy, btn);
+  return card;
+}
+
+function openSectionModal(title, description, section, options = {}) {
+  if (!section) return;
+  const module = {
+    title,
+    description,
+    nodes: [section],
+    fields: [],
+    bank: options.bank || $('#utilitySectionBank') || document.body,
+  };
+  openSettingsDrawer(module);
+}
+
+function setupUtilityWorkspace({ anchor, llmSection, ocrSection, dwSection, tagSection, adminLinkSection, localJsonSection }) {
+  if (!anchor || $('#utilityWorkspace')) return null;
+  const tools = createPanelShell(
+    '工具箱',
+    '低频配置和独立调试工具收在这里，不干扰日常生成任务。',
+    'card utility-workspace',
+  );
+  tools.id = 'utilityWorkspace';
+  const bank = document.createElement('div');
+  bank.id = 'utilitySectionBank';
+  bank.className = 'utility-section-bank';
+  bank.setAttribute('aria-hidden', 'true');
+
+  [llmSection, ocrSection, dwSection, tagSection, adminLinkSection, localJsonSection].forEach((section) => {
+    if (section) bank.appendChild(section);
+  });
+
+  const grid = document.createElement('div');
+  grid.className = 'tool-grid';
+  grid.appendChild(makeToolCard('环境检测', '检查 API、LLM、OCR、Milvus、CUDA 和关键目录。', '开始检测', () => {
+    openSectionModal('连接与模型', '运行环境检测，维护 API 地址和 LLM 配置。', llmSection, { bank });
+    window.setTimeout(() => $('#btnEnvironmentCheck')?.click(), 120);
+  }, { icon: 'E', primary: true }));
+  grid.appendChild(makeToolCard('LLM 配置', '新增、激活、删除模型配置，或发送调试请求。', '配置', () => {
+    openSettingsGroup('LLM 配置', '管理后端 LLM 配置和轻量调试请求。', ['llm.saved', 'llm.debug']);
+  }, { icon: 'L' }));
+  grid.appendChild(makeToolCard('OCR 配置', '维护 OCR 服务协议、地址、字段名和测试请求。', '配置', () => {
+    openSettingsGroup('OCR 配置', '管理后端 OCR 配置。', ['ocr.saved']);
+  }, { icon: 'O' }));
+  grid.appendChild(makeToolCard('单独文档解析', '只跑文档解析、图片理解和文本整合，不进入 QA 生成。', '打开', () => {
+    openSectionModal('文档解析', '单独执行 OCR、图片理解和文本整合。', dwSection, { bank });
+  }, { icon: 'D' }));
+  grid.appendChild(makeToolCard('知识分类测试', '粘贴文本验证三级知识分类结果。', '打开', () => {
+    openSectionModal('三级知识分类', '用本地分类器直接预测文本标签。', tagSection, { bank });
+  }, { icon: 'K' }));
+  grid.appendChild(makeToolCard('本地 JSON 预览', '选择合并输出 JSON，在页面内预览 QA。', '打开', () => {
+    openSectionModal('本地 JSON 预览', '解析本地合并输出文件并刷新 QA 预览。', localJsonSection, { bank });
+  }, { icon: 'J' }));
+
+  if (adminLinkSection) {
+    grid.appendChild(makeToolCard('QA 管理', '进入列表筛选、语义检索、批量评估和软删除。', '进入管理', () => {
+      window.location.href = '/ui/admin.html';
+    }, { icon: 'A' }));
+  }
+
+  tools.appendChild(grid);
+  tools.appendChild(bank);
+  anchor.insertAdjacentElement('afterend', tools);
+  return tools;
 }
 
 function setupWorkbenchHero() {
@@ -1421,22 +1821,19 @@ function setupWorkbenchHero() {
     '<div class="workbench-title-row">',
     '<div>',
     '<p class="workbench-kicker">QA Flow</p>',
-    '<h2>生成任务台</h2>',
-    '<p>上传文件，选择流程，确认数量，然后启动。其他参数都在配置中心里。</p>',
+    '<h2>运行任务</h2>',
+    '<p>上传文件，选择流程和目标数量，然后启动生成。高级参数进入任务设置。</p>',
     '</div>',
+    '<div class="workbench-title-actions">',
     '<button type="button" class="secondary workbench-settings-btn" id="openPipelineSettingsBtn">任务设置</button>',
+    '<button type="button" class="secondary compact" id="quickEnvCheckBtn">环境检测</button>',
+    '</div>',
     '</div>',
     '<div class="workbench-drop" id="pipelineDropZone"></div>',
     '<div class="workbench-core" id="pipelineCoreFields"></div>',
+    '<div class="summary-chip-row" id="workbenchSummary"></div>',
     '<div class="workbench-actions" id="pipelineHeroActions"></div>',
     '</div>',
-    '<aside class="workbench-side">',
-    '<div class="workbench-side-head">',
-    '<span>运行状态</span>',
-    '<button type="button" class="secondary compact" id="quickEnvCheckBtn">环境检测</button>',
-    '</div>',
-    '<div class="summary-stack" id="workbenchSummary"></div>',
-    '</aside>',
   ].join('');
   main.insertBefore(hero, pipelineSection);
 
@@ -1458,9 +1855,7 @@ function setupWorkbenchHero() {
 
   const pipelineShell = pipelineSection.querySelector('.module-settings-shell');
   if (pipelineShell) {
-    pipelineShell.classList.add('workbench-settings-strip');
-    const mainPane = hero.querySelector('.workbench-main');
-    if (mainPane) mainPane.appendChild(pipelineShell);
+    pipelineShell.classList.add('workbench-settings-strip', 'is-hidden-on-workbench');
   }
 
   const heroActions = $('#pipelineHeroActions');
@@ -1474,12 +1869,12 @@ function setupWorkbenchHero() {
   const summary = $('#workbenchSummary');
   const items = [];
   if (summary) {
-    items.push(createSummaryItem('LLM', () => String($('#cfgActive')?.textContent || '').trim() || '未激活', { moduleKey: 'llm.saved', hint: '模型配置' }));
-    items.push(createSummaryItem('OCR', () => String($('#ocrCfgActive')?.textContent || '').trim() || `${$('#ocrCfgProvider')?.value || 'batch_ocr'}`, { moduleKey: 'ocr.saved', hint: '解析服务' }));
-    items.push(createSummaryItem('流程', () => $('#pipelineProcessingMode')?.value === 'integrated' ? '一体流程' : '标准 OCR', { moduleKey: 'pipeline.document', hint: '文档解析' }));
-    items.push(createSummaryItem('切分', () => `${$('#chunkingSplitType')?.value || 'markdown'} / ${$('#chunkSize')?.value || 600}`, { moduleKey: 'pipeline.chunking', hint: 'chunk 设置' }));
-    items.push(createSummaryItem('生成', () => `${checkedQuestionTypesSummary()} / ${$('#chunkMaxAttempts')?.value || 2} 次`, { moduleKey: 'pipeline.generation', hint: '题型与尝试' }));
-    items.push(createSummaryItem('并发', () => `chunk ${$('#chunkMaxConcurrency')?.value || '8'} / API ${$('#llmMaxConcurrentRequests')?.value || '默认'}`, { moduleKey: 'pipeline.performance', hint: '性能' }));
+    items.push(createSummaryChip('LLM', () => String($('#cfgActive')?.textContent || '').trim() || '未激活', { moduleKey: 'llm.saved' }));
+    items.push(createSummaryChip('OCR', () => String($('#ocrCfgActive')?.textContent || '').trim() || `${$('#ocrCfgProvider')?.value || 'batch_ocr'}`, { moduleKey: 'ocr.saved' }));
+    items.push(createSummaryChip('流程', () => $('#pipelineProcessingMode')?.value === 'integrated' ? '一体流程' : '标准 OCR', { moduleKey: 'pipeline.document' }));
+    items.push(createSummaryChip('切分', () => `${$('#chunkingSplitType')?.value || 'markdown'} / ${$('#chunkSize')?.value || 600}`, { moduleKey: 'pipeline.chunking' }));
+    items.push(createSummaryChip('生成', () => `${checkedQuestionTypesSummary()} / 尝试 ${$('#chunkMaxAttempts')?.value || 2}`, { moduleKey: 'pipeline.generation' }));
+    items.push(createSummaryChip('并发', () => `chunk ${$('#chunkMaxConcurrency')?.value || '8'} / API ${$('#llmMaxConcurrentRequests')?.value || '默认'}`, { moduleKey: 'pipeline.performance' }));
     items.forEach((item) => summary.appendChild(item));
   }
 
@@ -1490,16 +1885,14 @@ function setupWorkbenchHero() {
   document.addEventListener('input', refreshSummary);
 
   $('#openPipelineSettingsBtn')?.addEventListener('click', () => {
-    const firstCard = pipelineShell?.querySelector('.module-settings-card');
-    if (firstCard && typeof firstCard.focus === 'function') {
-      firstCard.focus();
-      pipelineShell.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      return;
-    }
-    const module = settingsModules.get('pipeline.document') || settingsModules.get('pipeline.generation');
-    if (module) openSettingsDrawer(module);
+    openPipelineSettingsModal();
   });
-  $('#quickEnvCheckBtn')?.addEventListener('click', () => $('#btnEnvironmentCheck')?.click());
+  $('#quickEnvCheckBtn')?.addEventListener('click', () => {
+    openSectionModal('连接与模型', '检查运行环境，维护 API 地址和模型配置。', llmSection, {
+      bank: $('#utilitySectionBank') || llmSection?.parentElement || document.body,
+    });
+    window.setTimeout(() => $('#btnEnvironmentCheck')?.click(), 120);
+  });
 
   setSectionMeta(llmSection, {
     key: 'connections',
@@ -1545,13 +1938,26 @@ function setupWorkbenchSectionOrder() {
     return h2 && String(h2.textContent || '').includes('QA 数据管理');
   });
 
-  const order = [llmSection, ocrSection, dwSection, pipelineSection, chunkSection, tagSection, adminLinkSection, localJsonSection, qaResultsSection]
-    .filter(Boolean);
-  let anchor = hero;
-  order.forEach((section) => {
-    moveSectionAfter(section, anchor);
-    anchor = section;
+  const taskWorkspace = setupTaskWorkspace(pipelineSection);
+  if (pipelineSection) {
+    pipelineSection.classList.add('pipeline-storage-section');
+  }
+  const reviewWorkspace = setupReviewWorkspace({
+    anchor: taskWorkspace || hero,
+    chunkSection,
+    qaResultsSection,
   });
+  setupUtilityWorkspace({
+    anchor: reviewWorkspace || taskWorkspace || hero,
+    llmSection,
+    ocrSection,
+    dwSection,
+    tagSection,
+    adminLinkSection,
+    localJsonSection,
+  });
+
+  if (taskWorkspace) moveSectionAfter(taskWorkspace, hero);
 }
 
 function setupWorkbenchRedesign() {
@@ -1831,6 +2237,8 @@ function updatePipelineStatusView(status) {
     statusEl.textContent = '';
     statusEl.classList.add('pipeline-debug-panel');
     statusEl.appendChild(renderPipelineDebugStatus(status));
+    activateTaskTab('status');
+    refreshReviewWorkspaceState();
   } catch (err) {
     statusEl.textContent = JSON.stringify(status, null, 2);
   }
@@ -2321,6 +2729,8 @@ function handlePipelineOutputs(base, outputs) {
     }
   }
   renderPipelineOutputsList(base, outputs);
+  if (outputs.length) activateTaskTab('outputs');
+  refreshReviewWorkspaceState();
 }
 
 async function loadPipelineMilvusHistory(base, taskId, { sourceFile = '' } = {}) {
