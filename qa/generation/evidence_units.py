@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -172,20 +173,29 @@ class QADocumentEvidenceIndex:
         *,
         source_chunk_index: int,
         top_k: int = DEFAULT_SEMANTIC_TOP_K,
+        timing: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Tuple[List[EvidenceHit], List[Dict[str, Any]]]]:
         from app.services.milvus import generate_embeddings
 
         clean_queries = [_safe_text(query) for query in queries if _safe_text(query)]
         if not clean_queries:
             return {}
+        embedding_start = time.perf_counter()
         query_embeddings = generate_embeddings(clean_queries)
+        embedding_seconds = time.perf_counter() - embedding_start
+        if timing is not None:
+            timing["embedding_seconds"] = timing.get("embedding_seconds", 0.0) + embedding_seconds
         results: Dict[str, Tuple[List[EvidenceHit], List[Dict[str, Any]]]] = {}
+        rank_start = time.perf_counter()
         for query, query_embedding in zip(clean_queries, query_embeddings):
             results[query] = self._rank_with_query_embedding(
                 query_embedding,
                 source_chunk_index=source_chunk_index,
                 top_k=top_k,
             )
+        rank_seconds = time.perf_counter() - rank_start
+        if timing is not None:
+            timing["ranking_seconds"] = timing.get("ranking_seconds", 0.0) + rank_seconds
         return results
 
     def _rank_with_query_embedding(

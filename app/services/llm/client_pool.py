@@ -46,6 +46,7 @@ class LLMClientConfig:
     api_type: Optional[str] = None
     model_version: Optional[str] = None
     timeout_seconds: float = 180.0
+    max_concurrent_requests: Optional[int] = None
 
     def to_vlm_config(self) -> VLMClientConfig:
         return VLMClientConfig.from_values(
@@ -55,6 +56,7 @@ class LLMClientConfig:
             api_type=self.api_type,
             model_version=self.model_version,
             timeout_seconds=self.timeout_seconds,
+            max_concurrent_requests=self.max_concurrent_requests,
         )
 
 

@@ -7,6 +7,7 @@ import json
 import os
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -176,6 +177,7 @@ def process_text_to_qa_one_step(
     - Retrieve same-document evidence chunks by candidate-question semantics.
     - Generate final QA from the source chunk plus organized evidence context.
     """
+    document_started_at = time.perf_counter()
     runtime = parse_one_step_pipeline_runtime(config)
     debug_writer = _build_jsonl_debug_writer(runtime.debug_file)
 
@@ -191,7 +193,9 @@ def process_text_to_qa_one_step(
     )
     if not document_chunks:
         return []
+    index_started_at = time.perf_counter()
     evidence_index = QADocumentEvidenceIndex.build(document_chunks)
+    index_seconds = time.perf_counter() - index_started_at
     chunks = [str(chunk.get("text") or "").strip() for chunk in document_chunks]
 
     total_chunks = len(chunks)
@@ -203,6 +207,9 @@ def process_text_to_qa_one_step(
                     "generation_mode": "same_document_semantic_evidence",
                     "original_filename": original_filename,
                     "total_chunks": total_chunks,
+                    "timing": {
+                        "index_build_seconds": index_seconds,
+                    },
                 }
             )
         except Exception:
@@ -213,6 +220,17 @@ def process_text_to_qa_one_step(
     results: List[Dict[str, Any]] = []
     chunk_items_by_index: Dict[int, List[Dict[str, Any]]] = {}
     chunk_errors: List[str] = []
+    chunk_debug_details: List[Dict[str, Any]] = []
+    generation_accumulator: Dict[str, float] = {
+        "candidate_question_seconds": 0.0,
+        "retrieval_seconds": 0.0,
+        "retrieval_embedding_seconds": 0.0,
+        "retrieval_ranking_seconds": 0.0,
+        "retrieval_unit_seconds": 0.0,
+        "answer_generation_seconds": 0.0,
+        "validation_and_bookkeeping_seconds": 0.0,
+        "chunk_total_seconds": 0.0,
+    }
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_map = {
             executor.submit(
@@ -244,6 +262,7 @@ def process_text_to_qa_one_step(
                     "attempt_used": 0,
                     "items": [],
                     "error": str(exc),
+                    "timing": {},
                 }
 
             items = payload.get("items") if isinstance(payload, dict) else None
@@ -257,6 +276,28 @@ def process_text_to_qa_one_step(
                 chunk_items_by_index[chunk_index_int] = [
                     it for it in items_list if isinstance(it, dict)
                 ]
+                timing = payload.get("timing") if isinstance(payload, dict) else {}
+                if not isinstance(timing, dict):
+                    timing = {}
+                for key in generation_accumulator:
+                    try:
+                        generation_accumulator[key] += float(timing.get(key) or 0.0)
+                    except Exception:
+                        pass
+                chunk_detail = {
+                    "chunk_index": chunk_index_int,
+                    "attempt_used": payload.get("attempt_used"),
+                    "candidate_questions": payload.get("candidate_questions", 0),
+                    "candidates_considered": payload.get("candidates_considered", 0),
+                    "valid_items": len(items_list),
+                    "dropped_reason_stats": payload.get("dropped_reason_stats")
+                    or payload.get("dropped_answer_reasons")
+                    or {},
+                    "timing": timing,
+                }
+                if payload.get("error"):
+                    chunk_detail["error"] = payload.get("error")
+                chunk_debug_details.append(chunk_detail)
 
             if progress_callback and isinstance(payload, dict):
                 try:
@@ -273,6 +314,10 @@ def process_text_to_qa_one_step(
                             "error": payload.get("error"),
                             "skip_reason": payload.get("skip_reason"),
                             "dropped_answer_reasons": payload.get("dropped_answer_reasons"),
+                            "dropped_reason_stats": payload.get("dropped_reason_stats"),
+                            "candidate_questions": payload.get("candidate_questions"),
+                            "candidates_considered": payload.get("candidates_considered"),
+                            "timing": payload.get("timing"),
                         }
                     )
                 except Exception:
@@ -289,6 +334,15 @@ def process_text_to_qa_one_step(
                 results.append(item)
     if progress_callback:
         try:
+            document_total_seconds = time.perf_counter() - document_started_at
+            generation_summary = {
+                **generation_accumulator,
+                "index_build_seconds": index_seconds,
+                "document_total_seconds": document_total_seconds,
+                "chunks_total": total_chunks,
+                "chunks_completed": len(chunk_debug_details),
+                "qa_generated": len(results),
+            }
             progress_callback(
                 {
                     "event": "done",
@@ -296,6 +350,11 @@ def process_text_to_qa_one_step(
                     "original_filename": original_filename,
                     "total_chunks": total_chunks,
                     "total_items": len(results),
+                    "timing": generation_summary,
+                    "chunk_details": sorted(
+                        chunk_debug_details,
+                        key=lambda item: int(item.get("chunk_index") or 0),
+                    ),
                 }
             )
         except Exception:

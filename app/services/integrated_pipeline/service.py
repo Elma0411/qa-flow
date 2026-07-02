@@ -95,8 +95,10 @@ def _build_file_content_record(
     }
 
 
-def _build_llm_config() -> LLMClientConfig:
-    return build_llm_client_config()
+def _build_llm_config(
+    max_concurrent_requests: Optional[int] = None,
+) -> LLMClientConfig:
+    return build_llm_client_config(max_concurrent_requests=max_concurrent_requests)
 
 
 def _chunk_contexts(chunks_meta: List[Dict[str, Any]]) -> List[ChunkContext]:
@@ -198,6 +200,7 @@ class IntegratedPipelineRunner:
         image_analysis_vlm_api_key: Optional[str] = None,
         image_analysis_vlm_api_type: Optional[str] = None,
         image_analysis_vlm_model_version: Optional[str] = None,
+        llm_max_concurrent_requests: Optional[int] = None,
         image_analysis_enable_classification: bool = False,
         image_analysis_classification_confidence_threshold: float = 0.0,
         image_analysis_max_concurrency: Optional[int] = None,
@@ -224,7 +227,10 @@ class IntegratedPipelineRunner:
         self.replace_images = bool(replace_images)
         self.docx_strategy = _normalize_pdf_docx_strategy(docx_strategy)
         self.use_gpu = resolve_ocr_use_gpu(default=True) if use_gpu is None else bool(use_gpu)
-        self.llm_config = _build_llm_config()
+        self.llm_max_concurrent_requests = llm_max_concurrent_requests
+        self.llm_config = _build_llm_config(
+            max_concurrent_requests=llm_max_concurrent_requests,
+        )
         self.image_analysis_enabled = bool(image_analysis_enabled)
         self.image_analysis_use_api = bool(image_analysis_use_api)
         self.image_analysis_vlm_api_base = image_analysis_vlm_api_base or self.llm_config.api_base
@@ -526,6 +532,7 @@ class IntegratedPipelineRunner:
                         api_key=self.image_analysis_vlm_api_key,
                         api_type=self.image_analysis_vlm_api_type,
                         model_version=self.image_analysis_vlm_model_version,
+                        max_concurrent_requests=self.llm_max_concurrent_requests,
                     )
                 )
 
@@ -788,6 +795,7 @@ async def resolve_uploaded_files_with_integrated_processing(
     image_analysis_vlm_api_key: Optional[str] = None,
     image_analysis_vlm_api_type: Optional[str] = None,
     image_analysis_vlm_model_version: Optional[str] = None,
+    llm_max_concurrent_requests: Optional[int] = None,
     image_analysis_enable_classification: bool = False,
     image_analysis_classification_confidence_threshold: float = 0.0,
     doc_max_concurrency: Optional[int] = None,
@@ -838,6 +846,7 @@ async def resolve_uploaded_files_with_integrated_processing(
         image_analysis_vlm_api_key=image_analysis_vlm_api_key,
         image_analysis_vlm_api_type=image_analysis_vlm_api_type,
         image_analysis_vlm_model_version=image_analysis_vlm_model_version,
+        llm_max_concurrent_requests=llm_max_concurrent_requests,
         image_analysis_enable_classification=image_analysis_enable_classification,
         image_analysis_classification_confidence_threshold=image_analysis_classification_confidence_threshold,
         image_analysis_max_concurrency=image_analysis_max_concurrency,

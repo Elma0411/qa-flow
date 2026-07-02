@@ -499,6 +499,7 @@
               id="qaPerChunk"
               value="1"
             />
+            <small>每个 chunk 期望生成的主问答对数量。实际总量约等于 chunk 数 × 该值。</small>
           </label>
           <label>
             增广条数（augment_per_qa）
@@ -509,6 +510,7 @@
               min="0"
               max="10"
             />
+            <small>每条主问答额外生成的相似问法数量；设 0 可减少总耗时。</small>
           </label>
           <label>
             <input type="checkbox" id="enableChunkStorage" checked />
@@ -521,6 +523,7 @@
               <label>
                 前缀层数（chunking_prefix_max_depth，所有模式共同生效）
                 <input type="number" id="chunkingPrefixMaxDepth" value="4" min="0" max="12" />
+                <small>把上级标题拼到 chunk 前面，提升检索和来源定位稳定性。</small>
               </label>
               <label>
                 块大小（chunk_size，所有模式共同生效）
@@ -530,6 +533,7 @@
                   value="600"
                   min="1"
                 />
+                <small>控制切块目标长度；越小 chunk 越多，生成任务也越多。</small>
               </label>
               <div style="grid-column: 1 / -1; margin-top: 4px; font-weight: 600">模式选择</div>
               <label>
@@ -667,6 +671,7 @@
               <option value="point">point（单点事实直答）</option>
               <option value="summary">summary（总结/对比/推理）</option>
             </select>
+            <small>point 更适合高精度事实问答；summary 更适合跨句总结和对比。</small>
           </label>
           <label>
             知识分类器（knowledge_classifier）
@@ -688,6 +693,7 @@
               <option value="zh">zh（中文模板）</option>
               <option value="en">en（英文模板）</option>
             </select>
+            <small>auto 会按文档内容判断；固定语言可让输出风格更稳定。</small>
           </label>
           <label>
             题型模式
@@ -695,6 +701,7 @@
               <option value="mixed">mixed（混合/随机）</option>
               <option value="fixed">fixed（仅使用列表首个）</option>
             </select>
+            <small>mixed 在勾选题型内混合生成；fixed 只使用第一个勾选题型。</small>
           </label>
             <div class="inline-checkbox-group">
               <span>快捷选择题型（fixed 会自动只保留一个勾选；mixed 默认按列表顺序轮询，可选按权重）</span>
@@ -747,6 +754,7 @@
               <option value="local">local</option>
               <option value="unsupervised_f1">unsupervised_f1（无监督套件）</option>
             </select>
+            <small>llm 使用远程模型评估；local 使用本地指标；unsupervised_f1 会执行无监督套件。</small>
           </label>
           <label>
             忠实度陈述句生成（faithfulness_hypothesis_mode）
@@ -780,6 +788,7 @@
               max="1"
               step="0.05"
             />
+            <small>开启过滤时生效，低于该平均分的主问答会被过滤。</small>
           </label>
           <label>
             <input type="checkbox" id="enableVectorStorage" checked />
@@ -804,6 +813,7 @@
               min="1"
               placeholder="留空默认 3…"
             />
+            <small>同时处理多少个文件；文件多时会放大后续阶段总并发。</small>
           </label>
           <label>
             评估最大并发（eval_max_concurrency，可选）
@@ -813,6 +823,7 @@
               min="1"
               placeholder="留空默认 8…"
             />
+            <small>问答评估阶段的并发，主要影响 LLM/local 评估速度和资源占用。</small>
           </label>
           <label>
             chunk 生成并发（chunk_max_concurrency，可选）
@@ -822,6 +833,29 @@
               min="1"
               placeholder="留空默认 8…"
             />
+            <small>同一文件内同时跑多少个 chunk worker；实际外发 API 还会受 LLM/VLM API 请求并发限制。</small>
+          </label>
+          <label>
+            LLM/VLM API 请求并发（llm_max_concurrent_requests，可选）
+            <input
+              type="number"
+              id="llmMaxConcurrentRequests"
+              min="1"
+              placeholder="留空使用 Docker 环境变量，当前默认 1…"
+            />
+            <small>控制当前任务内同一 LLM/VLM client 同时外发 API 请求数；只影响本次任务，不修改容器全局环境。</small>
+          </label>
+          <label>
+            chunk 生成最大尝试次数（chunk_max_attempts）
+            <input
+              type="number"
+              id="chunkMaxAttempts"
+              value="2"
+              min="1"
+              max="10"
+              step="1"
+            />
+            <small>每个 chunk 生成不足目标 QA 时最多尝试几轮；追求速度可设 1，追求覆盖率可设 2 或更高。</small>
           </label>
           <label>
             增广并发（augment_max_concurrency，可选）
@@ -831,6 +865,7 @@
               min="1"
               placeholder="留空默认 8…"
             />
+            <small>问答增广阶段的并发；augment_per_qa 为 0 时不会使用。</small>
           </label>
           <div class="actions-row">
             <button type="submit">开始执行流水线</button>
@@ -858,7 +893,7 @@
           </p>
           <div id="pipelineOutputsList"></div>
         </div>
-        <pre id="pipelineStatus"></pre>
+        <div id="pipelineStatus"></div>
       </section>
 
       <section class="card">

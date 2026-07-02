@@ -157,6 +157,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
     status_data: Dict[str, Any] = job_context["status_data"]
     criteria_list: List[str] = job_context["criteria_list"]
     llm_config: Dict[str, Any] = job_context["llm_config"]
+    llm_max_concurrent_requests = job_context.get("llm_max_concurrent_requests")
     max_concurrency: int = job_context["max_concurrency"]
     chunk_max_concurrency: int = job_context.get("chunk_max_concurrency", 8)
     chunk_max_attempts: int = max(1, int(job_context.get("chunk_max_attempts") or 2))
@@ -381,13 +382,16 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                         api_key=llm_config.get("api_key"),
                         api_type=llm_config.get("api_type"),
                         model_version=llm_config.get("model_version"),
+                        max_concurrent_requests=llm_max_concurrent_requests,
                     )
                 )
                 loop = asyncio.get_running_loop()
                 gen_last_update = 0.0
+                generation_chunk_details: List[Dict[str, Any]] = []
+                generation_timing_summary: Dict[str, Any] = {}
 
                 def _on_generation_progress(info: Dict[str, Any]) -> None:
-                    nonlocal gen_last_update
+                    nonlocal gen_last_update, generation_timing_summary
                     try:
                         event = str((info or {}).get("event") or "")
                         now = time.time()
@@ -403,6 +407,33 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                                     extra={
                                         "chunks_total": total_chunks,
                                         "chunks_done": 0,
+                                        "generation_timing": (info or {}).get("timing") or {},
+                                        "llm_max_concurrent_requests": llm_max_concurrent_requests,
+                                    },
+                                ),
+                                loop,
+                            )
+                            return
+
+                        if event == "done":
+                            generation_timing_summary = dict((info or {}).get("timing") or {})
+                            raw_chunk_details = (info or {}).get("chunk_details")
+                            if isinstance(raw_chunk_details, list):
+                                generation_chunk_details[:] = [
+                                    dict(item) for item in raw_chunk_details if isinstance(item, dict)
+                                ]
+                            asyncio.run_coroutine_threadsafe(
+                                update_file_progress(
+                                    filename,
+                                    "qa_generation",
+                                    "processing",
+                                    "一步式生成问答对收尾中",
+                                    extra={
+                                        "chunks_total": int((info or {}).get("total_chunks") or 0),
+                                        "chunks_done": int((info or {}).get("total_chunks") or 0),
+                                        "total_items": int((info or {}).get("total_items") or 0),
+                                        "generation_timing": generation_timing_summary,
+                                        "generation_chunk_details": generation_chunk_details,
                                     },
                                 ),
                                 loop,
@@ -418,6 +449,24 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                         attempt_used = (info or {}).get("attempt_used")
                         chunk_index = (info or {}).get("chunk_index")
                         last_error = (info or {}).get("error")
+                        chunk_timing = (info or {}).get("timing") or {}
+                        chunk_detail = {
+                            "chunk_index": chunk_index,
+                            "attempt_used": attempt_used,
+                            "candidate_questions": (info or {}).get("candidate_questions"),
+                            "candidates_considered": (info or {}).get("candidates_considered"),
+                            "valid_items": valid_items,
+                            "dropped_reason_stats": (info or {}).get("dropped_reason_stats")
+                            or (info or {}).get("dropped_answer_reasons")
+                            or {},
+                            "timing": chunk_timing if isinstance(chunk_timing, dict) else {},
+                        }
+                        if last_error:
+                            chunk_detail["error"] = str(last_error)[:800]
+                        generation_chunk_details.append(chunk_detail)
+                        generation_chunk_details.sort(
+                            key=lambda item: int(item.get("chunk_index") or 0)
+                        )
 
                         if total_chunks <= 0:
                             return
@@ -436,6 +485,8 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                             "chunks_done": completed_chunks,
                             "last_chunk_index": chunk_index,
                             "last_chunk_items": valid_items,
+                            "last_chunk_timing": chunk_timing if isinstance(chunk_timing, dict) else {},
+                            "generation_chunk_details": generation_chunk_details,
                         }
                         if last_error:
                             extra_payload["last_error"] = str(last_error)[:800]
@@ -784,6 +835,12 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                     "qa_generation",
                     "completed",
                     f"生成 {len(qa_data)} 条主问答，增广 {len(augmented_qas)} 条（已附加为 similar_questions）",
+                    extra={
+                        "generation_seconds": generation_duration,
+                        "generation_timing": generation_timing_summary,
+                        "generation_chunk_details": generation_chunk_details,
+                        "qa_generated": len(qa_data),
+                    },
                 )
 
                 unsupervised_duration: Optional[float] = None
@@ -1072,6 +1129,8 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                         "generation_avg_seconds_per_qa": (generation_duration / primary_count)
                         if primary_count
                         else None,
+                        "generation_detail": generation_timing_summary,
+                        "generation_chunk_details": generation_chunk_details,
                         "qa_generated": len(qa_data),
                         "unsupervised_seconds": unsupervised_duration,
                         "unsupervised_qa_scored": (unsupervised_summary or {}).get("computed", 0)
@@ -1150,6 +1209,12 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                     unsupervised_seconds=timing.get("unsupervised_seconds"),
                     evaluation_seconds=timing.get("evaluation_seconds"),
                 )
+                if isinstance(entry.get("payload"), dict):
+                    entry_timing = entry["payload"].setdefault("timing", {})
+                    if isinstance(entry_timing, dict):
+                        for detail_key in ("generation_detail", "generation_chunk_details"):
+                            if detail_key in timing:
+                                entry_timing[detail_key] = timing.get(detail_key)
                 excerpt = file_result.get("source_text_excerpt")
                 if isinstance(excerpt, str) and excerpt:
                     entry.setdefault("payload", {})["source_text_excerpt"] = excerpt

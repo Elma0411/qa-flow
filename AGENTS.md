@@ -31,7 +31,18 @@ implementation, verification, and documentation updates.
 Write Python 3.10+ code with 4-space indentation, `snake_case` functions, `PascalCase` classes, and UPPER_SNAKE_CASE env constants. Keep FastAPI routers declarative, place one Pydantic request/response model near its endpoint, and move heavy logic into helper modules under `qa/` or new packages rather than bloating `api_server.py`. Prefer descriptive filenames such as `milvus_ingest_service.py` and keep async endpoints `async def`. Reuse type hints and docstrings so auto-generated API docs stay accurate.
 
 ## Testing Guidelines
-Smoke-test every change with `curl http://localhost:12000/test-connection` or an equivalent Postman call. For content generation pipelines, use the batch complete endpoint or the one-step pipeline module that backs it. Quality gates rely on the evaluator: `python qa/qa_evaluation/llm_quality_evaluator.py --input-text qa/1.1.txt --qa-file runtime_assets/outputs/doc.qa.json --output runtime_assets/outputs/doc.eval.json`. Capture sample requests/responses under `runtime_assets/outputs/` for regression review and delete API keys from configs before committing.
+Run meaningful dependency, import, API, and pipeline verification inside the
+Docker runtime by default. `localhost:12000` is the host-facing QA Flow UI/API
+debug address, but the project dependencies and model/runtime environment are
+owned by Docker. Smoke-test every change with `curl
+http://localhost:12000/test-connection` or an equivalent Postman call after the
+Docker service is running. For content generation pipelines, use the batch
+complete endpoint or the one-step pipeline module that backs it. Quality gates
+rely on the evaluator: `python qa/qa_evaluation/llm_quality_evaluator.py
+--input-text qa/1.1.txt --qa-file runtime_assets/outputs/doc.qa.json --output
+runtime_assets/outputs/doc.eval.json`. Capture sample requests/responses under
+`runtime_assets/outputs/` for regression review and delete API keys from
+configs before committing.
 
 ## Docker runtime testing context
 The project may be mounted into a running Docker runtime, and meaningful API /
@@ -92,7 +103,10 @@ the proxy helper functions.
   `~/.bashrc`. In non-TTY Codex shells, `bash -ic` may print harmless job
   control warnings while still loading the environment correctly.
 - If CodeGraph was installed by the official standalone installer and
-  `codegraph` is still not on `PATH`, use `/home/lich/.local/bin/codegraph`.
+  `codegraph` is still not on `PATH`, locate the current user's executable
+  with `command -v codegraph` or check that user's local install location
+  (commonly `~/.local/bin/codegraph`). Do not hard-code another user's home
+  directory.
 - For network commands such as `git clone`, `git pull`, `curl`, `npm install`,
   or package downloads, first try the normal command. If it times out or appears
   blocked by network access, retry through the proxy helpers from `~/.bashrc`,
@@ -102,6 +116,19 @@ the proxy helper functions.
   global git proxy is cleared after the command finishes.
 - Do not create a separate `~/.shell_env` unless the user explicitly asks for
   that setup.
+
+## Codex CodeGraph Workflow
+When the CodeGraph MCP tools are available, use them actively for repository
+understanding, architecture tracing, impact analysis, and code modification
+planning before opening many files manually. Prefer `codegraph_explore` for
+area surveys and flow questions, `codegraph_search` for symbol locations, and
+`codegraph_callers` / `codegraph_callees` for impact checks. If the MCP reports
+that the repository is not initialized, run the available `codegraph`
+executable from the repository root, usually `codegraph init -i`; if
+`codegraph` is not on `PATH`, locate the current user's installation first
+rather than using another user's home directory. Each Linux user who works on
+this repository needs their own CodeGraph executable/MCP setup and filesystem
+permission to read the repository.
 
 ## Collaboration rules
 This section defines repository-level collaboration expectations for future

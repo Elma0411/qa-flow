@@ -17,6 +17,7 @@ def build_llm_client_config(
     model: Optional[str] = None,
     api_type: Optional[str] = None,
     model_version: Optional[str] = None,
+    max_concurrent_requests: Optional[int] = None,
 ) -> LLMClientConfig:
     return LLMClientConfig(
         api_base=base_url or CONFIG.get("base_url"),
@@ -27,6 +28,7 @@ def build_llm_client_config(
             model_version if model_version is not None else CONFIG.get("model_version")
         ),
         timeout_seconds=float(CONFIG.get("request_timeout", 120) or 120),
+        max_concurrent_requests=max_concurrent_requests,
     )
 
 

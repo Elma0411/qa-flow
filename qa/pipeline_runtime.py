@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -202,8 +203,18 @@ def run_one_step_chunk_worker(
     items_final: List[Dict[str, Any]] = []
     dropped_answer_reasons: Dict[str, int] = {}
     seen_questions: set[str] = set()
+    chunk_started_at = time.perf_counter()
+    candidate_question_seconds = 0.0
+    retrieval_embedding_seconds = 0.0
+    retrieval_ranking_seconds = 0.0
+    retrieval_unit_seconds = 0.0
+    answer_generation_seconds = 0.0
+    candidate_questions_total = 0
+    candidates_considered = 0
+    skipped_empty_or_duplicate = 0
     for attempt_index in range(1, max_attempts + 1):
         attempt_used_total = attempt_index
+        candidate_started_at = time.perf_counter()
         candidates = call_candidate_question_llm(
             client=client,
             model=runtime.model,
@@ -222,17 +233,26 @@ def run_one_step_chunk_worker(
             chunk_index=chunk_index,
             debug_writer=debug_writer,
         )
+        candidate_question_seconds += time.perf_counter() - candidate_started_at
+        candidate_questions_total += len(candidates)
+        retrieval_timing: Dict[str, float] = {}
         retrieval_map = evidence_index.retrieve_many(
             [str(candidate.get("question") or "") for candidate in candidates],
             source_chunk_index=chunk_index,
             top_k=runtime.semantic_top_k,
+            timing=retrieval_timing,
         )
+        retrieval_embedding_seconds += float(retrieval_timing.get("embedding_seconds") or 0.0)
+        retrieval_ranking_seconds += float(retrieval_timing.get("ranking_seconds") or 0.0)
         for candidate in candidates:
             question_key = str(candidate.get("question") or "").strip()
             if not question_key or question_key in seen_questions:
+                skipped_empty_or_duplicate += 1
                 continue
             seen_questions.add(question_key)
+            candidates_considered += 1
             semantic_hits, raw_semantic_trace = retrieval_map.get(question_key, (None, None))
+            unit_started_at = time.perf_counter()
             generation_unit = evidence_index.build_generation_unit(
                 source_chunk_index=chunk_index,
                 question=question_key,
@@ -242,6 +262,8 @@ def run_one_step_chunk_worker(
                 semantic_hits=semantic_hits,
                 raw_semantic_trace=raw_semantic_trace,
             )
+            retrieval_unit_seconds += time.perf_counter() - unit_started_at
+            answer_started_at = time.perf_counter()
             item, reason = call_evidence_answer_llm(
                 client=client,
                 model=runtime.model,
@@ -261,6 +283,7 @@ def run_one_step_chunk_worker(
                 chunk_index=chunk_index,
                 debug_writer=debug_writer,
             )
+            answer_generation_seconds += time.perf_counter() - answer_started_at
             if item:
                 items_final.append(item)
                 if len(items_final) >= target:
@@ -271,6 +294,17 @@ def run_one_step_chunk_worker(
             break
 
     items_final = _dedup_chunk_pool(items_final)[:target]
+    chunk_total_seconds = time.perf_counter() - chunk_started_at
+    retrieval_seconds = (
+        retrieval_embedding_seconds + retrieval_ranking_seconds + retrieval_unit_seconds
+    )
+    measured_seconds = (
+        candidate_question_seconds + retrieval_seconds + answer_generation_seconds
+    )
+    validation_and_bookkeeping_seconds = max(0.0, chunk_total_seconds - measured_seconds)
+    dropped_reason_stats = dict(dropped_answer_reasons)
+    if skipped_empty_or_duplicate:
+        dropped_reason_stats["empty_or_duplicate_question"] = skipped_empty_or_duplicate
 
     if runtime.include_chunk_index:
         for item in items_final:
@@ -282,6 +316,20 @@ def run_one_step_chunk_worker(
         "attempt_used": attempt_used_total,
         "items": items_final,
         "dropped_answer_reasons": dropped_answer_reasons,
+        "candidate_questions": candidate_questions_total,
+        "candidates_considered": candidates_considered,
+        "valid_items": len(items_final),
+        "dropped_reason_stats": dropped_reason_stats,
+        "timing": {
+            "chunk_total_seconds": chunk_total_seconds,
+            "candidate_question_seconds": candidate_question_seconds,
+            "retrieval_seconds": retrieval_seconds,
+            "retrieval_embedding_seconds": retrieval_embedding_seconds,
+            "retrieval_ranking_seconds": retrieval_ranking_seconds,
+            "retrieval_unit_seconds": retrieval_unit_seconds,
+            "answer_generation_seconds": answer_generation_seconds,
+            "validation_and_bookkeeping_seconds": validation_and_bookkeeping_seconds,
+        },
     }
 
 

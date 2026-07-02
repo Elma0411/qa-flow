@@ -269,6 +269,10 @@ async def batch_upload_complete_pipeline_with_evaluation(
         None,
         description="每个 chunk 生成最大尝试次数（含首次，默认 2=最多重试 1 次）",
     ),
+    llm_max_concurrent_requests: Optional[int] = Form(
+        None,
+        description="当前任务内同一 LLM/VLM client 同时外发 API 请求数；不填使用 VLM_API_MAX_CONCURRENT_REQUESTS",
+    ),
     augment_max_concurrency: Optional[int] = Form(
         None,
         description="问答增广并发数（默认 8）",
@@ -369,6 +373,11 @@ async def batch_upload_complete_pipeline_with_evaluation(
         eval_concurrency = eval_max_concurrency or 8
         chunk_concurrency = chunk_max_concurrency or 8
         chunk_attempts = max(1, int(chunk_max_attempts or 2))
+        llm_request_concurrency = (
+            max(1, int(llm_max_concurrent_requests))
+            if llm_max_concurrent_requests is not None
+            else None
+        )
         augment_concurrency = augment_max_concurrency or 8
 
         status_data = {
@@ -418,6 +427,7 @@ async def batch_upload_complete_pipeline_with_evaluation(
             "concurrency": concurrency_limit,
             "chunk_concurrency": chunk_concurrency,
             "chunk_max_attempts": chunk_attempts,
+            "llm_max_concurrent_requests": llm_request_concurrency,
             "augment_concurrency": augment_concurrency,
             "evaluation_concurrency": eval_concurrency,
             "file_progress": {},
@@ -471,6 +481,7 @@ async def batch_upload_complete_pipeline_with_evaluation(
             "status_data": status_data,
             "criteria_list": LLM_EVALUATION_METRICS,
             "llm_config": llm_config,
+            "llm_max_concurrent_requests": llm_request_concurrency,
             "max_concurrency": concurrency_limit,
             "chunk_max_concurrency": chunk_concurrency,
             "chunk_max_attempts": chunk_attempts,
@@ -518,6 +529,7 @@ async def batch_upload_complete_pipeline_with_evaluation(
             "knowledge_classifier": knowledge_classifier,
             "concurrency": concurrency_limit,
             "chunking_config": status_data["chunking_config"],
+            "llm_max_concurrent_requests": llm_request_concurrency,
         }
     except HTTPException:
         try:

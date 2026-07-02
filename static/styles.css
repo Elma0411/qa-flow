@@ -1187,6 +1187,164 @@ pre {
   transition: background 180ms var(--ease-out), color 180ms var(--ease-out), border-color 180ms var(--ease-out);
 }
 
+#pipelineStatus {
+  margin-top: 12px;
+}
+
+.pipeline-debug-panel {
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+
+.pipeline-debug {
+  display: grid;
+  gap: 12px;
+  color: var(--text);
+}
+
+.pipeline-debug-header,
+.pipeline-debug-section,
+.pipeline-output-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+}
+
+.pipeline-output-list {
+  display: grid;
+  gap: 10px;
+}
+
+.pipeline-output-item {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.pipeline-output-title {
+  font-size: 13px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.pipeline-debug-header {
+  padding: 12px;
+}
+
+.pipeline-debug-title {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.pipeline-debug-subtitle {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.pipeline-debug-section {
+  padding: 12px;
+}
+
+.pipeline-debug-section h4 {
+  margin: 0 0 10px 0;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.pipeline-debug-chip-grid,
+.pipeline-output-timing {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pipeline-debug-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-2) 56%, transparent);
+}
+
+.pipeline-debug-chip-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pipeline-debug-chip strong {
+  color: var(--text);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pipeline-debug-kv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.pipeline-debug-kv {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-2) 36%, transparent);
+  min-width: 0;
+}
+
+.pipeline-debug-kv span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pipeline-debug-kv strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.pipeline-debug-empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pipeline-debug-chunk-list {
+  display: grid;
+  gap: 10px;
+}
+
+.pipeline-debug-chunk {
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border-radius: 10px;
+  padding: 10px;
+  background: color-mix(in srgb, var(--surface-2) 34%, transparent);
+}
+
+.pipeline-debug-chunk-head {
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.pipeline-debug-raw {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+}
+
+.pipeline-debug-raw pre {
+  margin-top: 10px;
+}
+
 #chunkDetailOutput,
 #chunkQaOutput {
   white-space: pre-wrap;

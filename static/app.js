@@ -719,6 +719,8 @@ async function handlePipelineSubmit(e) {
     const maxConcurrency = $('#maxConcurrency')?.value || '';
     const evalMaxConcurrency = $('#evalMaxConcurrency')?.value || '';
     const chunkMaxConcurrency = $('#chunkMaxConcurrency')?.value || '';
+    const llmMaxConcurrentRequests = $('#llmMaxConcurrentRequests')?.value || '';
+    const chunkMaxAttempts = $('#chunkMaxAttempts')?.value || '2';
     const augmentMaxConcurrency = $('#augmentMaxConcurrency')?.value || '';
     const saveModeEl = $('#saveMode');
 
@@ -833,6 +835,12 @@ async function handlePipelineSubmit(e) {
     if (chunkMaxConcurrency.trim()) {
       formData.append('chunk_max_concurrency', chunkMaxConcurrency.trim());
     }
+    if (llmMaxConcurrentRequests.trim()) {
+      formData.append('llm_max_concurrent_requests', llmMaxConcurrentRequests.trim());
+    }
+    if (chunkMaxAttempts.trim()) {
+      formData.append('chunk_max_attempts', chunkMaxAttempts.trim());
+    }
     if (augmentMaxConcurrency.trim()) {
       formData.append('augment_max_concurrency', augmentMaxConcurrency.trim());
     }
@@ -868,7 +876,287 @@ async function handlePipelineSubmit(e) {
 function updatePipelineStatusView(status) {
   const statusEl = $('#pipelineStatus');
   if (!statusEl) return;
-  statusEl.textContent = JSON.stringify(status, null, 2);
+  try {
+    statusEl.textContent = '';
+    statusEl.classList.add('pipeline-debug-panel');
+    statusEl.appendChild(renderPipelineDebugStatus(status));
+  } catch (err) {
+    statusEl.textContent = JSON.stringify(status, null, 2);
+  }
+}
+
+function asNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function firstNumber() {
+  for (let i = 0; i < arguments.length; i += 1) {
+    const n = asNumber(arguments[i]);
+    if (n !== null) return n;
+  }
+  return null;
+}
+
+function getStageExtra(fileEntry, stageName) {
+  const stages = fileEntry && fileEntry.stages && typeof fileEntry.stages === 'object'
+    ? fileEntry.stages
+    : {};
+  const stage = stages[stageName] && typeof stages[stageName] === 'object'
+    ? stages[stageName]
+    : {};
+  return stage.extra && typeof stage.extra === 'object' ? stage.extra : {};
+}
+
+function collectFileProgressEntries(status) {
+  const progress = status && status.file_progress && typeof status.file_progress === 'object'
+    ? status.file_progress
+    : {};
+  return Object.keys(progress).map((filename) => ({
+    filename,
+    entry: progress[filename] || {},
+  }));
+}
+
+function collectOutputTimings(status) {
+  const outputs = status && Array.isArray(status.outputs) ? status.outputs : [];
+  return outputs
+    .map((item) => (item && typeof item.timing === 'object' ? item.timing : null))
+    .filter(Boolean);
+}
+
+function sumTiming(timings, key) {
+  let total = 0;
+  let found = false;
+  timings.forEach((timing) => {
+    const n = asNumber(timing && timing[key]);
+    if (n === null) return;
+    total += n;
+    found = true;
+  });
+  return found ? total : null;
+}
+
+function findGenerationExtra(status) {
+  const entries = collectFileProgressEntries(status);
+  for (let i = 0; i < entries.length; i += 1) {
+    const extra = getStageExtra(entries[i].entry, 'qa_generation');
+    if (extra && Object.keys(extra).length) return extra;
+  }
+  return {};
+}
+
+function derivePipelineTiming(status) {
+  const outputTimings = collectOutputTimings(status);
+  const generationExtra = findGenerationExtra(status);
+  let outputGenerationDetail = {};
+  let outputChunkDetails = [];
+  outputTimings.forEach((timing) => {
+    if (!outputGenerationDetail || !Object.keys(outputGenerationDetail).length) {
+      if (timing.generation_detail && typeof timing.generation_detail === 'object') {
+        outputGenerationDetail = timing.generation_detail;
+      }
+    }
+    if (Array.isArray(timing.generation_chunk_details)) {
+      outputChunkDetails = outputChunkDetails.concat(timing.generation_chunk_details);
+    }
+  });
+  const progressGenerationTiming = generationExtra.generation_timing || {};
+  const generationTiming = Object.keys(progressGenerationTiming).length
+    ? progressGenerationTiming
+    : (outputGenerationDetail || {});
+  const fileEntries = collectFileProgressEntries(status);
+  let ocrFromProgress = null;
+  for (let i = 0; i < fileEntries.length; i += 1) {
+    const docOcr = getStageExtra(fileEntries[i].entry, 'doc_ocr');
+    const dwOcr = getStageExtra(fileEntries[i].entry, 'dw_ocr');
+    const ocr = getStageExtra(fileEntries[i].entry, 'ocr');
+    const n = firstNumber(
+      docOcr.ocr_seconds,
+      docOcr.processing_time,
+      dwOcr.ocr_seconds,
+      dwOcr.processing_time,
+      ocr.ocr_seconds,
+      ocr.processing_time,
+    );
+    if (n !== null) ocrFromProgress = (ocrFromProgress || 0) + n;
+  }
+
+  const ocrSeconds = firstNumber(sumTiming(outputTimings, 'ocr_seconds'), ocrFromProgress);
+  const generationSeconds = firstNumber(
+    sumTiming(outputTimings, 'generation_seconds'),
+    generationExtra.generation_seconds,
+    generationTiming.document_total_seconds,
+    generationTiming.chunk_total_seconds,
+  );
+  const unsupervisedSeconds = firstNumber(
+    sumTiming(outputTimings, 'unsupervised_seconds'),
+    getStageExtra((fileEntries[0] || {}).entry, 'unsupervised_evaluation').unsupervised_seconds,
+  );
+  const evaluationSeconds = firstNumber(sumTiming(outputTimings, 'evaluation_seconds'));
+  const totalParts = [ocrSeconds, generationSeconds, unsupervisedSeconds, evaluationSeconds]
+    .filter((value) => value !== null);
+  const totalSeconds = totalParts.length
+    ? totalParts.reduce((sum, value) => sum + value, 0)
+    : null;
+  return {
+    ocr_seconds: ocrSeconds,
+    generation_seconds: generationSeconds,
+    unsupervised_seconds: unsupervisedSeconds,
+    evaluation_seconds: evaluationSeconds,
+    total_seconds: totalSeconds,
+    generation_detail: generationTiming,
+    generation_chunk_details: Array.isArray(generationExtra.generation_chunk_details)
+      ? generationExtra.generation_chunk_details
+      : outputChunkDetails,
+  };
+}
+
+function appendMetricChip(parent, label, value, emptyText) {
+  const chip = document.createElement('div');
+  chip.className = 'pipeline-debug-chip';
+  const name = document.createElement('span');
+  name.className = 'pipeline-debug-chip-label';
+  name.textContent = label;
+  const val = document.createElement('strong');
+  val.textContent = value === null || value === undefined || value === ''
+    ? (emptyText || '未记录')
+    : fmtSeconds(value);
+  chip.appendChild(name);
+  chip.appendChild(val);
+  parent.appendChild(chip);
+}
+
+function appendTextMetric(parent, label, value) {
+  const item = document.createElement('div');
+  item.className = 'pipeline-debug-kv';
+  const name = document.createElement('span');
+  name.textContent = label;
+  const val = document.createElement('strong');
+  val.textContent = value === null || value === undefined || value === '' ? '未记录' : String(value);
+  item.appendChild(name);
+  item.appendChild(val);
+  parent.appendChild(item);
+}
+
+function renderPipelineDebugStatus(status) {
+  const root = document.createElement('div');
+  root.className = 'pipeline-debug';
+  const safeStatus = status && typeof status === 'object' ? status : {};
+  const timing = derivePipelineTiming(safeStatus);
+
+  const header = document.createElement('div');
+  header.className = 'pipeline-debug-header';
+  const title = document.createElement('div');
+  title.className = 'pipeline-debug-title';
+  title.textContent = '流水线调试视图';
+  const subtitle = document.createElement('div');
+  subtitle.className = 'pipeline-debug-subtitle';
+  subtitle.textContent = [
+    safeStatus.task_id ? '任务 ' + safeStatus.task_id : '',
+    safeStatus.status ? '状态 ' + safeStatus.status : '',
+    safeStatus.message || '',
+  ].filter(Boolean).join(' | ') || '等待任务状态';
+  header.appendChild(title);
+  header.appendChild(subtitle);
+  root.appendChild(header);
+
+  const major = document.createElement('section');
+  major.className = 'pipeline-debug-section';
+  const majorTitle = document.createElement('h4');
+  majorTitle.textContent = '大流程耗时';
+  major.appendChild(majorTitle);
+  const chips = document.createElement('div');
+  chips.className = 'pipeline-debug-chip-grid';
+  appendMetricChip(chips, 'OCR', timing.ocr_seconds);
+  appendMetricChip(chips, '生成', timing.generation_seconds);
+  appendMetricChip(chips, '无监督评估', timing.unsupervised_seconds);
+  appendMetricChip(chips, '评估', timing.evaluation_seconds);
+  appendMetricChip(chips, '总耗时', timing.total_seconds);
+  major.appendChild(chips);
+  root.appendChild(major);
+
+  const detail = timing.generation_detail || {};
+  const generation = document.createElement('section');
+  generation.className = 'pipeline-debug-section';
+  const generationTitle = document.createElement('h4');
+  generationTitle.textContent = '生成阶段细分';
+  generation.appendChild(generationTitle);
+  const genGrid = document.createElement('div');
+  genGrid.className = 'pipeline-debug-chip-grid';
+  appendMetricChip(genGrid, '候选题生成', firstNumber(detail.candidate_question_seconds));
+  appendMetricChip(genGrid, '检索总计', firstNumber(detail.retrieval_seconds));
+  appendMetricChip(genGrid, 'query embedding', firstNumber(detail.retrieval_embedding_seconds));
+  appendMetricChip(genGrid, '排序/命中', firstNumber(detail.retrieval_ranking_seconds));
+  appendMetricChip(genGrid, '证据组装', firstNumber(detail.retrieval_unit_seconds));
+  appendMetricChip(genGrid, '答案生成', firstNumber(detail.answer_generation_seconds));
+  appendMetricChip(genGrid, '校验/丢弃', firstNumber(detail.validation_and_bookkeeping_seconds));
+  generation.appendChild(genGrid);
+  const genMeta = document.createElement('div');
+  genMeta.className = 'pipeline-debug-kv-grid';
+  appendTextMetric(genMeta, 'chunk 总数', firstNumber(detail.chunks_total, safeStatus.chunk_count));
+  appendTextMetric(genMeta, '已完成 chunk', firstNumber(detail.chunks_completed));
+  appendTextMetric(genMeta, '生成 QA 数', firstNumber(detail.qa_generated));
+  appendTextMetric(genMeta, 'chunk 生成最大尝试次数', safeStatus.chunk_max_attempts);
+  appendTextMetric(genMeta, 'LLM/VLM API 请求并发', safeStatus.llm_max_concurrent_requests || 'Docker 环境默认');
+  generation.appendChild(genMeta);
+  root.appendChild(generation);
+
+  const chunks = (timing.generation_chunk_details || []).slice().sort((a, b) => {
+    return Number(a && a.chunk_index || 0) - Number(b && b.chunk_index || 0);
+  });
+  const chunkSection = document.createElement('section');
+  chunkSection.className = 'pipeline-debug-section';
+  const chunkTitle = document.createElement('h4');
+  chunkTitle.textContent = 'chunk 明细';
+  chunkSection.appendChild(chunkTitle);
+  if (!chunks.length) {
+    const empty = document.createElement('div');
+    empty.className = 'pipeline-debug-empty';
+    empty.textContent = '生成阶段完成一个 chunk 后会显示明细。';
+    chunkSection.appendChild(empty);
+  } else {
+    const list = document.createElement('div');
+    list.className = 'pipeline-debug-chunk-list';
+    chunks.forEach((chunk) => {
+      const row = document.createElement('div');
+      row.className = 'pipeline-debug-chunk';
+      const rowHead = document.createElement('div');
+      rowHead.className = 'pipeline-debug-chunk-head';
+      rowHead.textContent = 'chunk ' + (chunk.chunk_index || '?');
+      const rowMeta = document.createElement('div');
+      rowMeta.className = 'pipeline-debug-kv-grid';
+      const ct = chunk.timing && typeof chunk.timing === 'object' ? chunk.timing : {};
+      appendTextMetric(rowMeta, '尝试次数', chunk.attempt_used);
+      appendTextMetric(rowMeta, '候选题数量', chunk.candidate_questions);
+      appendTextMetric(rowMeta, '进入答案生成', chunk.candidates_considered);
+      appendTextMetric(rowMeta, '有效 QA', chunk.valid_items);
+      appendTextMetric(rowMeta, 'chunk 总耗时', fmtSeconds(ct.chunk_total_seconds));
+      appendTextMetric(rowMeta, '答案耗时', fmtSeconds(ct.answer_generation_seconds));
+      const reasons = chunk.dropped_reason_stats && typeof chunk.dropped_reason_stats === 'object'
+        ? Object.keys(chunk.dropped_reason_stats).map((key) => key + ':' + chunk.dropped_reason_stats[key]).join('，')
+        : '';
+      appendTextMetric(rowMeta, '丢弃原因', reasons || '无');
+      if (chunk.error) appendTextMetric(rowMeta, '错误', chunk.error);
+      row.appendChild(rowHead);
+      row.appendChild(rowMeta);
+      list.appendChild(row);
+    });
+    chunkSection.appendChild(list);
+  }
+  root.appendChild(chunkSection);
+
+  const raw = document.createElement('details');
+  raw.className = 'pipeline-debug-raw';
+  const rawSummary = document.createElement('summary');
+  rawSummary.textContent = '原始 JSON';
+  const rawPre = document.createElement('pre');
+  rawPre.textContent = JSON.stringify(safeStatus, null, 2);
+  raw.appendChild(rawSummary);
+  raw.appendChild(rawPre);
+  root.appendChild(raw);
+
+  return root;
 }
 
 function updatePipelineTaskHint(text) {
@@ -1048,7 +1336,9 @@ function handlePipelineOutputs(base, outputs) {
       o &&
       (o.consolidated_json ||
         o.consolidated_csv ||
-        String(o.history_source || '').trim().toLowerCase() === 'milvus'),
+        String(o.history_source || '').trim().toLowerCase() === 'milvus' ||
+        o.milvus_task_id ||
+        o.task_id),
   );
   const first = usable[0] || null;
   if (first) {
@@ -1155,7 +1445,8 @@ function renderPipelineOutputsList(base, outputs) {
     const li = document.createElement('li');
     li.className = 'pipeline-output-item';
 
-    const label = document.createElement('span');
+    const label = document.createElement('div');
+    label.className = 'pipeline-output-title';
     const parts = [];
     const sourceName =
       o.core_file ||
@@ -1170,18 +1461,31 @@ function renderPipelineOutputsList(base, outputs) {
     if (typeof o.qa_pairs === 'number') {
       parts.push(`问答数: ${o.qa_pairs}`);
     }
-    const timing = o.timing || {};
-    const tParts = [];
-    if (typeof timing.ocr_seconds === 'number') tParts.push(`OCR ${fmtSeconds(timing.ocr_seconds)}`);
-    if (typeof timing.generation_seconds === 'number')
-      tParts.push(`生成 ${fmtSeconds(timing.generation_seconds)}`);
-    if (typeof timing.unsupervised_seconds === 'number')
-      tParts.push(`无监督评估 ${fmtSeconds(timing.unsupervised_seconds)}`);
-    if (typeof timing.evaluation_seconds === 'number')
-      tParts.push(`评估 ${fmtSeconds(timing.evaluation_seconds)}`);
-    if (tParts.length) parts.push(`耗时: ${tParts.join(' / ')}`);
     label.textContent = parts.join(' | ') || `文件 #${idx + 1}`;
     li.appendChild(label);
+
+    const timing = o.timing || {};
+    const timingRow = document.createElement('div');
+    timingRow.className = 'pipeline-output-timing';
+    const outputTimingValues = [
+      ['OCR', timing.ocr_seconds],
+      ['生成', timing.generation_seconds],
+      ['无监督评估', timing.unsupervised_seconds],
+      ['评估', timing.evaluation_seconds],
+    ];
+    let outputTimingTotal = 0;
+    let outputTimingFound = false;
+    outputTimingValues.forEach((pair) => {
+      const value = asNumber(pair[1]);
+      if (value === null) return;
+      outputTimingTotal += value;
+      outputTimingFound = true;
+      appendMetricChip(timingRow, pair[0], value);
+    });
+    if (outputTimingFound) {
+      appendMetricChip(timingRow, '总耗时', outputTimingTotal);
+      li.appendChild(timingRow);
+    }
 
     let actionCount = 0;
     if (o.consolidated_json) {
@@ -1195,12 +1499,13 @@ function renderPipelineOutputsList(base, outputs) {
       actionCount += 1;
     }
 
-    if (String(o.history_source || '').trim().toLowerCase() === 'milvus') {
+    const milvusTaskId = o.milvus_task_id || o.task_id || lastTaskId;
+    if (milvusTaskId) {
       const btnMilvus = document.createElement('button');
       btnMilvus.type = 'button';
       btnMilvus.textContent = '查看入库记录';
       btnMilvus.addEventListener('click', () => {
-        loadPipelineMilvusHistory(base, o.milvus_task_id || lastTaskId, {
+        loadPipelineMilvusHistory(base, milvusTaskId, {
           sourceFile: o.mode === 'separate' ? o.source_file || '' : '',
         });
       });

@@ -101,15 +101,16 @@ def normalize_lmp_cloud_endpoint(api_base: Optional[str]) -> str:
         return ""
 
     normalized = raw.rstrip("/")
-    if normalized.endswith("/V2"):
-        normalized = normalized[: -len("/V2")]
-
-    if normalized.endswith("/api/vlm/chat/completions"):
+    if normalized.endswith("/chat/completions"):
         return normalized
     if normalized.endswith("/api/vlm"):
         return normalized + "/chat/completions"
     if normalized.endswith("/lmp-cloud-ias-server"):
         return normalized + "/api/vlm/chat/completions"
+
+    path = normalized.split("://", 1)[-1].split("/", 1)
+    if len(path) == 2 and path[1].strip("/"):
+        return normalized
 
     return normalized + "/lmp-cloud-ias-server/api/vlm/chat/completions"
 
@@ -145,6 +146,7 @@ class VLMClientConfig:
         api_type: Optional[str] = None,
         model_version: Optional[str] = None,
         timeout_seconds: float,
+        max_concurrent_requests: Optional[int] = None,
     ) -> "VLMClientConfig":
         normalized_type = normalize_vlm_api_type(api_type)
         resolved_api_base = _resolve_required_config_value(
@@ -165,6 +167,13 @@ class VLMClientConfig:
             param_name="api_key",
             label="VLM API key",
         )
+        if max_concurrent_requests is None:
+            resolved_max_concurrent_requests = _get_env_int(
+                "VLM_API_MAX_CONCURRENT_REQUESTS",
+                1,
+            )
+        else:
+            resolved_max_concurrent_requests = int(max_concurrent_requests)
         return cls(
             base_url=normalize_vlm_endpoint(resolved_api_base, normalized_type),
             model_name=resolved_model_name,
@@ -173,7 +182,7 @@ class VLMClientConfig:
             model_version=_first_non_empty(model_version, os.getenv("VLM_MODEL_VERSION")) or "",
             timeout_seconds=float(timeout_seconds),
             stream=_get_env_bool("VLM_API_STREAM", True),
-            max_concurrent_requests=max(1, _get_env_int("VLM_API_MAX_CONCURRENT_REQUESTS", 1)),
+            max_concurrent_requests=max(1, resolved_max_concurrent_requests),
             min_interval_seconds=max(0.0, _get_env_float("VLM_API_MIN_INTERVAL_SECONDS", 0.0)),
             top_p=_get_env_float("VLM_API_TOP_P", 0.8),
             presence_penalty=_get_env_float("VLM_API_PRESENCE_PENALTY", 1.0),

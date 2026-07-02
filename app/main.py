@@ -18,11 +18,26 @@ from app.services.artifacts import (
 )
 from app.services.gpu import get_scheduler_snapshot
 from app.services.llm import get_llm_client_pool
+from app.services.llm_config import activate_profile as activate_llm_profile
+from app.services.llm_config import list_profiles as list_llm_profiles
 from app.services.milvus import ensure_milvus_initialized
+
+
+def _load_active_llm_profile() -> None:
+    try:
+        store = list_llm_profiles()
+        active = str(store.get("active") or "").strip()
+        if not active:
+            return
+        activate_llm_profile(active)
+        logger.info("Loaded active LLM profile into runtime config: %s", active)
+    except Exception as exc:
+        logger.warning("Unable to load active LLM profile into runtime config: %s", exc)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _load_active_llm_profile()
     ensure_milvus_initialized()
     initialize_artifact_lifecycle()
     start_artifact_cleanup_loop()
