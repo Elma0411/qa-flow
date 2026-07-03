@@ -1510,12 +1510,66 @@ pre {
 }
 
 .pipeline-debug-header {
-  padding: 12px;
+  padding: 14px;
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 5%, transparent), transparent 72%),
+    color-mix(in srgb, var(--surface) 96%, transparent);
+}
+
+.pipeline-debug-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .pipeline-debug-title {
   font-size: 15px;
   font-weight: 700;
+}
+
+.pipeline-state-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.pipeline-state-pill[data-status="queued"],
+.pipeline-state-pill[data-status="pending"] {
+  border-color: color-mix(in srgb, var(--warning) 36%, var(--border));
+  background: color-mix(in srgb, var(--warning) 12%, var(--surface));
+  color: color-mix(in srgb, var(--warning) 70%, var(--text));
+}
+
+.pipeline-state-pill[data-status="processing"],
+.pipeline-state-pill[data-status="running"] {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  color: var(--accent);
+}
+
+.pipeline-state-pill[data-status="completed"],
+.pipeline-state-pill[data-status="succeeded"] {
+  border-color: color-mix(in srgb, var(--success) 38%, var(--border));
+  background: color-mix(in srgb, var(--success) 12%, var(--surface));
+  color: var(--success);
+}
+
+.pipeline-state-pill[data-status="failed"],
+.pipeline-state-pill[data-status="canceled"],
+.pipeline-state-pill[data-status="cancelled"] {
+  border-color: color-mix(in srgb, var(--danger) 38%, var(--border));
+  background: color-mix(in srgb, var(--danger) 11%, var(--surface));
+  color: var(--danger);
 }
 
 .pipeline-debug-subtitle {
@@ -1525,8 +1579,58 @@ pre {
   overflow-wrap: anywhere;
 }
 
+.pipeline-debug-stage {
+  margin-top: 10px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.pipeline-debug-progress {
+  position: relative;
+  height: 6px;
+  margin-top: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border) 46%, transparent);
+}
+
+.pipeline-debug-progress-bar {
+  display: block;
+  height: 100%;
+  min-width: 0;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 220ms var(--ease-out);
+}
+
+.pipeline-debug-progress.is-indeterminate .pipeline-debug-progress-bar {
+  min-width: 72px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: pipeline-progress-slide 1.4s linear infinite;
+}
+
+@keyframes pipeline-progress-slide {
+  from {
+    transform: translateX(-120%);
+  }
+
+  to {
+    transform: translateX(320%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pipeline-debug-progress.is-indeterminate .pipeline-debug-progress-bar {
+    animation: none;
+    transform: none;
+  }
+}
+
 .pipeline-debug-section {
   padding: 12px;
+  border-color: color-mix(in srgb, var(--border) 82%, transparent);
 }
 
 .pipeline-debug-section h4 {
@@ -1620,6 +1724,11 @@ pre {
   border-radius: var(--radius);
   padding: 10px 12px;
   background: color-mix(in srgb, var(--surface) 92%, transparent);
+}
+
+.pipeline-debug-raw summary {
+  cursor: pointer;
+  font-weight: 650;
 }
 
 .pipeline-debug-raw pre {

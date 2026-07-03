@@ -1,5 +1,5 @@
 window.__QA_UI_APPJS_READY__ = true;
-window.__QA_UI_APPJS_VERSION__ = '2026-07-03-2';
+window.__QA_UI_APPJS_VERSION__ = '2026-07-03-3';
 
 let currentDwJobPoller = null;
 const MODULE_SETTINGS_CACHE_KEY = 'qa_flow_module_settings_v1';
@@ -7,6 +7,9 @@ const WORKSPACE_MODAL_SIZE_KEY = 'qa_flow_workspace_modal_size_v1';
 const MODULE_SECRET_FIELD_IDS = new Set(['cfgKey', 'dwVlmApiKey', 'integratedVlmApiKey']);
 let activeSettingsModule = null;
 const settingsModules = new Map();
+let pipelineTaskActiveTab = 'status';
+let pipelineRawJsonOpen = false;
+let pipelineOutputsAutoShownForTaskId = '';
 
 const DOC_STAGE_ORDER = [
   'doc_input',
@@ -1757,6 +1760,7 @@ function activateTaskTab(name) {
   const root = $('#pipelineTaskWorkspace');
   if (!root) return;
   const target = String(name || 'status');
+  pipelineTaskActiveTab = target;
   root.querySelectorAll('.task-tab-btn').forEach((btn) => {
     const active = btn.dataset.taskTab === target;
     btn.classList.toggle('is-active', active);
@@ -2384,10 +2388,13 @@ async function handlePipelineSubmit(e) {
       }
       return;
     }
-    updatePipelineStatusView(data);
     if (data.task_id) {
-      applyPipelineStatus(data, { base, taskId: data.task_id });
+      pipelineOutputsAutoShownForTaskId = '';
+      pipelineRawJsonOpen = false;
+      applyPipelineStatus(data, { base, taskId: data.task_id, activateStatus: true });
       startTaskPolling(base, data.task_id);
+    } else {
+      updatePipelineStatusView(data, { activateStatus: true });
     }
   } catch (err) {
     if (statusEl) statusEl.textContent = '调用出错：' + String(err);
@@ -2396,14 +2403,16 @@ async function handlePipelineSubmit(e) {
   }
 }
 
-function updatePipelineStatusView(status) {
+function updatePipelineStatusView(status, options = {}) {
   const statusEl = $('#pipelineStatus');
   if (!statusEl) return;
   try {
+    const currentRaw = statusEl.querySelector('.pipeline-debug-raw');
+    if (currentRaw) pipelineRawJsonOpen = Boolean(currentRaw.open);
     statusEl.textContent = '';
     statusEl.classList.add('pipeline-debug-panel');
-    statusEl.appendChild(renderPipelineDebugStatus(status));
-    activateTaskTab('status');
+    statusEl.appendChild(renderPipelineDebugStatus(status, { rawOpen: pipelineRawJsonOpen }));
+    if (options.activateStatus) activateTaskTab('status');
     refreshReviewWorkspaceState();
   } catch (err) {
     statusEl.textContent = JSON.stringify(status, null, 2);
@@ -2441,6 +2450,55 @@ function collectFileProgressEntries(status) {
     filename,
     entry: progress[filename] || {},
   }));
+}
+
+function pipelineStatusLabel(status) {
+  const key = String(status || 'unknown').trim().toLowerCase();
+  const labels = {
+    queued: '排队中',
+    pending: '等待中',
+    processing: '运行中',
+    running: '运行中',
+    completed: '已完成',
+    succeeded: '已完成',
+    failed: '失败',
+    canceled: '已终止',
+    cancelled: '已终止',
+  };
+  return labels[key] || String(status || 'unknown');
+}
+
+function pipelineCurrentStageText(status) {
+  const safeStatus = status && typeof status === 'object' ? status : {};
+  const message = String(safeStatus.message || '').trim();
+  if (message) return message;
+  const entries = collectFileProgressEntries(safeStatus);
+  for (let i = 0; i < entries.length; i += 1) {
+    const entry = entries[i].entry || {};
+    if (entry.message) return String(entry.message);
+    const stages = entry.stages && typeof entry.stages === 'object' ? entry.stages : {};
+    const stageNames = Object.keys(stages).sort((a, b) => {
+      const ia = DOC_STAGE_ORDER.indexOf(a);
+      const ib = DOC_STAGE_ORDER.indexOf(b);
+      return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
+    });
+    for (let j = stageNames.length - 1; j >= 0; j -= 1) {
+      const name = stageNames[j];
+      const item = stages[name] || {};
+      if (item.state === 'processing') {
+        return `${DOC_STAGE_LABELS[name] || name}${item.message ? `：${item.message}` : ''}`;
+      }
+    }
+  }
+  return '';
+}
+
+function pipelineProgressPercent(status) {
+  const safeStatus = status && typeof status === 'object' ? status : {};
+  const raw = firstNumber(safeStatus.progress_percent, safeStatus.progress, safeStatus.percent);
+  if (raw === null) return null;
+  const percent = raw <= 1 ? raw * 100 : raw;
+  return Math.max(0, Math.min(100, percent));
 }
 
 function collectOutputTimings(status) {
@@ -2564,26 +2622,45 @@ function appendTextMetric(parent, label, value) {
   parent.appendChild(item);
 }
 
-function renderPipelineDebugStatus(status) {
+function renderPipelineDebugStatus(status, options = {}) {
   const root = document.createElement('div');
   root.className = 'pipeline-debug';
   const safeStatus = status && typeof status === 'object' ? status : {};
   const timing = derivePipelineTiming(safeStatus);
+  const statusKey = String(safeStatus.status || 'unknown').trim().toLowerCase();
+  const stageText = pipelineCurrentStageText(safeStatus);
+  const progressPercent = pipelineProgressPercent(safeStatus);
 
   const header = document.createElement('div');
   header.className = 'pipeline-debug-header';
+  const headerTop = document.createElement('div');
+  headerTop.className = 'pipeline-debug-header-top';
   const title = document.createElement('div');
   title.className = 'pipeline-debug-title';
   title.textContent = '流水线调试视图';
+  const state = document.createElement('span');
+  state.className = 'pipeline-state-pill';
+  state.dataset.status = statusKey;
+  state.textContent = pipelineStatusLabel(statusKey);
+  headerTop.append(title, state);
   const subtitle = document.createElement('div');
   subtitle.className = 'pipeline-debug-subtitle';
   subtitle.textContent = [
     safeStatus.task_id ? '任务 ' + safeStatus.task_id : '',
-    safeStatus.status ? '状态 ' + safeStatus.status : '',
-    safeStatus.message || '',
   ].filter(Boolean).join(' | ') || '等待任务状态';
-  header.appendChild(title);
-  header.appendChild(subtitle);
+  const stage = document.createElement('div');
+  stage.className = 'pipeline-debug-stage';
+  stage.textContent = stageText ? `当前阶段：${stageText}` : '当前阶段：等待后端状态更新';
+  const progress = document.createElement('div');
+  progress.className = 'pipeline-debug-progress';
+  if (progressPercent === null && !isTaskTerminal(statusKey)) {
+    progress.classList.add('is-indeterminate');
+  }
+  const progressBar = document.createElement('span');
+  progressBar.className = 'pipeline-debug-progress-bar';
+  progressBar.style.width = progressPercent === null ? '36%' : `${progressPercent}%`;
+  progress.appendChild(progressBar);
+  header.append(headerTop, subtitle, stage, progress);
   root.appendChild(header);
 
   const major = document.createElement('section');
@@ -2673,6 +2750,10 @@ function renderPipelineDebugStatus(status) {
 
   const raw = document.createElement('details');
   raw.className = 'pipeline-debug-raw';
+  raw.open = Boolean(options.rawOpen);
+  raw.addEventListener('toggle', () => {
+    pipelineRawJsonOpen = Boolean(raw.open);
+  });
   const rawSummary = document.createElement('summary');
   rawSummary.textContent = '原始 JSON';
   const rawPre = document.createElement('pre');
@@ -2699,17 +2780,26 @@ function clearPipelineOutputsView() {
   if (panel) panel.innerHTML = '';
 }
 
-function applyPipelineStatus(status, { base = '', taskId = '' } = {}) {
+function applyPipelineStatus(status, { base = '', taskId = '', activateStatus = false } = {}) {
   const normalizedTaskId = String(taskId || status?.task_id || '').trim();
   if (!normalizedTaskId) return;
   setTaskSelection(normalizedTaskId, { active: !isTaskTerminal(status?.status) });
-  updatePipelineStatusView(status);
+  updatePipelineStatusView(status, { activateStatus });
   rememberTask({ task_id: normalizedTaskId, ...status });
   renderPipelineTaskHistory();
 
   const outputs = Array.isArray(status?.outputs) ? status.outputs : [];
   if (outputs.length && base) {
-    handlePipelineOutputs(base, outputs);
+    const shouldAutoShowOutputs =
+      !activateStatus &&
+      isTaskTerminal(status?.status) &&
+      pipelineTaskActiveTab === 'status' &&
+      !pipelineRawJsonOpen &&
+      pipelineOutputsAutoShownForTaskId !== normalizedTaskId;
+    handlePipelineOutputs(base, outputs, {
+      autoShow: shouldAutoShowOutputs,
+      taskId: normalizedTaskId,
+    });
   } else {
     clearPipelineOutputsView();
   }
@@ -2747,7 +2837,7 @@ async function loadTaskStatusById(taskId, { resumePolling = true, silent = false
       return null;
     }
     const data = result.data;
-    applyPipelineStatus(data, { base, taskId: normalized });
+    applyPipelineStatus(data, { base, taskId: normalized, activateStatus: !silent });
     if (!isTaskTerminal(data?.status) && resumePolling) {
       startTaskPolling(base, normalized);
     } else if (isTaskTerminal(data?.status) && currentTaskPoller) {
@@ -2853,7 +2943,7 @@ async function handleCancelTask(explicitTaskId) {
   }
 }
 
-function handlePipelineOutputs(base, outputs) {
+function handlePipelineOutputs(base, outputs, options = {}) {
   if (!Array.isArray(outputs) || !outputs.length) return;
   lastPipelineOutputs = outputs.slice();
   const usable = outputs.filter(
@@ -2895,7 +2985,10 @@ function handlePipelineOutputs(base, outputs) {
     }
   }
   renderPipelineOutputsList(base, outputs);
-  if (outputs.length) activateTaskTab('outputs');
+  if (options.autoShow) {
+    pipelineOutputsAutoShownForTaskId = String(options.taskId || lastTaskId || '');
+    activateTaskTab('outputs');
+  }
   refreshReviewWorkspaceState();
 }
 
