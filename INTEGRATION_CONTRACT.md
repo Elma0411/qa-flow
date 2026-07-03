@@ -336,6 +336,9 @@ Rules:
 - New route parameters that affect QA generation, chunking, evaluation,
   storage, or runtime behavior must be added to both the route status payload
   and `job_context` when they need to be visible after scheduling.
+- Standard and integrated pipeline task status payloads include task-level
+  `created_at` and `updated_at`. `created_at` is set once when the task is
+  accepted; `updated_at` changes on status updates.
 - Do not add route-only defaults that differ between standard and integrated
   flows unless the difference is documented here.
 - Integrated document progress stages use `file_progress[filename].stages` with
@@ -343,6 +346,16 @@ Rules:
   `doc_pre_chunking`, `doc_image_analysis`, `doc_placement`, `doc_handoff`,
   and error variants). They are additive and must not remove later QA stage
   entries.
+- Every standard and integrated `file_progress[filename].stages[stage]` entry
+  records generic timing metadata:
+  - `started_at`: first time that stage entry was written.
+  - `updated_at`: latest status update for that stage.
+  - `elapsed_seconds`: seconds between `started_at` and the latest update.
+  - `completed_at`: present when the stage reaches a terminal state such as
+    `completed`, `failed`, or `canceled`.
+  Stage-specific timing in `extra` remains authoritative for domain metrics
+  such as QA candidate generation, retrieval, and answer generation; generic
+  `elapsed_seconds` is the fallback for live progress display.
 - `doc_handoff` means document preprocessing has produced `file_contents` /
   `pre_split_chunks` for QA; it is not the terminal state of the full pipeline.
 

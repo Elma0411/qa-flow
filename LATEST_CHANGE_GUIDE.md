@@ -4,43 +4,44 @@
 
 ## Objective
 
-修复流水线运行时“当前任务”区域被轮询反复抢回、原始 JSON 无法保持展开、状态不够醒目的问题。目标是让任务状态持续刷新，但不打断用户正在查看的 tab 或展开内容。
+修复流水线调试视图在任务轮询刷新时反复跳回顶部的问题，并确认运行过程有可展示的实时计时。目标是任务状态继续自动刷新，但不打断用户查看原始 JSON 或页面中部内容。
 
 ## What Changed
 
-- `当前任务` 的 tab 状态现在由前端记住：
-  - 提交新任务或主动查询任务时，会切到 `进度耗时`。
-  - 后续 2 秒轮询只刷新内容，不再强制切回 `进度耗时`。
-  - 后台轮询发现任务完成且首次出现输出时，只有用户仍停留在进度页、且未展开原始 JSON，才自动切到 `输出文件`。
-- `原始 JSON` 的展开状态会在状态重绘前后保留：
-  - 用户展开后，轮询刷新不会自动合上。
-  - 用户手动合上后，后续刷新保持合上。
-- 流水线调试视图顶部新增更突出的状态头：
-  - 中文状态 pill：`排队中 / 运行中 / 已完成 / 失败 / 已终止`。
-  - 当前阶段文案优先显示后端 `message`，例如 `图片所在 chunk 摘要生成中`。
-  - 运行中显示轻量进度条；没有百分比时使用活动条。
-- 状态区视觉层级调整：
-  - 状态头部使用更明确的强调边框。
-  - 调试分区边框降低权重，减少重复边框造成的视觉噪声。
+- 前端状态刷新会保留滚动位置：
+  - 刷新前记录页面 `window` 滚动位置。
+  - 记录 `原始 JSON` 内部 `pre` 的横向和纵向滚动位置。
+  - 重绘后立即恢复，并在下一帧再恢复一次，避免布局更新造成回跳。
+- `原始 JSON` 仍保持展开/关闭状态，不会因 2 秒轮询自动合上。
+- 调试面板新增 `实时运行` 耗时：
+  - 优先从任务 `started_at` 计算。
+  - 如果 integrated 预处理阶段还没进入完整流水线，则退回使用任务 `updated_at`，保证排队/dispatch 阶段也有可见耗时。
+- 后端为标准和 integrated 的 `file_progress[filename].stages[stage]` 写入通用 stage 计时：
+  - `started_at`
+  - `updated_at`
+  - `elapsed_seconds`
+  - `completed_at`（终态时）
+- 标准和 integrated 新任务状态都会写入任务级 `created_at`，前端实时计时优先使用 `started_at/created_at`；老任务没有这些字段时使用页面首次看到该 task 的时间兜底。
+- 前端阶段耗时读取增强：
+  - OCR、生成、无监督评估、评估优先使用原有专用 timing。
+  - 专用 timing 暂未产出时，使用 stage `elapsed_seconds` 作为 fallback。
+- `INTEGRATION_CONTRACT.md` 已补充 stage 计时字段的生产者、语义和 fallback 用途。
 
 ## Expected Behavior
 
-- 任务运行时，用户点击 `输出文件` 或 `任务历史` 后，不会被下一次轮询自动拉回 `进度耗时`。
-- 展开 `原始 JSON` 后，即使任务仍在刷新，也不会马上自动关闭。
-- 当前状态和阶段比以前更醒目，不再只藏在灰色小字里。
-- 后端 API、任务状态结构、表单字段和提交链路不变。
+- 任务运行时，停在调试面板中部或原始 JSON 内部滚动查看，不会被下一次轮询拉回顶部。
+- 原始 JSON 的横向滚动条和纵向滚动条位置会保持。
+- 运行早期即使 OCR/生成等阶段还没完成，也会看到 `实时运行` 时间增长。
+- 进入具体阶段后，对应阶段会逐步有 `elapsed_seconds` 或专用 timing，不再只能显示 0 或未记录。
+- 后端 API、提交参数和任务查询接口不变；只是任务状态里的 stage 条目增加可选计时字段。
 
 ## Validation
 
 ```bash
 cd /data2/hjk/qa-flow
+python -m py_compile app/core/time_utils.py app/routers/pipeline_batch_routes.py app/routers/pipeline_integrated_routes.py app/services/pipeline_execution/service.py
 node --check static/app.js static/admin.js static/eval.js static/app_config.js static/app_render.js static/app_runtime.js static/ui.js
 git diff --check
-```
-
-运行 Docker 服务后建议补充：
-
-```bash
 curl http://localhost:12000/test-connection
 curl http://localhost:12000/environment-check
 ```

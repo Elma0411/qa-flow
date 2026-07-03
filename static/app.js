@@ -1,5 +1,5 @@
 window.__QA_UI_APPJS_READY__ = true;
-window.__QA_UI_APPJS_VERSION__ = '2026-07-03-3';
+window.__QA_UI_APPJS_VERSION__ = '2026-07-03-4';
 
 let currentDwJobPoller = null;
 const MODULE_SETTINGS_CACHE_KEY = 'qa_flow_module_settings_v1';
@@ -10,6 +10,7 @@ const settingsModules = new Map();
 let pipelineTaskActiveTab = 'status';
 let pipelineRawJsonOpen = false;
 let pipelineOutputsAutoShownForTaskId = '';
+const pipelineTaskFirstSeenAtMs = Object.create(null);
 
 const DOC_STAGE_ORDER = [
   'doc_input',
@@ -2403,10 +2404,37 @@ async function handlePipelineSubmit(e) {
   }
 }
 
+function capturePipelineStatusViewport(statusEl) {
+  const scroller = document.scrollingElement || document.documentElement;
+  const rawPre = statusEl ? statusEl.querySelector('.pipeline-debug-raw pre') : null;
+  return {
+    windowX: Number(window.scrollX || window.pageXOffset || 0),
+    windowY: Number(scroller ? scroller.scrollTop : window.scrollY || window.pageYOffset || 0),
+    rawPreScrollTop: rawPre ? Number(rawPre.scrollTop || 0) : 0,
+    rawPreScrollLeft: rawPre ? Number(rawPre.scrollLeft || 0) : 0,
+  };
+}
+
+function restorePipelineStatusViewport(snapshot) {
+  if (!snapshot) return;
+  const statusEl = $('#pipelineStatus');
+  const rawPre = statusEl ? statusEl.querySelector('.pipeline-debug-raw pre') : null;
+  if (rawPre) {
+    rawPre.scrollTop = snapshot.rawPreScrollTop || 0;
+    rawPre.scrollLeft = snapshot.rawPreScrollLeft || 0;
+  }
+  try {
+    window.scrollTo(snapshot.windowX || 0, snapshot.windowY || 0);
+  } catch {
+    // Scroll restoration is best-effort; never break status rendering.
+  }
+}
+
 function updatePipelineStatusView(status, options = {}) {
   const statusEl = $('#pipelineStatus');
   if (!statusEl) return;
   try {
+    const viewportSnapshot = capturePipelineStatusViewport(statusEl);
     const currentRaw = statusEl.querySelector('.pipeline-debug-raw');
     if (currentRaw) pipelineRawJsonOpen = Boolean(currentRaw.open);
     statusEl.textContent = '';
@@ -2414,6 +2442,10 @@ function updatePipelineStatusView(status, options = {}) {
     statusEl.appendChild(renderPipelineDebugStatus(status, { rawOpen: pipelineRawJsonOpen }));
     if (options.activateStatus) activateTaskTab('status');
     refreshReviewWorkspaceState();
+    restorePipelineStatusViewport(viewportSnapshot);
+    if (typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(() => restorePipelineStatusViewport(viewportSnapshot));
+    }
   } catch (err) {
     statusEl.textContent = JSON.stringify(status, null, 2);
   }
@@ -2439,7 +2471,44 @@ function getStageExtra(fileEntry, stageName) {
   const stage = stages[stageName] && typeof stages[stageName] === 'object'
     ? stages[stageName]
     : {};
-  return stage.extra && typeof stage.extra === 'object' ? stage.extra : {};
+  return {
+    ...stage,
+    ...(stage.extra && typeof stage.extra === 'object' ? stage.extra : {}),
+  };
+}
+
+function parseTimestampMs(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric) && /^\d+(\.\d+)?$/.test(raw)) {
+    return raw.length > 11 ? numeric : numeric * 1000;
+  }
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function pipelineFirstSeenStartMs(status) {
+  const safeStatus = status && typeof status === 'object' ? status : {};
+  const explicit = parseTimestampMs(safeStatus.started_at || safeStatus.created_at);
+  if (explicit !== null) return explicit;
+  const key = String(safeStatus.task_id || '__current_pipeline_task');
+  if (!pipelineTaskFirstSeenAtMs[key]) {
+    pipelineTaskFirstSeenAtMs[key] = Date.now();
+  }
+  return pipelineTaskFirstSeenAtMs[key];
+}
+
+function deriveLiveElapsedSeconds(status) {
+  const safeStatus = status && typeof status === 'object' ? status : {};
+  const startMs = pipelineFirstSeenStartMs(safeStatus);
+  if (startMs === null) return null;
+  const endMs = isTaskTerminal(safeStatus.status)
+    ? parseTimestampMs(safeStatus.finished_at || safeStatus.completed_at || safeStatus.updated_at)
+    : Date.now();
+  if (endMs === null) return null;
+  return Math.max(0, (endMs - startMs) / 1000);
 }
 
 function collectFileProgressEntries(status) {
@@ -2554,15 +2623,18 @@ function derivePipelineTiming(status) {
     const docOcr = getStageExtra(fileEntries[i].entry, 'doc_ocr');
     const dwOcr = getStageExtra(fileEntries[i].entry, 'dw_ocr');
     const ocr = getStageExtra(fileEntries[i].entry, 'ocr');
-    const n = firstNumber(
-      docOcr.ocr_seconds,
-      docOcr.processing_time,
-      dwOcr.ocr_seconds,
-      dwOcr.processing_time,
-      ocr.ocr_seconds,
-      ocr.processing_time,
-    );
-    if (n !== null) ocrFromProgress = (ocrFromProgress || 0) + n;
+      const n = firstNumber(
+        docOcr.ocr_seconds,
+        docOcr.processing_time,
+        docOcr.elapsed_seconds,
+        dwOcr.ocr_seconds,
+        dwOcr.processing_time,
+        dwOcr.elapsed_seconds,
+        ocr.ocr_seconds,
+        ocr.processing_time,
+        ocr.elapsed_seconds,
+      );
+      if (n !== null) ocrFromProgress = (ocrFromProgress || 0) + n;
   }
 
   const ocrSeconds = firstNumber(sumTiming(outputTimings, 'ocr_seconds'), ocrFromProgress);
@@ -2571,12 +2643,17 @@ function derivePipelineTiming(status) {
     generationExtra.generation_seconds,
     generationTiming.document_total_seconds,
     generationTiming.chunk_total_seconds,
+    generationExtra.elapsed_seconds,
   );
   const unsupervisedSeconds = firstNumber(
     sumTiming(outputTimings, 'unsupervised_seconds'),
     getStageExtra((fileEntries[0] || {}).entry, 'unsupervised_evaluation').unsupervised_seconds,
+    getStageExtra((fileEntries[0] || {}).entry, 'unsupervised_evaluation').elapsed_seconds,
   );
-  const evaluationSeconds = firstNumber(sumTiming(outputTimings, 'evaluation_seconds'));
+  const evaluationSeconds = firstNumber(
+    sumTiming(outputTimings, 'evaluation_seconds'),
+    getStageExtra((fileEntries[0] || {}).entry, 'evaluation').elapsed_seconds,
+  );
   const totalParts = [ocrSeconds, generationSeconds, unsupervisedSeconds, evaluationSeconds]
     .filter((value) => value !== null);
   const totalSeconds = totalParts.length
@@ -2588,6 +2665,7 @@ function derivePipelineTiming(status) {
     unsupervised_seconds: unsupervisedSeconds,
     evaluation_seconds: evaluationSeconds,
     total_seconds: totalSeconds,
+    live_elapsed_seconds: deriveLiveElapsedSeconds(status),
     generation_detail: generationTiming,
     generation_chunk_details: Array.isArray(generationExtra.generation_chunk_details)
       ? generationExtra.generation_chunk_details
@@ -2670,6 +2748,7 @@ function renderPipelineDebugStatus(status, options = {}) {
   major.appendChild(majorTitle);
   const chips = document.createElement('div');
   chips.className = 'pipeline-debug-chip-grid';
+  appendMetricChip(chips, '实时运行', timing.live_elapsed_seconds, '等待开始');
   appendMetricChip(chips, 'OCR', timing.ocr_seconds);
   appendMetricChip(chips, '生成', timing.generation_seconds);
   appendMetricChip(chips, '无监督评估', timing.unsupervised_seconds);

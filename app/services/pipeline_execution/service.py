@@ -16,7 +16,7 @@ from qa.common import detect_language
 
 from app.core.config import CONFIG
 from app.core.logger import logger
-from app.core.time_utils import now_server_local_iso
+from app.core.time_utils import elapsed_seconds_between, now_server_local_iso
 from app.services.pipeline_common import (
     _ARTIFACT_TTL_SECONDS,
     _compute_average_scores_for_result,
@@ -244,19 +244,26 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
             )
             stages = file_entry.setdefault("stages", {})
             stage_entry = stages.setdefault(stage, {})
+            now = now_server_local_iso()
+            stage_entry.setdefault("started_at", now)
             stage_entry.update(
                 {
                     "state": state,
                     "message": message,
-                    "updated_at": now_server_local_iso(),
+                    "updated_at": now,
                 }
             )
+            elapsed = elapsed_seconds_between(stage_entry.get("started_at"), now)
+            if elapsed is not None:
+                stage_entry["elapsed_seconds"] = elapsed
+            if state in {"completed", "failed", "canceled", "cancelled"}:
+                stage_entry["completed_at"] = now
             if extra:
                 stage_entry.setdefault("extra", {}).update(extra)
             file_entry["status"] = state
             file_entry["message"] = message
             if terminal:
-                file_entry["completed_at"] = now_server_local_iso()
+                file_entry["completed_at"] = now
             completed = sum(
                 1 for f in files_progress.values() if f.get("status") == "completed"
             )

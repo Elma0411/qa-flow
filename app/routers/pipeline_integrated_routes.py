@@ -15,7 +15,7 @@ from qa.chunking import SUPPORTED_SPLIT_TYPES
 
 from app.core.config import ACTIVE_BATCH_JOBS, CONFIG, LLM_EVALUATION_METRICS
 from app.core.logger import logger
-from app.core.time_utils import now_server_local_iso
+from app.core.time_utils import elapsed_seconds_between, now_server_local_iso
 from app.services.pipeline_common import parse_few_shot_examples
 from app.services.gpu import admit_gpu_job, release_gpu_job
 from app.services.knowledge_tagging import normalize_knowledge_classifier
@@ -130,13 +130,20 @@ def _update_integrated_file_progress(
         )
         stages = file_entry.setdefault("stages", {})
         stage_entry = stages.setdefault(stage, {})
+        now = now_server_local_iso()
+        stage_entry.setdefault("started_at", now)
         stage_entry.update(
             {
                 "state": state,
                 "message": message,
-                "updated_at": now_server_local_iso(),
+                "updated_at": now,
             }
         )
+        elapsed = elapsed_seconds_between(stage_entry.get("started_at"), now)
+        if elapsed is not None:
+            stage_entry["elapsed_seconds"] = elapsed
+        if state in {"completed", "failed", "canceled", "cancelled"}:
+            stage_entry["completed_at"] = now
         if extra:
             stage_entry.setdefault("extra", {}).update(dict(extra))
         if state == "failed":
@@ -148,7 +155,7 @@ def _update_integrated_file_progress(
         file_entry["message"] = message
         status_data["status"] = "processing" if status_data.get("status") in {"queued", "processing"} else status_data.get("status")
         status_data["message"] = message
-        status_data["updated_at"] = now_server_local_iso()
+        status_data["updated_at"] = now
         upsert_pipeline_task_status(task_id, status_data)
 
 
@@ -566,6 +573,7 @@ async def batch_upload_integrated_document_pipeline(
         )
         augment_concurrency = augment_max_concurrency or 8
 
+        now = now_server_local_iso()
         status_data = {
             "status": "queued",
             "batch_mode": True,
@@ -641,7 +649,8 @@ async def batch_upload_integrated_document_pipeline(
             "milvus_task_id": None,
             "artifacts_deleted": False,
             "artifacts_expire_at": None,
-            "updated_at": now_server_local_iso(),
+            "created_at": now,
+            "updated_at": now,
             "qa_per_chunk": qa_per_chunk,
             "qa_detail_mode": qa_detail_mode,
             "prompt_language": prompt_language,

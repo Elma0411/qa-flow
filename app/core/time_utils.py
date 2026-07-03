@@ -62,6 +62,25 @@ def to_local_epoch_seconds(
     return int(dt.timestamp())
 
 
+def elapsed_seconds_between(
+    started_at: Any,
+    ended_at: Any = None,
+    *,
+    naive_assumption: str = "local",
+) -> float | None:
+    start = parse_datetime_to_local(started_at, naive_assumption=naive_assumption)
+    if start is None:
+        return None
+    end = (
+        parse_datetime_to_local(ended_at, naive_assumption=naive_assumption)
+        if ended_at is not None
+        else datetime.now().astimezone()
+    )
+    if end is None:
+        return None
+    return round(max(0.0, (end - start).total_seconds()), 3)
+
+
 def normalize_pipeline_timestamps(payload: Any) -> Any:
     if isinstance(payload, list):
         return [normalize_pipeline_timestamps(item) for item in payload]
@@ -83,6 +102,7 @@ def normalize_pipeline_timestamps(payload: Any) -> Any:
 
 
 __all__ = [
+    "elapsed_seconds_between",
     "normalize_pipeline_timestamps",
     "now_server_local_iso",
     "parse_datetime_to_local",

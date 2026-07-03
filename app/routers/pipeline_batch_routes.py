@@ -380,6 +380,7 @@ async def batch_upload_complete_pipeline_with_evaluation(
         )
         augment_concurrency = augment_max_concurrency or 8
 
+        now = now_server_local_iso()
         status_data = {
             "status": "queued",
             "batch_mode": True,
@@ -436,7 +437,8 @@ async def batch_upload_complete_pipeline_with_evaluation(
             "milvus_task_id": None,
             "artifacts_deleted": False,
             "artifacts_expire_at": None,
-            "updated_at": now_server_local_iso(),
+            "created_at": now,
+            "updated_at": now,
             "qa_per_chunk": qa_per_chunk,
             "qa_detail_mode": qa_detail_mode,
             "prompt_language": prompt_language,
