@@ -3,6 +3,7 @@ window.__QA_UI_APPJS_VERSION__ = '2026-07-03-2';
 
 let currentDwJobPoller = null;
 const MODULE_SETTINGS_CACHE_KEY = 'qa_flow_module_settings_v1';
+const WORKSPACE_MODAL_SIZE_KEY = 'qa_flow_workspace_modal_size_v1';
 const MODULE_SECRET_FIELD_IDS = new Set(['cfgKey', 'dwVlmApiKey', 'integratedVlmApiKey']);
 let activeSettingsModule = null;
 const settingsModules = new Map();
@@ -850,6 +851,151 @@ function restoreModuleCache(modules) {
   });
 }
 
+function workspaceModalBounds() {
+  const maxWidth = Math.max(320, window.innerWidth - 32);
+  const maxHeight = Math.max(360, window.innerHeight - 32);
+  const minWidth = Math.min(maxWidth, Math.max(320, Math.min(720, window.innerWidth - 32)));
+  const minHeight = Math.min(maxHeight, Math.max(320, Math.min(480, window.innerHeight - 32)));
+  return { minWidth, minHeight, maxWidth, maxHeight };
+}
+
+function clampWorkspaceModalSize(size) {
+  const bounds = workspaceModalBounds();
+  const width = Math.min(bounds.maxWidth, Math.max(bounds.minWidth, Number(size?.width) || bounds.maxWidth));
+  const height = Math.min(bounds.maxHeight, Math.max(bounds.minHeight, Number(size?.height) || bounds.maxHeight));
+  return { width, height };
+}
+
+function defaultWorkspaceModalSize() {
+  return clampWorkspaceModalSize({
+    width: Math.min(1240, window.innerWidth - 32),
+    height: Math.min(900, Math.round(window.innerHeight * 0.92)),
+  });
+}
+
+function readWorkspaceModalSize() {
+  try {
+    const raw = window.localStorage.getItem(WORKSPACE_MODAL_SIZE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return parsed && typeof parsed === 'object' ? clampWorkspaceModalSize(parsed) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeWorkspaceModalSize(size) {
+  try {
+    window.localStorage.setItem(WORKSPACE_MODAL_SIZE_KEY, JSON.stringify(clampWorkspaceModalSize(size)));
+  } catch {
+    // ignore
+  }
+}
+
+function applyWorkspaceModalSize(drawer, size) {
+  if (!drawer) return;
+  const next = clampWorkspaceModalSize(size || readWorkspaceModalSize() || defaultWorkspaceModalSize());
+  drawer.style.width = `${Math.round(next.width)}px`;
+  drawer.style.height = `${Math.round(next.height)}px`;
+  drawer.style.maxHeight = 'none';
+}
+
+function clearWorkspaceModalSizeStyle(drawer) {
+  if (!drawer) return;
+  drawer.style.width = '';
+  drawer.style.height = '';
+  drawer.style.maxHeight = '';
+}
+
+function setupWorkspaceModalResizer(drawer) {
+  const handle = $('#moduleSettingsResizeHandle');
+  if (!drawer || !handle || handle.dataset.resizeBound === '1') return;
+  handle.dataset.resizeBound = '1';
+
+  const finishResize = () => {
+    drawer.classList.remove('is-resizing');
+    document.body.classList.remove('workspace-modal-resizing');
+    writeWorkspaceModalSize({
+      width: drawer.getBoundingClientRect().width,
+      height: drawer.getBoundingClientRect().height,
+    });
+  };
+
+  handle.addEventListener('pointerdown', (e) => {
+    if (!drawer.classList.contains('settings-modal--workspace')) return;
+    e.preventDefault();
+    const start = drawer.getBoundingClientRect();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    drawer.classList.add('is-resizing');
+    document.body.classList.add('workspace-modal-resizing');
+    if (typeof handle.setPointerCapture === 'function') {
+      try {
+        handle.setPointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+    }
+
+    const onMove = (evt) => {
+      applyWorkspaceModalSize(drawer, {
+        width: start.width + (evt.clientX - startX),
+        height: start.height + (evt.clientY - startY),
+      });
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      finishResize();
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp, { once: true });
+  });
+
+  handle.addEventListener('dblclick', () => {
+    try {
+      window.localStorage.removeItem(WORKSPACE_MODAL_SIZE_KEY);
+    } catch {
+      // ignore
+    }
+    applyWorkspaceModalSize(drawer, defaultWorkspaceModalSize());
+  });
+
+  handle.addEventListener('keydown', (e) => {
+    if (!drawer.classList.contains('settings-modal--workspace')) return;
+    const step = e.shiftKey ? 96 : 32;
+    const rect = drawer.getBoundingClientRect();
+    let width = rect.width;
+    let height = rect.height;
+    if (e.key === 'ArrowRight') width += step;
+    else if (e.key === 'ArrowLeft') width -= step;
+    else if (e.key === 'ArrowDown') height += step;
+    else if (e.key === 'ArrowUp') height -= step;
+    else if (e.key === 'Home') {
+      try {
+        window.localStorage.removeItem(WORKSPACE_MODAL_SIZE_KEY);
+      } catch {
+        // ignore
+      }
+      applyWorkspaceModalSize(drawer, defaultWorkspaceModalSize());
+      e.preventDefault();
+      return;
+    } else {
+      return;
+    }
+    e.preventDefault();
+    applyWorkspaceModalSize(drawer, { width, height });
+    writeWorkspaceModalSize({ width: drawer.getBoundingClientRect().width, height: drawer.getBoundingClientRect().height });
+  });
+
+  window.addEventListener('resize', () => {
+    if (!drawer.classList.contains('settings-modal--workspace') || drawer.hidden) return;
+    applyWorkspaceModalSize(drawer, {
+      width: drawer.getBoundingClientRect().width,
+      height: drawer.getBoundingClientRect().height,
+    });
+  });
+}
+
 function createSettingsDrawer() {
   let overlay = $('#moduleSettingsOverlay');
   let drawer = $('#moduleSettingsDrawer');
@@ -885,8 +1031,12 @@ function createSettingsDrawer() {
     '<button type="button" class="secondary" id="moduleSettingsCloseSecondary">取消</button>',
     '<button type="button" id="moduleSettingsApply">保存</button>',
     '</div>',
+    '<button type="button" class="settings-modal-resize-handle" id="moduleSettingsResizeHandle" aria-label="拖动调整弹窗大小，双击恢复默认尺寸" title="拖动调整大小，双击恢复默认尺寸">',
+    '<span aria-hidden="true"></span>',
+    '</button>',
   ].join('');
   document.body.appendChild(drawer);
+  setupWorkspaceModalResizer(drawer);
 
   overlay.addEventListener('click', closeSettingsDrawer);
   $('#moduleSettingsClose')?.addEventListener('click', closeSettingsDrawer);
@@ -1078,6 +1228,8 @@ function openSettingsDrawer(module) {
   if (title) title.textContent = module.title;
   if (desc) desc.textContent = module.description || '';
   drawer.classList.toggle('settings-modal--workspace', module.workspaceModal === true);
+  if (module.workspaceModal === true) applyWorkspaceModalSize(drawer);
+  else clearWorkspaceModalSizeStyle(drawer);
 
   overlay.hidden = false;
   drawer.hidden = false;

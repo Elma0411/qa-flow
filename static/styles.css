@@ -4641,10 +4641,68 @@ body.qa-workbench-redesign .settings-modal {
 body.qa-workbench-redesign .settings-modal.settings-modal--workspace {
   width: min(1240px, calc(100vw - 32px));
   max-height: min(92vh, 900px);
+  min-width: min(720px, calc(100vw - 32px));
+  min-height: min(480px, calc(100vh - 32px));
+  overflow: hidden;
+}
+
+body.qa-workbench-redesign .settings-modal.settings-modal--workspace.is-resizing {
+  transition: none;
 }
 
 body.qa-workbench-redesign .settings-modal--workspace .settings-modal-body {
   padding: 12px 20px 18px;
+}
+
+body.qa-workbench-redesign .settings-modal--workspace .settings-modal-footer {
+  padding-right: 52px;
+}
+
+.settings-modal-resize-handle {
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--surface) 88%, var(--surface-2));
+  color: var(--muted);
+  box-shadow: none;
+  cursor: nwse-resize;
+  touch-action: none;
+}
+
+.settings-modal-resize-handle span {
+  width: 13px;
+  height: 13px;
+  background:
+    linear-gradient(135deg, transparent 0 52%, currentColor 53% 58%, transparent 59%),
+    linear-gradient(135deg, transparent 0 70%, currentColor 71% 76%, transparent 77%),
+    linear-gradient(135deg, transparent 0 86%, currentColor 87% 92%, transparent 93%);
+  opacity: 0.8;
+}
+
+body.qa-workbench-redesign .settings-modal--workspace .settings-modal-resize-handle {
+  display: inline-flex;
+}
+
+body.qa-workbench-redesign .settings-modal--workspace .settings-modal-resize-handle:hover,
+body.qa-workbench-redesign .settings-modal--workspace .settings-modal-resize-handle:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  color: var(--accent);
+  opacity: 1;
+}
+
+body.workspace-modal-resizing,
+body.workspace-modal-resizing * {
+  cursor: nwse-resize !important;
+  user-select: none !important;
 }
 
 body.qa-workbench-redesign .settings-modal--workspace .settings-modal-body > .workbench-card,
