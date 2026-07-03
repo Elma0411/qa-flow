@@ -2922,12 +2922,36 @@ function debugSecondsText(value, emptyText = '未返回') {
 
 function translatedDropReason(reason) {
   const labels = {
+    ok: '通过',
+    missing_items: '模型没有返回可用条目',
+    missing_question: '缺少问题',
+    missing_answer: '缺少答案',
+    missing_answer_explanation: '缺少答案解释',
+    missing_source_fact_text: '缺少来源事实',
+    question_mismatch: '答案阶段返回的问题与候选问题不一致',
+    duplicate_question: '重复问题',
     empty_or_duplicate_question: '空问题/重复问题',
     invalid_json: 'JSON 无效',
     normalize_failed: '格式归一失败',
     source_fact_missing: '来源事实缺失',
     source_fact_not_grounded: '来源事实未命中原文',
+    source_fact_not_grounded_in_chunk: '来源事实未能在检索证据中定位',
+    source_fact_not_anchored_to_source_chunk: '来源事实没有锚定到主来源块',
     source_fact_too_short: '来源事实过短',
+    point_source_fact_multiline: '单点模式下来源事实不应跨多行',
+    point_source_fact_has_semicolon: '单点模式下来源事实包含分号，像是多个事实',
+    point_source_fact_multi_sentence: '单点模式下来源事实包含多个句子',
+    summary_source_fact_not_compound: '总结模式下来源事实过于单一，不像多信息点汇总',
+    summary_source_fact_segment_not_grounded_in_chunk: '总结模式下部分来源事实片段未在证据中定位',
+    summary_source_fact_not_grounded_in_chunk: '总结模式下来源事实整体未在证据中定位',
+    ambiguous_reference_question: '问题里有指代不明的词',
+    ambiguous_reference_answer: '答案里有指代不明的词',
+    ambiguous_reference_answer_explanation: '答案解释里有指代不明的词',
+    ambiguous_reference_source_fact_text: '来源事实里有指代不明的词',
+    mcq_invalid_options: '单选题选项无效',
+    mcq_options_not_4: '单选题不是 4 个选项',
+    mcq_invalid_correct_option: '单选题正确选项无效',
+    judge_invalid_answer: '判断题答案无效',
   };
   return labels[reason] || reason;
 }
