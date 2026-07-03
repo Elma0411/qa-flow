@@ -2,15 +2,24 @@
 # 关联说明：复用 pipeline_state、storage、artifacts 服务，管理 pipeline 任务和产物。
 
 import asyncio
+import json
 import os
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 
 from app.core.config import ACTIVE_BATCH_JOBS, CONFIG
 from app.core.time_utils import now_server_local_iso
 from app.routers.pipeline_common import _collect_pipeline_output_artifact_paths
-from app.services.artifacts import delete_artifacts_now, delete_paths_now
+from app.services.artifacts import (
+    delete_artifacts_now,
+    delete_paths_now,
+    get_owner_artifact_expire_at,
+)
+from app.services.milvus import store_qa_payload_to_milvus
 from app.services.pipeline_state import (
     delete_pipeline_task_status,
     get_pipeline_store_path,
@@ -22,6 +31,145 @@ from app.services.storage import sanitize_filename
 
 router = APIRouter()
 
+
+class IngestSelectedQARequest(BaseModel):
+    source_file: Optional[str] = None
+    selected_ids: List[str] = Field(default_factory=list)
+    select_all_task: bool = False
+
+
+def _outputs_dir() -> str:
+    return os.path.abspath(str(CONFIG["outputs_dir"]))
+
+
+def _registered_output_path(raw_path: Any) -> Optional[str]:
+    basename = os.path.basename(str(raw_path or "").strip())
+    if not basename:
+        return None
+    base = _outputs_dir()
+    full_path = os.path.abspath(os.path.join(base, basename))
+    if os.path.commonpath([base, full_path]) != base:
+        return None
+    return full_path
+
+
+def _artifact_not_expired(task_id: str) -> Tuple[bool, Optional[int]]:
+    expire_at = get_owner_artifact_expire_at("pipeline_task", task_id)
+    if expire_at is not None and int(expire_at) <= int(time.time()):
+        return False, int(expire_at)
+    return True, int(expire_at) if expire_at is not None else None
+
+
+def _iter_task_outputs(status: Dict[str, Any]) -> List[Dict[str, Any]]:
+    outputs = status.get("outputs") if isinstance(status.get("outputs"), list) else []
+    return [item for item in outputs if isinstance(item, dict)]
+
+
+def _source_matches(output: Dict[str, Any], source_file: Optional[str]) -> bool:
+    wanted = str(source_file or "").strip()
+    if not wanted:
+        return True
+    candidates = [
+        output.get("source_file"),
+        output.get("core_file"),
+        output.get("filename"),
+    ]
+    values = output.get("source_files")
+    if isinstance(values, list):
+        candidates.extend(values)
+    return any(str(value or "").strip() == wanted for value in candidates)
+
+
+def _registered_debug_paths(status: Dict[str, Any]) -> List[str]:
+    paths: List[str] = []
+    seen = set()
+    for output in _iter_task_outputs(status):
+        for raw in [output.get("debug_jsonl")]:
+            path = _registered_output_path(raw)
+            if path and path not in seen:
+                seen.add(path)
+                paths.append(path)
+        values = output.get("debug_json_files")
+        if isinstance(values, list):
+            for raw in values:
+                path = _registered_output_path(raw)
+                if path and path not in seen:
+                    seen.add(path)
+                    paths.append(path)
+    return paths
+
+
+def _find_consolidated_output(
+    status: Dict[str, Any],
+    source_file: Optional[str] = None,
+) -> Tuple[int, Dict[str, Any], str]:
+    fallback: Optional[Tuple[int, Dict[str, Any], str]] = None
+    for idx, output in enumerate(_iter_task_outputs(status)):
+        path = _registered_output_path(output.get("consolidated_json"))
+        if not path:
+            continue
+        current = (idx, output, path)
+        if fallback is None:
+            fallback = current
+        if _source_matches(output, source_file):
+            return current
+    if fallback and not str(source_file or "").strip():
+        return fallback
+    raise HTTPException(
+        status_code=410,
+        detail="当前任务的临时合并 JSON 不存在或已过期，无法人工入库；请重新生成任务。",
+    )
+
+
+def _load_registered_json(path: str) -> Dict[str, Any]:
+    if not os.path.exists(path):
+        raise HTTPException(
+            status_code=410,
+            detail="临时合并 JSON 已被清理，无法人工入库；请重新生成任务。",
+        )
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"读取合并 JSON 失败：{str(exc)}")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="合并 JSON 格式无效，无法入库。")
+    return payload
+
+
+def _update_manual_ingest_status(
+    *,
+    status: Dict[str, Any],
+    task_id: str,
+    output_index: int,
+    vector_result: Dict[str, Any],
+    selected_count: int,
+    select_all_task: bool,
+) -> Dict[str, Any]:
+    updated = dict(status or {})
+    outputs = [dict(item) for item in _iter_task_outputs(status)]
+    if 0 <= output_index < len(outputs):
+        record = dict(outputs[output_index])
+        record["history_source"] = "milvus"
+        record["milvus_task_id"] = task_id
+        record["vector_storage_result"] = dict(vector_result or {})
+        record["manual_ingest"] = True
+        record["manual_ingest_selected_count"] = int(selected_count)
+        record["manual_ingest_select_all"] = bool(select_all_task)
+        record["manual_ingested_at"] = now_server_local_iso()
+        record["artifacts_deleted"] = False
+        record["artifacts_expire_at"] = get_owner_artifact_expire_at("pipeline_task", task_id)
+        outputs[output_index] = record
+    updated["outputs"] = outputs
+    updated["history_source"] = "milvus"
+    updated["milvus_task_id"] = task_id
+    updated["artifacts_deleted"] = False
+    updated["artifacts_expire_at"] = get_owner_artifact_expire_at("pipeline_task", task_id)
+    updated["updated_at"] = now_server_local_iso()
+    upsert_pipeline_task_status(task_id, updated)
+    return updated
+
+
 @router.get("/task-status/{task_id}")
 async def task_status(task_id: str):
     """
@@ -31,6 +179,150 @@ async def task_status(task_id: str):
     if not status:
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
     return status
+
+
+@router.get("/pipeline-tasks/{task_id}/debug-jsonl")
+async def read_pipeline_task_debug_jsonl(
+    task_id: str,
+    chunk_index: Optional[int] = Query(default=None),
+    event: Optional[str] = Query(default=None),
+):
+    status = get_pipeline_task_status(task_id)
+    if not status:
+        raise HTTPException(status_code=404, detail=f"任务不存在：{task_id}")
+    is_valid, expire_at = _artifact_not_expired(task_id)
+    if not is_valid:
+        raise HTTPException(
+            status_code=410,
+            detail="模型原始响应调试文件已过期并等待清理，请重新生成任务。",
+        )
+
+    debug_paths = _registered_debug_paths(status)
+    existing_paths = [path for path in debug_paths if os.path.exists(path)]
+    if not existing_paths:
+        raise HTTPException(
+            status_code=404,
+            detail="当前任务没有可读取的模型原始响应文件，可能尚未生成或已被清理。",
+        )
+
+    event_filter = str(event or "").strip()
+    records: List[Dict[str, Any]] = []
+    skipped_lines = 0
+    for path in existing_paths:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    text = line.strip()
+                    if not text:
+                        continue
+                    try:
+                        record = json.loads(text)
+                    except Exception:
+                        skipped_lines += 1
+                        continue
+                    if not isinstance(record, dict):
+                        skipped_lines += 1
+                        continue
+                    if chunk_index is not None:
+                        try:
+                            record_chunk = int(record.get("chunk_index"))
+                        except Exception:
+                            continue
+                        if record_chunk != int(chunk_index):
+                            continue
+                    if event_filter and str(record.get("event") or "") != event_filter:
+                        continue
+                    record["_debug_file"] = os.path.basename(path)
+                    records.append(record)
+        except FileNotFoundError:
+            continue
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"读取调试日志失败：{str(exc)}")
+
+    return {
+        "task_id": task_id,
+        "artifacts_expire_at": expire_at,
+        "debug_files": [os.path.basename(path) for path in existing_paths],
+        "filters": {"chunk_index": chunk_index, "event": event_filter or None},
+        "count": len(records),
+        "skipped_lines": skipped_lines,
+        "records": records,
+    }
+
+
+@router.post("/pipeline-tasks/{task_id}/ingest-selected-qa")
+async def ingest_selected_pipeline_qa(task_id: str, body: IngestSelectedQARequest):
+    status = get_pipeline_task_status(task_id)
+    if not status:
+        raise HTTPException(status_code=404, detail=f"任务不存在：{task_id}")
+    is_valid, expire_at = _artifact_not_expired(task_id)
+    if not is_valid:
+        raise HTTPException(
+            status_code=410,
+            detail="临时合并 JSON 已过期，无法人工入库；请重新生成任务。",
+        )
+
+    output_index, output_record, json_path = _find_consolidated_output(status, body.source_file)
+    payload = _load_registered_json(json_path)
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list) or not raw_items:
+        raise HTTPException(status_code=400, detail="合并 JSON 中没有可入库的 QA。")
+
+    if body.select_all_task:
+        selected_items = [item for item in raw_items if isinstance(item, dict)]
+        missing_count = 0
+    else:
+        selected_ids = {str(item).strip() for item in (body.selected_ids or []) if str(item).strip()}
+        if not selected_ids:
+            raise HTTPException(status_code=400, detail="请先勾选要入库的 QA，或使用一键全选当前任务。")
+        selected_items = [
+            item
+            for item in raw_items
+            if isinstance(item, dict) and str(item.get("id") or "").strip() in selected_ids
+        ]
+        missing_count = max(0, len(selected_ids) - len(selected_items))
+
+    if not selected_items:
+        raise HTTPException(status_code=400, detail="没有匹配到可入库的 QA，请刷新任务结果后重试。")
+
+    selected_payload = dict(payload)
+    selected_payload["items"] = selected_items
+    counts = dict(selected_payload.get("counts") or {})
+    counts["qa_pairs"] = len(selected_items)
+    counts["filtered_qa_pairs"] = sum(1 for item in selected_items if bool(item.get("filtered")))
+    selected_payload["counts"] = counts
+
+    vector_result = store_qa_payload_to_milvus(selected_payload, enable_vector_storage=True)
+    if not vector_result.get("success"):
+        raise HTTPException(
+            status_code=500,
+            detail=f"人工入库失败：{vector_result.get('message') or '未知错误'}",
+        )
+
+    updated_status = _update_manual_ingest_status(
+        status=status,
+        task_id=task_id,
+        output_index=output_index,
+        vector_result=vector_result,
+        selected_count=len(selected_items),
+        select_all_task=body.select_all_task,
+    )
+    return {
+        "success": True,
+        "task_id": task_id,
+        "source_file": body.source_file or output_record.get("source_file") or "",
+        "selected_count": len(selected_items),
+        "stored_count": int(vector_result.get("stored_count") or 0),
+        "skipped_count": missing_count,
+        "vector_storage_result": vector_result,
+        "artifacts_expire_at": expire_at,
+        "task": {
+            "task_id": updated_status.get("task_id"),
+            "history_source": updated_status.get("history_source"),
+            "milvus_task_id": updated_status.get("milvus_task_id"),
+            "artifacts_expire_at": updated_status.get("artifacts_expire_at"),
+        },
+    }
 
 
 @router.get("/task-file-csv/{task_id}")

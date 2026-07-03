@@ -16,6 +16,11 @@ if (localJsonInput) {
     try {
       const text = await file.text();
       const data = JSON.parse(text);
+      try {
+        if (typeof currentConsolidatedJsonPath !== 'undefined') currentConsolidatedJsonPath = '';
+      } catch (ignore) {
+        // ignore
+      }
       renderMetaFromConsolidated(data);
       renderFromConsolidated(data);
     } catch (err) {
@@ -31,11 +36,38 @@ function renderQaResults(data, includeDetails) {
     container.textContent = '没有结果';
     $('#qaResults').innerHTML = '';
     $('#qaResults').appendChild(container);
+    if (window.qaFlowReview && typeof window.qaFlowReview.afterRender === 'function') {
+      window.qaFlowReview.afterRender([]);
+    }
     return;
   }
+  const reviewHook = window.qaFlowReview && typeof window.qaFlowReview === 'object'
+    ? window.qaFlowReview
+    : null;
+  const canReview = Boolean(reviewHook && typeof reviewHook.isEnabled === 'function' && reviewHook.isEnabled());
   items.forEach((it) => {
     const card = document.createElement('div');
     card.className = 'qa-card';
+
+    const qaId = String(it.id || '').trim();
+    if (canReview && qaId) {
+      const reviewRow = document.createElement('label');
+      reviewRow.className = 'qa-review-select';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.setAttribute('data-qa-review-checkbox', 'true');
+      checkbox.setAttribute('data-qa-id', qaId);
+      checkbox.checked = typeof reviewHook.isSelected === 'function' && reviewHook.isSelected(qaId);
+      checkbox.addEventListener('change', () => {
+        if (typeof reviewHook.setSelected === 'function') {
+          reviewHook.setSelected(qaId, checkbox.checked);
+        }
+      });
+      const labelText = document.createElement('span');
+      labelText.textContent = '选择入库';
+      reviewRow.append(checkbox, labelText);
+      card.appendChild(reviewRow);
+    }
 
     const header = document.createElement('div');
     header.className = 'qa-header';
@@ -116,6 +148,9 @@ function renderQaResults(data, includeDetails) {
   });
   $('#qaResults').innerHTML = '';
   $('#qaResults').appendChild(container);
+  if (reviewHook && typeof reviewHook.afterRender === 'function') {
+    reviewHook.afterRender(items);
+  }
 }
 
 function escapeHtml(str) {
@@ -144,6 +179,9 @@ function renderMetaFromConsolidated(json) {
 function renderFromConsolidated(json) {
   const includeDetails = true;
   const items = normalizeItems(Array.isArray(json.items) ? json.items : []);
+  if (window.qaFlowReview && typeof window.qaFlowReview.setContext === 'function') {
+    window.qaFlowReview.setContext(json, items);
+  }
   if (json.task && json.task.task_id) {
     lastTaskId = json.task.task_id;
     const taskInput = $('#taskIdInput');

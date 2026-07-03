@@ -131,12 +131,17 @@ def _refresh_output_artifact_state(output: Dict[str, Any]) -> Tuple[Dict[str, An
             changed = True
 
     if history_source == "milvus":
-        if refreshed.get("artifacts_deleted") is not True:
-            refreshed["artifacts_deleted"] = True
-            changed = True
-        if refreshed.get("artifacts_expire_at") is not None:
-            refreshed["artifacts_expire_at"] = None
-            changed = True
+        if existing_paths > 0:
+            if refreshed.get("artifacts_deleted") is True:
+                refreshed["artifacts_deleted"] = False
+                changed = True
+        else:
+            if refreshed.get("artifacts_deleted") is not True:
+                refreshed["artifacts_deleted"] = True
+                changed = True
+            if refreshed.get("artifacts_expire_at") is not None:
+                refreshed["artifacts_expire_at"] = None
+                changed = True
     elif declared_paths > 0 and existing_paths == 0:
         if refreshed.get("artifacts_deleted") is not True:
             refreshed["artifacts_deleted"] = True

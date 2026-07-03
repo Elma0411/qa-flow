@@ -1779,6 +1779,16 @@ pre {
   overflow-wrap: anywhere;
 }
 
+.pipeline-debug-action-cell {
+  white-space: nowrap;
+}
+
+.pipeline-debug-action-cell .compact {
+  min-height: 30px;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
 .pipeline-debug-raw {
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -1793,6 +1803,133 @@ pre {
 
 .pipeline-debug-raw pre {
   margin-top: 10px;
+}
+
+.raw-response-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  background: rgba(15, 23, 42, 0.44);
+}
+
+.raw-response-modal {
+  position: fixed;
+  inset: 5vh max(24px, 6vw);
+  z-index: 71;
+  display: none;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 24px 70px rgba(16, 24, 40, 0.28);
+}
+
+.raw-response-modal.is-open {
+  display: flex;
+}
+
+.raw-response-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px 8px;
+}
+
+.raw-response-head h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 17px;
+}
+
+.raw-response-hint,
+.raw-response-loading {
+  margin: 0 18px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.raw-response-loading {
+  margin-top: 18px;
+}
+
+.raw-response-list {
+  display: grid;
+  gap: 10px;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 18px 18px;
+}
+
+.raw-response-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-2) 38%, transparent);
+}
+
+.raw-response-summary {
+  display: grid;
+  gap: 4px;
+}
+
+.raw-response-summary strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.raw-response-summary span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.raw-response-compact {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.raw-response-detail {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.raw-response-detail summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.raw-response-detail pre {
+  max-height: min(320px, 42vh);
+  margin: 8px 0 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (max-width: 720px) {
+  .raw-response-modal {
+    inset: 14px;
+  }
+
+  .raw-response-head,
+  .qa-review-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .qa-review-actions {
+    justify-content: flex-start;
+  }
 }
 
 #chunkDetailOutput,
@@ -1904,6 +2041,69 @@ details summary {
 }
 
 /* QA cards (pipeline preview) */
+.qa-review-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 12px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  box-shadow: var(--shadow-sm);
+}
+
+.qa-review-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.qa-review-copy strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.qa-review-copy span,
+.qa-review-count {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.qa-review-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.qa-review-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  width: fit-content;
+  margin-bottom: 8px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-2) 56%, transparent);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.qa-review-select input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+}
+
 .qa-card {
   background: color-mix(in srgb, var(--surface) 90%, transparent);
   border: 1px solid var(--border);

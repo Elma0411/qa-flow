@@ -642,7 +642,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                     filename,
                     "chunk_storage",
                     "processing",
-                    "chunk 入库中（doc_tree_chunks）",
+                    "保存 chunk 溯源索引中（doc_tree_chunks）",
                     extra={"enable_chunk_storage": enable_chunk_storage},
                 )
                 try:
@@ -654,7 +654,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                 except Exception as exc:
                     chunk_storage_result = {
                         "success": False,
-                        "message": f"chunk 入库异常: {exc}",
+                        "message": f"chunk 溯源索引保存异常: {exc}",
                         "stored_count": 0,
                     }
                 chunk_storage_success = (not enable_chunk_storage) or bool(
@@ -664,7 +664,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                     filename,
                     "chunk_storage",
                     "completed" if chunk_storage_success else "failed",
-                    (chunk_storage_result or {}).get("message") or ("chunk 入库成功" if chunk_storage_success else "chunk 入库失败"),
+                    (chunk_storage_result or {}).get("message") or ("chunk 溯源索引保存成功" if chunk_storage_success else "chunk 溯源索引保存失败"),
                     extra={
                         "stored_count": (chunk_storage_result or {}).get("stored_count"),
                         "collection_name": (chunk_storage_result or {}).get("collection_name"),
@@ -675,7 +675,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                         filename,
                         "chunk_storage",
                         "failed",
-                        "chunk 入库失败（fail_fast=True）",
+                        "chunk 溯源索引保存失败（fail_fast=True）",
                         terminal=True,
                     )
                     return {
@@ -1287,21 +1287,41 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
 
     def _finalize_pipeline_artifacts(record: Dict[str, Any], artifact_paths: List[Optional[str]]) -> Dict[str, Any]:
         normalized_paths = [path for path in [_normalize_artifact_path(p) for p in artifact_paths] if path]
+        debug_paths = []
+        debug_jsonl = _normalize_artifact_path(record.get("debug_jsonl"))
+        if debug_jsonl:
+            debug_paths.append(debug_jsonl)
+        for raw_debug in record.get("debug_json_files") or []:
+            debug_path = _normalize_artifact_path(raw_debug)
+            if debug_path:
+                debug_paths.append(debug_path)
+        debug_path_set = set(debug_paths)
+        non_debug_paths = [path for path in normalized_paths if path not in debug_path_set]
         milvus_result = record.get("vector_storage_result") if isinstance(record.get("vector_storage_result"), dict) else {}
         milvus_success = bool(milvus_result.get("success"))
         if milvus_success:
-            delete_paths_now(normalized_paths, reason="milvus_ingested")
+            delete_paths_now(non_debug_paths, reason="milvus_ingested")
+            if debug_paths:
+                register_temporary_artifacts(
+                    owner_kind="pipeline_task",
+                    owner_id=task_id,
+                    artifact_kind="pipeline_debug",
+                    paths=debug_paths,
+                    ttl_seconds=_ARTIFACT_TTL_SECONDS,
+                )
             record["history_source"] = "milvus"
             record["milvus_task_id"] = task_id
-            record["artifacts_deleted"] = True
-            record["artifacts_expire_at"] = None
+            record["artifacts_deleted"] = not bool(debug_paths)
+            record["artifacts_expire_at"] = (
+                get_owner_artifact_expire_at("pipeline_task", task_id)
+                if debug_paths
+                else None
+            )
             for key in (
                 "consolidated_json",
                 "consolidated_csv",
                 "evaluation_json",
-                "debug_jsonl",
                 "evaluation_json_files",
-                "debug_json_files",
             ):
                 if key in record:
                     record[key] = None

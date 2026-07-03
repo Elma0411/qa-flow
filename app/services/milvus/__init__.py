@@ -17,6 +17,7 @@ from .service import (
     load_embedding_model,
     search_qa_pairs_in_milvus,
     store_qa_pairs_to_milvus,
+    store_qa_payload_to_milvus,
 )
 def __getattr__(name):
     if hasattr(MILVUS_RUNTIME, name):
@@ -39,5 +40,6 @@ __all__ = [
     "milvus_client",
     "search_qa_pairs_in_milvus",
     "store_qa_pairs_to_milvus",
+    "store_qa_payload_to_milvus",
     "MilvusRuntime",
 ]

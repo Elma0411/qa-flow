@@ -323,9 +323,9 @@ async def batch_upload_integrated_document_pipeline(
     ),
     filter_by_threshold: bool = Form(False, description="是否按平均分阈值过滤问答对"),
     score_threshold: float = Form(0.7, description="平均分阈值"),
-    enable_vector_storage: bool = Form(True, description="是否将 QA 对写入 Milvus"),
-    enable_chunk_storage: bool = Form(True, description="是否写入 Milvus doc_tree_chunks（chunk 树与溯源）"),
-    chunk_storage_fail_fast: bool = Form(False, description="chunk 入库失败是否让任务失败（默认 False）"),
+    enable_vector_storage: bool = Form(True, description="是否自动入库 QA 到向量库"),
+    enable_chunk_storage: bool = Form(True, description="是否保存 chunk 溯源索引 doc_tree_chunks"),
+    chunk_storage_fail_fast: bool = Form(False, description="溯源索引失败时是否终止任务（默认 False）"),
     chunking_prefix_max_depth: int = Form(4, description="前缀使用的上级标题层数（0~12）"),
     chunking_split_type: Optional[str] = Form(
         None,

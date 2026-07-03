@@ -10,7 +10,11 @@ from .collection import (
     init_milvus,
 )
 from .embedding import generate_embeddings, load_embedding_model
-from .store_search import search_qa_pairs_in_milvus, store_qa_pairs_to_milvus
+from .store_search import (
+    search_qa_pairs_in_milvus,
+    store_qa_pairs_to_milvus,
+    store_qa_payload_to_milvus,
+)
 
 MILVUS_RUNTIME = _runtime
 
@@ -45,4 +49,5 @@ __all__ = [
     'load_embedding_model',
     'search_qa_pairs_in_milvus',
     'store_qa_pairs_to_milvus',
+    'store_qa_payload_to_milvus',
 ]

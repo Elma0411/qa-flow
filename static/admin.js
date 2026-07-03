@@ -756,7 +756,7 @@ async function loadDetail(id) {
   }
   if (!isProbablyChunkId(source)) {
     setChunkDetailPlaceholder(
-      `source 不是 chunk_id（可能是旧数据/未开启 chunk 入库），无法溯源到 doc_tree_chunks。\nsource=${source}`,
+      `source 不是 chunk_id（可能是旧数据/未保存 chunk 溯源索引），无法溯源到 doc_tree_chunks。\nsource=${source}`,
     );
     return;
   }

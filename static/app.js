@@ -11,6 +11,20 @@ let pipelineTaskActiveTab = 'status';
 let pipelineRawJsonOpen = false;
 let pipelineOutputsAutoShownForTaskId = '';
 const pipelineTaskFirstSeenAtMs = Object.create(null);
+let latestPipelineStatus = null;
+let currentConsolidatedJsonPath = '';
+
+const qaReviewState = {
+  enabled: false,
+  taskId: '',
+  sourceFile: '',
+  jsonPath: '',
+  expireAt: null,
+  output: null,
+  items: [],
+  selectedIds: new Set(),
+  selectAllTask: false,
+};
 
 const DOC_STAGE_ORDER = [
   'doc_input',
@@ -95,7 +109,7 @@ const DOC_STAGE_LABELS = {
   dw_handoff: '移交问答',
   knowledge_tagging: '知识分类',
   chunking: '文本切分',
-  chunk_storage: 'chunk 入库',
+  chunk_storage: '保存 chunk 溯源索引',
   qa_generation: '问答生成',
   qa_augmentation: '问句增广',
   unsupervised_evaluation: '无监督评估',
@@ -1560,7 +1574,7 @@ function setupPipelineModuleConsole() {
         icon: 'O',
         kicker: '输出',
         title: '存储输出',
-        description: '配置向量库写入、chunk 入库、同步模式和批量保存方式。',
+        description: '配置 QA 自动入库、chunk 溯源索引、同步等待和批量保存方式。',
         nodes: [
           { field: 'enableVectorStorage' },
           { field: 'enableChunkStorage' },
@@ -1568,7 +1582,7 @@ function setupPipelineModuleConsole() {
           { field: 'syncMode' },
           { field: 'saveMode' },
         ],
-        summary: () => `${$('#enableVectorStorage')?.checked ? 'Milvus' : '不入向量库'} / ${$('#enableChunkStorage')?.checked ? 'chunk 入库' : 'chunk 不入库'} / ${$('#saveMode')?.value || 'separate'}`,
+        summary: () => `${$('#enableVectorStorage')?.checked ? 'QA自动入库' : 'QA待审阅'} / ${$('#enableChunkStorage')?.checked ? '保存溯源' : '不保存溯源'} / ${$('#saveMode')?.value || 'separate'}`,
       },
     ],
   });
@@ -2974,6 +2988,392 @@ function chunkReasonParts(chunk) {
   return parts;
 }
 
+function pipelineDebugEventLabel(event) {
+  const labels = {
+    candidate_question_llm_call: '候选题生成',
+    evidence_answer_llm_call: '答案生成',
+  };
+  return labels[event] || event || '未知事件';
+}
+
+function formatExpireAt(ts) {
+  if (ts === null || ts === undefined || ts === '') return '';
+  const n = Number(ts);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  try {
+    return new Date(n * 1000).toLocaleString();
+  } catch {
+    return '';
+  }
+}
+
+function findPipelineOutputForReview(taskId, sourceFile, jsonPath) {
+  const outputs = Array.isArray(lastPipelineOutputs) ? lastPipelineOutputs : [];
+  const wantedTask = String(taskId || '').trim();
+  const wantedSource = String(sourceFile || '').trim();
+  const wantedJsonBase = String(jsonPath || '').split('/').pop();
+  const isMatch = (output) => {
+    if (!output || typeof output !== 'object') return false;
+    const outputJsonBase = String(output.consolidated_json || '').split('/').pop();
+    if (wantedJsonBase && outputJsonBase && wantedJsonBase === outputJsonBase) return true;
+    const candidates = [
+      output.source_file,
+      output.core_file,
+      output.filename,
+    ].map((value) => String(value || '').trim());
+    if (Array.isArray(output.source_files)) {
+      output.source_files.forEach((value) => candidates.push(String(value || '').trim()));
+    }
+    if (wantedSource && candidates.includes(wantedSource)) return true;
+    if (!wantedSource && wantedTask && output.task_id && String(output.task_id) === wantedTask) return true;
+    return false;
+  };
+  return outputs.find(isMatch) || null;
+}
+
+function isReviewOutputEligible(output) {
+  if (!output || typeof output !== 'object') return false;
+  if (!output.consolidated_json) return false;
+  if (output.manual_ingest_select_all) return false;
+  const expireAt = Number(output.artifacts_expire_at || latestPipelineStatus?.artifacts_expire_at || 0);
+  if (Number.isFinite(expireAt) && expireAt > 0 && expireAt * 1000 <= Date.now()) return false;
+  return true;
+}
+
+function updateQaReviewContext(json, items) {
+  const task = json && typeof json === 'object' ? json.task || {} : {};
+  const taskId = String(task.task_id || lastTaskId || '').trim();
+  const sourceFile = String(task.original_filename || '').trim();
+  const jsonPath = String(currentConsolidatedJsonPath || '').trim();
+  const output = findPipelineOutputForReview(taskId, sourceFile, jsonPath);
+  const previousKey = `${qaReviewState.taskId}|${qaReviewState.sourceFile}|${qaReviewState.jsonPath}`;
+  const nextKey = `${taskId}|${sourceFile}|${jsonPath}`;
+  qaReviewState.taskId = taskId;
+  qaReviewState.sourceFile = sourceFile;
+  qaReviewState.jsonPath = jsonPath;
+  qaReviewState.output = output;
+  qaReviewState.expireAt = Number(output?.artifacts_expire_at || latestPipelineStatus?.artifacts_expire_at || 0) || null;
+  qaReviewState.items = Array.isArray(items) ? items.slice() : [];
+  qaReviewState.enabled = Boolean(taskId && qaReviewState.items.length && isReviewOutputEligible(output));
+  if (previousKey !== nextKey) {
+    qaReviewState.selectedIds = new Set();
+    qaReviewState.selectAllTask = false;
+  }
+  updateQaReviewToolbar();
+}
+
+function qaReviewItemId(item) {
+  return String(item && item.id || '').trim();
+}
+
+function updateQaReviewCheckboxes() {
+  document.querySelectorAll('[data-qa-review-checkbox]').forEach((node) => {
+    const id = String(node.getAttribute('data-qa-id') || '').trim();
+    node.checked = qaReviewState.selectAllTask || qaReviewState.selectedIds.has(id);
+  });
+}
+
+function selectedQaCount() {
+  if (qaReviewState.selectAllTask) {
+    return qaReviewState.items.filter((item) => qaReviewItemId(item)).length;
+  }
+  return qaReviewState.selectedIds.size;
+}
+
+function updateQaReviewToolbar() {
+  const qaResults = $('#qaResults');
+  if (!qaResults) return;
+  let toolbar = $('#qaReviewToolbar');
+  if (!qaReviewState.enabled) {
+    if (toolbar) toolbar.remove();
+    return;
+  }
+  if (!toolbar) {
+    toolbar = document.createElement('div');
+    toolbar.id = 'qaReviewToolbar';
+    toolbar.className = 'qa-review-toolbar';
+  }
+  toolbar.replaceChildren();
+
+  const copy = document.createElement('div');
+  copy.className = 'qa-review-copy';
+  const title = document.createElement('strong');
+  title.textContent = '人工审阅入库';
+  const desc = document.createElement('span');
+  const expireText = formatExpireAt(qaReviewState.expireAt);
+  desc.textContent = expireText
+    ? `未自动入库的结果可勾选后写入向量库；临时文件保留到 ${expireText}`
+    : '未自动入库的结果可勾选后写入向量库。';
+  copy.append(title, desc);
+
+  const actions = document.createElement('div');
+  actions.className = 'qa-review-actions';
+  const count = document.createElement('span');
+  count.className = 'qa-review-count';
+  count.textContent = `已选 ${selectedQaCount()} / ${qaReviewState.items.length}`;
+  const selectAll = document.createElement('button');
+  selectAll.type = 'button';
+  selectAll.className = 'secondary';
+  selectAll.textContent = '一键全选当前任务';
+  selectAll.addEventListener('click', () => {
+    qaReviewState.selectAllTask = true;
+    qaReviewState.selectedIds = new Set(
+      qaReviewState.items.map((item) => qaReviewItemId(item)).filter(Boolean),
+    );
+    updateQaReviewCheckboxes();
+    updateQaReviewToolbar();
+  });
+  const clear = document.createElement('button');
+  clear.type = 'button';
+  clear.className = 'secondary';
+  clear.textContent = '清空选择';
+  clear.addEventListener('click', () => {
+    qaReviewState.selectAllTask = false;
+    qaReviewState.selectedIds.clear();
+    updateQaReviewCheckboxes();
+    updateQaReviewToolbar();
+  });
+  const ingest = document.createElement('button');
+  ingest.type = 'button';
+  ingest.textContent = '入库所选 QA';
+  ingest.disabled = selectedQaCount() <= 0;
+  ingest.addEventListener('click', ingestSelectedQa);
+  actions.append(count, selectAll, clear, ingest);
+  toolbar.append(copy, actions);
+  if (qaResults.firstChild !== toolbar) {
+    qaResults.insertBefore(toolbar, qaResults.firstChild);
+  }
+}
+
+async function ingestSelectedQa() {
+  if (!qaReviewState.enabled || !qaReviewState.taskId) {
+    notify('当前没有可人工入库的任务结果', 'warning');
+    return;
+  }
+  if (!qaReviewState.selectAllTask && qaReviewState.selectedIds.size <= 0) {
+    notify('请先勾选要入库的 QA', 'warning');
+    return;
+  }
+  const base = getApiBaseUrl();
+  const body = {
+    source_file: qaReviewState.sourceFile || undefined,
+    select_all_task: Boolean(qaReviewState.selectAllTask),
+    selected_ids: qaReviewState.selectAllTask ? [] : Array.from(qaReviewState.selectedIds),
+  };
+  try {
+    const data = await fetchJson(
+      `${base}/pipeline-tasks/${encodeURIComponent(qaReviewState.taskId)}/ingest-selected-qa`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    );
+    const stored = data && typeof data.stored_count === 'number' ? data.stored_count : 0;
+    notify(`人工入库完成：写入 ${stored} 条记录`, 'success');
+    qaReviewState.selectAllTask = false;
+    qaReviewState.selectedIds.clear();
+    await loadTaskStatusById(qaReviewState.taskId, { resumePolling: false, silent: true }).catch(() => {});
+    updateQaReviewContext({ task: { task_id: qaReviewState.taskId, original_filename: qaReviewState.sourceFile } }, qaReviewState.items);
+  } catch (err) {
+    notify(`人工入库失败：${String(err.message || err)}`, 'error');
+  }
+}
+
+function ensureRawResponseModal() {
+  let overlay = $('#rawResponseOverlay');
+  let modal = $('#rawResponseModal');
+  if (overlay && modal) return { overlay, modal };
+  overlay = document.createElement('div');
+  overlay.id = 'rawResponseOverlay';
+  overlay.className = 'raw-response-overlay';
+  overlay.hidden = true;
+  modal = document.createElement('section');
+  modal.id = 'rawResponseModal';
+  modal.className = 'raw-response-modal';
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.setAttribute('aria-labelledby', 'rawResponseModalTitle');
+  overlay.addEventListener('click', closeRawResponseModal);
+  document.body.append(overlay, modal);
+  return { overlay, modal };
+}
+
+function closeRawResponseModal() {
+  const overlay = $('#rawResponseOverlay');
+  const modal = $('#rawResponseModal');
+  if (overlay) overlay.hidden = true;
+  if (modal) {
+    modal.classList.remove('is-open');
+    modal.replaceChildren();
+  }
+}
+
+function appendRawRecordDetail(parent, label, value) {
+  if (value === null || value === undefined || value === '') return;
+  const detail = document.createElement('details');
+  detail.className = 'raw-response-detail';
+  const summary = document.createElement('summary');
+  summary.textContent = label;
+  const pre = document.createElement('pre');
+  pre.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+  detail.append(summary, pre);
+  parent.appendChild(detail);
+}
+
+function renderRawResponseRecords(container, data, chunkIndex) {
+  const records = Array.isArray(data?.records) ? data.records : [];
+  container.replaceChildren();
+  const head = document.createElement('div');
+  head.className = 'raw-response-head';
+  const title = document.createElement('h3');
+  title.id = 'rawResponseModalTitle';
+  title.textContent = `chunk ${chunkIndex} 的模型原始响应`;
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'secondary';
+  close.textContent = '关闭';
+  close.addEventListener('click', closeRawResponseModal);
+  head.append(title, close);
+  container.appendChild(head);
+
+  const hint = document.createElement('div');
+  hint.className = 'raw-response-hint';
+  const expireText = formatExpireAt(data?.artifacts_expire_at);
+  hint.textContent = expireText
+    ? `仅从后端受限接口读取，不写入浏览器缓存；调试文件预计保留到 ${expireText}。`
+    : '仅从后端受限接口读取，不写入浏览器缓存。';
+  container.appendChild(hint);
+
+  if (!records.length) {
+    const empty = document.createElement('div');
+    empty.className = 'pipeline-debug-empty';
+    empty.textContent = '这个 chunk 暂无模型原始响应，可能任务尚未执行到该阶段，或调试文件已清理。';
+    container.appendChild(empty);
+    return;
+  }
+
+  const list = document.createElement('div');
+  list.className = 'raw-response-list';
+  records.forEach((record, idx) => {
+    const card = document.createElement('article');
+    card.className = 'raw-response-card';
+    const event = String(record.event || '');
+    const summary = document.createElement('div');
+    summary.className = 'raw-response-summary';
+    const titleLine = document.createElement('strong');
+    titleLine.textContent = `${idx + 1}. ${pipelineDebugEventLabel(event)}`;
+    const meta = document.createElement('span');
+    const validCount = record.items_validated_count !== undefined ? `有效 ${record.items_validated_count}` : '';
+    const rawCount = record.items_raw_count !== undefined ? `原始 ${record.items_raw_count}` : '';
+    meta.textContent = [
+      record.model ? `模型 ${record.model}` : '',
+      record.prompt_template_key ? `模板 ${record.prompt_template_key}` : '',
+      rawCount,
+      validCount,
+      record.dropped_reason ? `丢弃：${translatedDropReason(record.dropped_reason)}` : '',
+      record.parse_error ? `解析错误：${record.parse_error}` : '',
+    ].filter(Boolean).join(' | ');
+    summary.append(titleLine, meta);
+    card.appendChild(summary);
+
+    const compact = document.createElement('div');
+    compact.className = 'raw-response-compact';
+    if (record.candidate && typeof record.candidate === 'object') {
+      appendTextMetric(compact, '候选问题', record.candidate.question || '');
+      appendTextMetric(compact, '题型', record.candidate.question_type || '');
+    }
+    if (record.dropped_validation_reasons && typeof record.dropped_validation_reasons === 'object') {
+      appendTextMetric(
+        compact,
+        '候选题丢弃',
+        Object.keys(record.dropped_validation_reasons)
+          .map((key) => `${translatedDropReason(key)}：${record.dropped_validation_reasons[key]}`)
+          .join('；') || '无',
+      );
+    }
+    if (record._debug_file) appendTextMetric(compact, '调试文件', record._debug_file);
+    if (compact.childElementCount) card.appendChild(compact);
+
+    appendRawRecordDetail(card, 'system_prompt', record.system_prompt);
+    appendRawRecordDetail(card, 'user_content', record.user_content);
+    appendRawRecordDetail(card, 'raw_response', record.raw_response);
+    appendRawRecordDetail(card, 'retrieval_trace', record.generation_unit?.retrieval_trace);
+    appendRawRecordDetail(card, 'candidate', record.candidate);
+    list.appendChild(card);
+  });
+  container.appendChild(list);
+}
+
+async function openChunkDebugRawModal(chunkIndex) {
+  const taskId = String(latestPipelineStatus?.task_id || lastTaskId || '').trim();
+  if (!taskId) {
+    notify('请先加载一个流水线任务', 'warning');
+    return;
+  }
+  const { overlay, modal } = ensureRawResponseModal();
+  overlay.hidden = false;
+  modal.classList.add('is-open');
+  modal.replaceChildren();
+  const loading = document.createElement('div');
+  loading.className = 'raw-response-loading';
+  loading.textContent = '正在读取模型原始响应…';
+  modal.appendChild(loading);
+  try {
+    const params = new URLSearchParams();
+    if (chunkIndex !== undefined && chunkIndex !== null) params.set('chunk_index', String(chunkIndex));
+    const data = await fetchJson(
+      `${getApiBaseUrl()}/pipeline-tasks/${encodeURIComponent(taskId)}/debug-jsonl?${params.toString()}`,
+    );
+    renderRawResponseRecords(modal, data, chunkIndex);
+  } catch (err) {
+    modal.replaceChildren();
+    const head = document.createElement('div');
+    head.className = 'raw-response-head';
+    const title = document.createElement('h3');
+    title.id = 'rawResponseModalTitle';
+    title.textContent = '模型原始响应不可用';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'secondary';
+    close.textContent = '关闭';
+    close.addEventListener('click', closeRawResponseModal);
+    head.append(title, close);
+    const empty = document.createElement('div');
+    empty.className = 'pipeline-debug-empty';
+    empty.textContent = String(err.message || err);
+    modal.append(head, empty);
+  }
+}
+
+window.qaFlowReview = {
+  setContext(json, items) {
+    updateQaReviewContext(json, items);
+  },
+  isEnabled() {
+    return Boolean(qaReviewState.enabled);
+  },
+  isSelected(id) {
+    const normalized = String(id || '').trim();
+    return Boolean(normalized && (qaReviewState.selectAllTask || qaReviewState.selectedIds.has(normalized)));
+  },
+  setSelected(id, checked) {
+    const normalized = String(id || '').trim();
+    if (!normalized) return;
+    if (checked) {
+      qaReviewState.selectedIds.add(normalized);
+    } else {
+      qaReviewState.selectAllTask = false;
+      qaReviewState.selectedIds.delete(normalized);
+    }
+    updateQaReviewToolbar();
+  },
+  afterRender() {
+    updateQaReviewToolbar();
+    updateQaReviewCheckboxes();
+  },
+};
+
 function appendChunkTableCell(row, text, className = '') {
   const cell = document.createElement('td');
   if (className) cell.className = className;
@@ -3109,6 +3509,7 @@ function renderPipelineDebugStatus(status, options = {}) {
       '检索',
       '答案',
       '丢弃或错误',
+      '原始响应',
     ].forEach((label) => {
       const th = document.createElement('th');
       th.textContent = label;
@@ -3145,6 +3546,15 @@ function renderPipelineDebugStatus(status, options = {}) {
         reasonCell.appendChild(details);
       }
       row.appendChild(reasonCell);
+      const actionCell = document.createElement('td');
+      actionCell.className = 'pipeline-debug-action-cell';
+      const rawBtn = document.createElement('button');
+      rawBtn.type = 'button';
+      rawBtn.className = 'secondary compact';
+      rawBtn.textContent = '查看';
+      rawBtn.addEventListener('click', () => openChunkDebugRawModal(chunk.chunk_index));
+      actionCell.appendChild(rawBtn);
+      row.appendChild(actionCell);
       tbody.appendChild(row);
     });
     table.appendChild(tbody);
@@ -3181,6 +3591,12 @@ function updatePipelineTaskHint(text) {
 function clearPipelineOutputsView() {
   lastCsvPath = null;
   lastPipelineOutputs = [];
+  currentConsolidatedJsonPath = '';
+  qaReviewState.enabled = false;
+  qaReviewState.items = [];
+  qaReviewState.selectedIds.clear();
+  qaReviewState.selectAllTask = false;
+  updateQaReviewToolbar();
   const panel = document.querySelector('#pipelineOutputsList');
   if (panel) panel.innerHTML = '';
 }
@@ -3188,6 +3604,7 @@ function clearPipelineOutputsView() {
 function applyPipelineStatus(status, { base = '', taskId = '', activateStatus = false } = {}) {
   const normalizedTaskId = String(taskId || status?.task_id || '').trim();
   if (!normalizedTaskId) return;
+  latestPipelineStatus = status && typeof status === 'object' ? status : null;
   setTaskSelection(normalizedTaskId, { active: !isTaskTerminal(status?.status) });
   updatePipelineStatusView(status, { activateStatus });
   rememberTask({ task_id: normalizedTaskId, ...status });
@@ -3420,6 +3837,11 @@ async function loadPipelineMilvusHistory(base, taskId, { sourceFile = '' } = {})
         filters: data.filters || {},
         history_source: 'milvus',
       });
+      currentConsolidatedJsonPath = '';
+      qaReviewState.enabled = false;
+      qaReviewState.items = [];
+      qaReviewState.selectedIds.clear();
+      qaReviewState.selectAllTask = false;
       renderQaResults({ items: normalizeItems(data.items || []) }, true);
       return;
     }
@@ -3450,6 +3872,11 @@ async function loadPipelineMilvusHistory(base, taskId, { sourceFile = '' } = {})
       pagination: data.pagination || {},
       history_source: 'milvus',
     });
+    currentConsolidatedJsonPath = '';
+    qaReviewState.enabled = false;
+    qaReviewState.items = [];
+    qaReviewState.selectedIds.clear();
+    qaReviewState.selectAllTask = false;
     renderQaResults({ items }, true);
   } catch (err) {
     renderMeta({ error: `加载数据库历史失败：${String(err)}` });
@@ -4280,6 +4707,7 @@ function fmtSeconds(val) {
 async function loadConsolidatedFromServer(base, jsonPath) {
   if (!jsonPath) return;
   try {
+    currentConsolidatedJsonPath = String(jsonPath || '');
     // 后端 download 接口约定：如果路径以 "outputs/" 开头，则只取 basename
     // consolidated_json 里通常是 "qa/outputs/xxx.json"，这里统一转换一下
     const parts = String(jsonPath).split('/');
@@ -4288,6 +4716,7 @@ async function loadConsolidatedFromServer(base, jsonPath) {
     const resp = await fetch(`${base}/download/${dlPath}`);
     if (!resp.ok) {
       console.error('加载合并结果失败', resp.status, resp.statusText);
+      currentConsolidatedJsonPath = '';
       renderMeta({ error: `下载合并结果失败：${resp.status} ${resp.statusText}` });
       return;
     }
@@ -4298,10 +4727,12 @@ async function loadConsolidatedFromServer(base, jsonPath) {
       renderFromConsolidated(data);
     } catch (parseErr) {
       console.error('解析合并 JSON 失败', parseErr);
+      currentConsolidatedJsonPath = '';
       renderMeta({ error: '合并结果文件不是有效 JSON，无法预览' });
     }
   } catch (err) {
     console.error('解析合并 JSON 失败', err);
+    currentConsolidatedJsonPath = '';
     renderMeta({ error: '合并结果加载异常' });
   }
 }

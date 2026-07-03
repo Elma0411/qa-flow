@@ -141,7 +141,7 @@ def store_doc_tree_chunks(
       - index_path, title_path, text, text_for_embedding
     """
     if not enable:
-        return {"success": False, "message": "chunk 入库未启用", "stored_count": 0}
+        return {"success": False, "message": "chunk 溯源索引保存未启用", "stored_count": 0}
 
     ok, msg = ensure_doc_tree_chunks_initialized()
     if not ok or not doc_tree_chunks_client:

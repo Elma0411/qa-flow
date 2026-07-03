@@ -449,6 +449,57 @@ Rules:
 - Optional enrichment fields are allowed, but removal or semantic change of the
   stable fields is a boundary change.
 
+## Contract F: Pipeline Debug Artifacts And Manual Ingest
+
+Producer:
+
+- `qa.process_text_to_qa_one_step` writes per-task debug JSONL records.
+- `app.services.pipeline_execution` registers pipeline artifacts and output
+  records.
+
+Consumers:
+
+- pipeline status/debug UI
+- manual review ingest workflow
+- Milvus storage service
+
+Stable task output fields:
+
+- `debug_jsonl`
+- `debug_json_files`
+- `consolidated_json`
+- `history_source`
+- `milvus_task_id`
+- `vector_storage_result`
+- `manual_ingest`
+- `manual_ingest_selected_count`
+- `manual_ingest_select_all`
+- `artifacts_expire_at`
+
+Public endpoints:
+
+- `GET /pipeline-tasks/{task_id}/debug-jsonl`
+  - Query: optional `chunk_index`, optional `event`.
+  - Reads only debug JSONL basenames already registered in the task status.
+  - Returns matching debug records, debug file basenames, filters, and
+    `artifacts_expire_at`.
+- `POST /pipeline-tasks/{task_id}/ingest-selected-qa`
+  - Body: optional `source_file`, optional `selected_ids`, optional
+    `select_all_task`.
+  - Reads only the task's registered `consolidated_json` basename.
+  - Writes selected valid QA items to Milvus and updates the task output record
+    with manual ingest metadata.
+
+Rules:
+
+- Debug JSONL may contain prompts, source text, retrieval traces, and raw model
+  output. It must be read through the task-scoped endpoint, not from arbitrary
+  paths or browser cache.
+- Automatic Milvus ingest may delete consolidated JSON/CSV/evaluation artifacts
+  after success, but must keep debug JSONL registered until the artifact TTL.
+- Manual ingest depends on non-expired `consolidated_json`; it does not
+  regenerate, re-evaluate, or change QA filtering semantics.
+
 ## Public Import Rules
 
 - Repository code should import package capabilities through `__init__.py`

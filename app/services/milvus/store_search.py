@@ -23,14 +23,14 @@ from .meta import (
 from app.services.debug import upsert_qa_debug_items
 
 
-def store_qa_pairs_to_milvus(
-    consolidated_json_path: str, enable_vector_storage: bool = True
+def store_qa_payload_to_milvus(
+    data: Dict[str, Any], enable_vector_storage: bool = True
 ) -> Dict[str, Any]:
     if not enable_vector_storage or not _rt.MILVUS_AVAILABLE or not _rt.milvus_client:
         return {"success": False, "message": "Milvus未启用或未连接"}
     try:
-        with open(consolidated_json_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        if not isinstance(data, dict):
+            return {"success": False, "message": "合并结果格式无效", "stored_count": 0}
         items = data.get("items", [])
         if not items:
             return {"success": True, "message": "没有数据需要存储", "stored_count": 0}
@@ -342,6 +342,19 @@ def store_qa_pairs_to_milvus(
         error_msg = f"存储到Milvus失败: {str(exc)}"
         print(f"? {error_msg}")
         return {"success": False, "message": error_msg, "stored_count": 0}
+
+
+def store_qa_pairs_to_milvus(
+    consolidated_json_path: str, enable_vector_storage: bool = True
+) -> Dict[str, Any]:
+    try:
+        with open(consolidated_json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as exc:
+        error_msg = f"读取合并结果失败: {str(exc)}"
+        print(f"? {error_msg}")
+        return {"success": False, "message": error_msg, "stored_count": 0}
+    return store_qa_payload_to_milvus(data, enable_vector_storage)
 
 
 def search_qa_pairs_in_milvus(

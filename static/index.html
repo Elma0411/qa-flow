@@ -10,7 +10,7 @@
       href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@300;400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/ui/styles.css?v=2026-07-03-6" />
+    <link rel="stylesheet" href="/ui/styles.css?v=2026-07-03-7" />
   </head>
   <body>
     <a class="skip-link" href="#main">跳到内容</a>
@@ -523,7 +523,8 @@
           </label>
           <label>
             <input type="checkbox" id="enableChunkStorage" checked />
-            chunk 入库（enable_chunk_storage，写入 doc_tree_chunks 用于树与溯源）
+            保存 chunk 溯源索引（enable_chunk_storage）
+            <small>写入 doc_tree_chunks，用于后续按 chunk 追溯正文、树结构和 QA 来源。</small>
           </label>
           <details style="width: 100%">
             <summary>Chunking 高级参数</summary>
@@ -670,7 +671,8 @@
               </label>
               <label>
                 <input type="checkbox" id="chunkStorageFailFast" />
-                chunk 入库失败即失败（chunk_storage_fail_fast）
+                溯源索引失败时终止任务（chunk_storage_fail_fast）
+                <small>开启后，chunk 溯源索引写入失败会让整个任务失败；默认关闭，优先保证 QA 生成完成。</small>
               </label>
             </div>
           </details>
@@ -801,11 +803,13 @@
           </label>
           <label>
             <input type="checkbox" id="enableVectorStorage" checked />
-            写入 Milvus 向量库（enable_vector_storage）
+            自动入库 QA 到向量库（enable_vector_storage）
+            <small>开启后任务完成会自动写入 Milvus；关闭后可先人工审阅，再按 QA 勾选入库。</small>
           </label>
           <label>
             <input type="checkbox" id="syncMode" />
-            同步等待完成（sync_mode，阻塞到任务结束）
+            提交后等待任务完成再返回（sync_mode）
+            <small>适合调试小文件；大文件建议关闭，使用 task_id 轮询状态。</small>
           </label>
           <label>
             保存方式（save_mode，仅批量）
@@ -1082,9 +1086,9 @@
     <script src="/ui/ui.js?v=2026-07-03-3"></script>
     <script src="/ui/app_runtime.js?v=2026-07-03-1"></script>
     <script src="/ui/app_config.js?v=2026-06-25-1"></script>
-    <script src="/ui/app_render.js?v=2026-04-07-2"></script>
+    <script src="/ui/app_render.js?v=2026-07-03-1"></script>
     <script src="/ui/app_query.js?v=2026-05-21-3"></script>
-    <script src="/ui/app.js?v=2026-07-03-6"></script>
+    <script src="/ui/app.js?v=2026-07-03-7"></script>
     <script>
       (function () {
         if (window.__QA_UI_APPJS_READY__) return;
