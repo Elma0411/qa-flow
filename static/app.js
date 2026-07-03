@@ -1,5 +1,5 @@
 window.__QA_UI_APPJS_READY__ = true;
-window.__QA_UI_APPJS_VERSION__ = '2026-07-03-4';
+window.__QA_UI_APPJS_VERSION__ = '2026-07-03-5';
 
 let currentDwJobPoller = null;
 const MODULE_SETTINGS_CACHE_KEY = 'qa_flow_module_settings_v1';
@@ -1399,6 +1399,13 @@ function checkedQuestionTypesSummary() {
   return types.length ? types.join('/') : '简答题';
 }
 
+function pipelineEvaluationSummary() {
+  if ($('#includeEvaluation')?.checked === false) return '关闭';
+  const method = $('#evaluationMethod')?.value || 'llm';
+  const filter = $('#filterByThreshold')?.checked ? `过滤 ${$('#scoreThreshold')?.value || 0.7}` : '不过滤';
+  return `${method} / ${filter}`;
+}
+
 function setupPipelineModuleConsole() {
   const form = $('#pipelineForm');
   const modeNode = nodeForField('pipelineProcessingMode');
@@ -1473,11 +1480,7 @@ function setupPipelineModuleConsole() {
           { field: 'filterByThreshold' },
           { field: 'scoreThreshold' },
         ],
-        summary: () => {
-          const on = $('#includeEvaluation')?.checked === false ? '关闭' : $('#evaluationMethod')?.value || 'llm';
-          const filter = $('#filterByThreshold')?.checked ? `过滤 ${$('#scoreThreshold')?.value || 0.7}` : '不过滤';
-          return `${on} / ${filter}`;
-        },
+        summary: () => pipelineEvaluationSummary(),
       },
       {
         key: 'performance',
@@ -2044,6 +2047,7 @@ function setupWorkbenchHero() {
     items.push(createSummaryChip('流程', () => $('#pipelineProcessingMode')?.value === 'integrated' ? '一体流程' : '标准 OCR', { moduleKey: 'pipeline.document' }));
     items.push(createSummaryChip('切分', () => `${$('#chunkingSplitType')?.value || 'markdown'} / ${$('#chunkSize')?.value || 600}`, { moduleKey: 'pipeline.chunking' }));
     items.push(createSummaryChip('生成', () => `${checkedQuestionTypesSummary()} / 尝试 ${$('#chunkMaxAttempts')?.value || 2}`, { moduleKey: 'pipeline.generation' }));
+    items.push(createSummaryChip('评估', () => pipelineEvaluationSummary(), { moduleKey: 'pipeline.evaluation' }));
     items.push(createSummaryChip('并发', () => `chunk ${$('#chunkMaxConcurrency')?.value || '8'} / API ${$('#llmMaxConcurrentRequests')?.value || '默认'}`, { moduleKey: 'pipeline.performance' }));
     items.forEach((item) => summary.appendChild(item));
   }
