@@ -1,5 +1,5 @@
 window.__QA_UI_APPJS_READY__ = true;
-window.__QA_UI_APPJS_VERSION__ = '2026-07-03-5';
+window.__QA_UI_APPJS_VERSION__ = '2026-07-03-6';
 
 let currentDwJobPoller = null;
 const MODULE_SETTINGS_CACHE_KEY = 'qa_flow_module_settings_v1';
@@ -46,6 +46,13 @@ const DOC_STAGE_ORDER = [
   'document_output',
   'doc_handoff',
   'dw_handoff',
+  'knowledge_tagging',
+  'chunking',
+  'chunk_storage',
+  'qa_generation',
+  'qa_augmentation',
+  'unsupervised_evaluation',
+  'evaluation',
   'completed',
   'doc_error',
   'dw_error',
@@ -86,11 +93,58 @@ const DOC_STAGE_LABELS = {
   document_output: '结果输出',
   doc_handoff: '移交问答',
   dw_handoff: '移交问答',
+  knowledge_tagging: '知识分类',
+  chunking: '文本切分',
+  chunk_storage: 'chunk 入库',
+  qa_generation: '问答生成',
+  qa_augmentation: '问句增广',
+  unsupervised_evaluation: '无监督评估',
+  evaluation: '评估过滤',
   completed: '完成',
   doc_error: '错误',
   dw_error: '错误',
   error: '错误',
 };
+
+const DOCUMENT_PARSE_STAGE_KEYS = [
+  'doc_input',
+  'doc_text_read',
+  'dw_input',
+  'dw_text_read',
+  'input',
+  'format_routing',
+  'format_conversion',
+  'doc_ocr',
+  'dw_ocr',
+  'ocr',
+  'doc_marker',
+  'dw_marker',
+  'doc_pre_chunking',
+  'dw_pre_chunking',
+  'doc_chunk_summary',
+  'dw_chunk_summary',
+  'image_classification',
+  'doc_image_analysis',
+  'dw_image_analysis',
+  'image_analysis',
+  'doc_placement',
+  'dw_placement',
+  'text_integration',
+  'document_output',
+  'doc_handoff',
+  'dw_handoff',
+];
+const DOCUMENT_PARSE_FALLBACK_STAGE_KEYS = [
+  'watermark',
+  'ocr_predict',
+  'page_collect',
+  'image_extract',
+  'markdown_merge',
+  'image_replacement',
+  'ocr_output',
+];
+const EVALUATION_STAGE_KEYS = ['unsupervised_evaluation', 'evaluation'];
+const STORAGE_OUTPUT_STAGE_KEYS = ['chunk_storage'];
 
 initApiBaseUrl();
 restoreUiCache();
@@ -2541,29 +2595,77 @@ function pipelineStatusLabel(status) {
   return labels[key] || String(status || 'unknown');
 }
 
+function translatePipelineMessage(message) {
+  const text = String(message || '').trim();
+  if (!text) return '';
+  let match = text.match(/^batch done:\s*Batch finished:\s*(\d+)\s+success,\s*(\d+)\s+failed$/i);
+  if (match) return `任务完成：${match[1]} 成功，${match[2]} 失败`;
+  match = text.match(/^Batch finished:\s*(\d+)\s+success,\s*(\d+)\s+failed$/i);
+  if (match) return `任务完成：${match[1]} 成功，${match[2]} 失败`;
+  match = text.match(/^batch done:\s*Batch finished with partial failures\s*\((\d+)\s+files?\)$/i);
+  if (match) return `任务部分完成：${match[1]} 个文件失败`;
+  match = text.match(/^Batch finished with partial failures\s*\((\d+)\s+files?\)$/i);
+  if (match) return `任务部分完成：${match[1]} 个文件失败`;
+  if (/^Batch started$/i.test(text)) return '批量流水线开始';
+  return text;
+}
+
+function stageOrderIndex(stage) {
+  const index = DOC_STAGE_ORDER.indexOf(stage);
+  return index < 0 ? 999 : index;
+}
+
+function stageCandidateText(candidate) {
+  if (!candidate) return '';
+  const translated = translatePipelineMessage(candidate.message);
+  if (translated) return translated;
+  return DOC_STAGE_LABELS[candidate.stage] || candidate.stage || '';
+}
+
 function pipelineCurrentStageText(status) {
   const safeStatus = status && typeof status === 'object' ? status : {};
-  const message = String(safeStatus.message || '').trim();
-  if (message) return message;
   const entries = collectFileProgressEntries(safeStatus);
+  const candidates = [];
   for (let i = 0; i < entries.length; i += 1) {
     const entry = entries[i].entry || {};
-    if (entry.message) return String(entry.message);
     const stages = entry.stages && typeof entry.stages === 'object' ? entry.stages : {};
-    const stageNames = Object.keys(stages).sort((a, b) => {
-      const ia = DOC_STAGE_ORDER.indexOf(a);
-      const ib = DOC_STAGE_ORDER.indexOf(b);
-      return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
-    });
-    for (let j = stageNames.length - 1; j >= 0; j -= 1) {
-      const name = stageNames[j];
+    Object.keys(stages).forEach((name) => {
       const item = stages[name] || {};
-      if (item.state === 'processing') {
-        return `${DOC_STAGE_LABELS[name] || name}${item.message ? `：${item.message}` : ''}`;
-      }
+      const state = String(item.state || '').trim().toLowerCase();
+      candidates.push({
+        stage: name,
+        state,
+        message: item.message,
+        updatedMs: parseTimestampMs(item.updated_at || item.completed_at || item.started_at),
+        order: stageOrderIndex(name),
+      });
+    });
+    if (entry.message) {
+      candidates.push({
+        stage: '',
+        state: String(entry.status || '').trim().toLowerCase(),
+        message: entry.message,
+        updatedMs: parseTimestampMs(entry.updated_at || entry.completed_at),
+        order: 1000,
+      });
     }
   }
-  return '';
+  const active = candidates.filter((candidate) => {
+    return ['processing', 'running', 'waiting', 'queued', 'pending'].includes(candidate.state);
+  });
+  const sortLatest = (a, b) => {
+    const left = a.updatedMs === null ? -1 : a.updatedMs;
+    const right = b.updatedMs === null ? -1 : b.updatedMs;
+    if (right !== left) return right - left;
+    return b.order - a.order;
+  };
+  active.sort(sortLatest);
+  const activeText = stageCandidateText(active[0]);
+  if (activeText) return activeText;
+  candidates.sort(sortLatest);
+  const candidateText = stageCandidateText(candidates[0]);
+  if (candidateText) return candidateText;
+  return translatePipelineMessage(safeStatus.message);
 }
 
 function pipelineProgressPercent(status) {
@@ -2593,6 +2695,14 @@ function sumTiming(timings, key) {
   return found ? total : null;
 }
 
+function isPlainObject(value) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function hasObjectKeys(value) {
+  return isPlainObject(value) && Object.keys(value).length > 0;
+}
+
 function findGenerationExtra(status) {
   const entries = collectFileProgressEntries(status);
   for (let i = 0; i < entries.length; i += 1) {
@@ -2602,78 +2712,172 @@ function findGenerationExtra(status) {
   return {};
 }
 
-function derivePipelineTiming(status) {
-  const outputTimings = collectOutputTimings(status);
-  const generationExtra = findGenerationExtra(status);
-  let outputGenerationDetail = {};
-  let outputChunkDetails = [];
-  outputTimings.forEach((timing) => {
-    if (!outputGenerationDetail || !Object.keys(outputGenerationDetail).length) {
-      if (timing.generation_detail && typeof timing.generation_detail === 'object') {
-        outputGenerationDetail = timing.generation_detail;
-      }
+function sumStageElapsed(fileEntries, stageNames) {
+  const wanted = new Set(stageNames || []);
+  let total = 0;
+  let found = false;
+  fileEntries.forEach(({ entry }) => {
+    const stages = entry && entry.stages && typeof entry.stages === 'object' ? entry.stages : {};
+    Object.keys(stages).forEach((stageName) => {
+      if (!wanted.has(stageName)) return;
+      const extra = getStageExtra(entry, stageName);
+      const elapsed = firstNumber(extra.elapsed_seconds);
+      if (elapsed === null) return;
+      total += elapsed;
+      found = true;
+    });
+  });
+  return found ? total : null;
+}
+
+function sumNumbers() {
+  let total = 0;
+  let found = false;
+  for (let i = 0; i < arguments.length; i += 1) {
+    const value = arguments[i];
+    if (Array.isArray(value)) {
+      value.forEach((item) => {
+        const n = asNumber(item);
+        if (n === null) return;
+        total += n;
+        found = true;
+      });
+      continue;
     }
+    const n = asNumber(value);
+    if (n === null) continue;
+    total += n;
+    found = true;
+  }
+  return found ? total : null;
+}
+
+function normalizeGenerationWallDetail(detail, explicitWallDetail) {
+  if (!isPlainObject(detail)) return {};
+  const normalized = { ...detail };
+  const total = firstNumber(normalized.document_total_seconds);
+  const mainSum = sumNumbers(
+    normalized.candidate_question_seconds,
+    normalized.retrieval_seconds,
+    normalized.answer_generation_seconds,
+    normalized.validation_and_bookkeeping_seconds,
+    normalized.scheduler_gap_seconds,
+  );
+  if (!explicitWallDetail && total !== null && mainSum !== null && mainSum > total + 0.1) {
+    return {
+      document_total_seconds: total,
+      scheduler_gap_seconds: total,
+      chunks_total: normalized.chunks_total,
+      chunks_completed: normalized.chunks_completed,
+      qa_generated: normalized.qa_generated,
+      wall_detail_unavailable: true,
+    };
+  }
+  return normalized;
+}
+
+function deriveGenerationTimingViews(generationExtra, outputTimings) {
+  const progressTiming = isPlainObject(generationExtra.generation_timing)
+    ? generationExtra.generation_timing
+    : {};
+  let wallDetail = {};
+  let cumulativeDetail = {};
+  let explicitWallDetail = false;
+  let outputChunkDetails = [];
+
+  if (hasObjectKeys(generationExtra.generation_wall_detail)) {
+    wallDetail = generationExtra.generation_wall_detail;
+    explicitWallDetail = true;
+  } else if (hasObjectKeys(progressTiming.generation_wall_detail)) {
+    wallDetail = progressTiming.generation_wall_detail;
+    explicitWallDetail = true;
+  }
+
+  if (hasObjectKeys(generationExtra.generation_cumulative_detail)) {
+    cumulativeDetail = generationExtra.generation_cumulative_detail;
+  } else if (hasObjectKeys(progressTiming.generation_cumulative_detail)) {
+    cumulativeDetail = progressTiming.generation_cumulative_detail;
+  }
+
+  outputTimings.forEach((timing) => {
     if (Array.isArray(timing.generation_chunk_details)) {
       outputChunkDetails = outputChunkDetails.concat(timing.generation_chunk_details);
     }
+    if (!hasObjectKeys(wallDetail) && hasObjectKeys(timing.generation_wall_detail)) {
+      wallDetail = timing.generation_wall_detail;
+      explicitWallDetail = true;
+    }
+    if (!hasObjectKeys(cumulativeDetail) && hasObjectKeys(timing.generation_cumulative_detail)) {
+      cumulativeDetail = timing.generation_cumulative_detail;
+    }
+    if (!hasObjectKeys(wallDetail) && hasObjectKeys(timing.generation_detail)) {
+      wallDetail = timing.generation_detail;
+    }
   });
-  const progressGenerationTiming = generationExtra.generation_timing || {};
-  const generationTiming = Object.keys(progressGenerationTiming).length
-    ? progressGenerationTiming
-    : (outputGenerationDetail || {});
-  const fileEntries = collectFileProgressEntries(status);
-  let ocrFromProgress = null;
-  for (let i = 0; i < fileEntries.length; i += 1) {
-    const docOcr = getStageExtra(fileEntries[i].entry, 'doc_ocr');
-    const dwOcr = getStageExtra(fileEntries[i].entry, 'dw_ocr');
-    const ocr = getStageExtra(fileEntries[i].entry, 'ocr');
-      const n = firstNumber(
-        docOcr.ocr_seconds,
-        docOcr.processing_time,
-        docOcr.elapsed_seconds,
-        dwOcr.ocr_seconds,
-        dwOcr.processing_time,
-        dwOcr.elapsed_seconds,
-        ocr.ocr_seconds,
-        ocr.processing_time,
-        ocr.elapsed_seconds,
-      );
-      if (n !== null) ocrFromProgress = (ocrFromProgress || 0) + n;
+
+  if (!hasObjectKeys(wallDetail) && hasObjectKeys(progressTiming)) {
+    wallDetail = progressTiming;
+    explicitWallDetail = Boolean(progressTiming.scheduler_gap_seconds !== undefined);
   }
 
-  const ocrSeconds = firstNumber(sumTiming(outputTimings, 'ocr_seconds'), ocrFromProgress);
+  return {
+    wallDetail: normalizeGenerationWallDetail(wallDetail, explicitWallDetail),
+    cumulativeDetail,
+    chunkDetails: Array.isArray(generationExtra.generation_chunk_details)
+      ? generationExtra.generation_chunk_details
+      : outputChunkDetails,
+  };
+}
+
+function derivePipelineTiming(status) {
+  const outputTimings = collectOutputTimings(status);
+  const generationExtra = findGenerationExtra(status);
+  const fileEntries = collectFileProgressEntries(status);
+  const generationViews = deriveGenerationTimingViews(generationExtra, outputTimings);
+  const generationTiming = generationViews.wallDetail || {};
+
+  let documentSeconds = sumStageElapsed(fileEntries, DOCUMENT_PARSE_STAGE_KEYS);
+  if (documentSeconds === null) {
+    documentSeconds = sumStageElapsed(fileEntries, DOCUMENT_PARSE_FALLBACK_STAGE_KEYS);
+  }
+  documentSeconds = firstNumber(documentSeconds, sumTiming(outputTimings, 'ocr_seconds'));
+
   const generationSeconds = firstNumber(
+    generationTiming.document_total_seconds,
     sumTiming(outputTimings, 'generation_seconds'),
     generationExtra.generation_seconds,
-    generationTiming.document_total_seconds,
-    generationTiming.chunk_total_seconds,
     generationExtra.elapsed_seconds,
+  );
+
+  const evaluationFromProgress = sumStageElapsed(fileEntries, EVALUATION_STAGE_KEYS);
+  const evaluationSeconds = firstNumber(
+    evaluationFromProgress,
+    sumNumbers(sumTiming(outputTimings, 'unsupervised_seconds'), sumTiming(outputTimings, 'evaluation_seconds')),
   );
   const unsupervisedSeconds = firstNumber(
     sumTiming(outputTimings, 'unsupervised_seconds'),
-    getStageExtra((fileEntries[0] || {}).entry, 'unsupervised_evaluation').unsupervised_seconds,
-    getStageExtra((fileEntries[0] || {}).entry, 'unsupervised_evaluation').elapsed_seconds,
+    sumStageElapsed(fileEntries, ['unsupervised_evaluation']),
   );
-  const evaluationSeconds = firstNumber(
+  const llmEvaluationSeconds = firstNumber(
     sumTiming(outputTimings, 'evaluation_seconds'),
-    getStageExtra((fileEntries[0] || {}).entry, 'evaluation').elapsed_seconds,
+    sumStageElapsed(fileEntries, ['evaluation']),
   );
-  const totalParts = [ocrSeconds, generationSeconds, unsupervisedSeconds, evaluationSeconds]
-    .filter((value) => value !== null);
-  const totalSeconds = totalParts.length
-    ? totalParts.reduce((sum, value) => sum + value, 0)
-    : null;
+  const storageSeconds = sumStageElapsed(fileEntries, STORAGE_OUTPUT_STAGE_KEYS);
+  const totalSeconds = deriveLiveElapsedSeconds(status);
+
   return {
-    ocr_seconds: ocrSeconds,
+    document_seconds: documentSeconds,
+    ocr_seconds: documentSeconds,
     generation_seconds: generationSeconds,
     unsupervised_seconds: unsupervisedSeconds,
     evaluation_seconds: evaluationSeconds,
+    llm_evaluation_seconds: llmEvaluationSeconds,
+    storage_seconds: storageSeconds,
     total_seconds: totalSeconds,
-    live_elapsed_seconds: deriveLiveElapsedSeconds(status),
+    live_elapsed_seconds: totalSeconds,
     generation_detail: generationTiming,
-    generation_chunk_details: Array.isArray(generationExtra.generation_chunk_details)
-      ? generationExtra.generation_chunk_details
-      : outputChunkDetails,
+    generation_cumulative_detail: generationViews.cumulativeDetail,
+    generation_chunk_details: generationViews.chunkDetails,
   };
 }
 
@@ -2702,6 +2906,56 @@ function appendTextMetric(parent, label, value) {
   item.appendChild(name);
   item.appendChild(val);
   parent.appendChild(item);
+}
+
+function debugCountText(value, emptyText = '等待') {
+  const n = asNumber(value);
+  if (n === null) return emptyText;
+  return String(n);
+}
+
+function debugSecondsText(value, emptyText = '未返回') {
+  const n = asNumber(value);
+  if (n === null) return emptyText;
+  return fmtSeconds(n);
+}
+
+function translatedDropReason(reason) {
+  const labels = {
+    empty_or_duplicate_question: '空问题/重复问题',
+    invalid_json: 'JSON 无效',
+    normalize_failed: '格式归一失败',
+    source_fact_missing: '来源事实缺失',
+    source_fact_not_grounded: '来源事实未命中原文',
+    source_fact_too_short: '来源事实过短',
+  };
+  return labels[reason] || reason;
+}
+
+function chunkStatusText(chunk) {
+  if (chunk && chunk.error) return '失败';
+  if (asNumber(chunk && chunk.valid_items) !== null) return '完成';
+  return '等待';
+}
+
+function chunkReasonParts(chunk) {
+  const parts = [];
+  const stats = chunk && chunk.dropped_reason_stats && typeof chunk.dropped_reason_stats === 'object'
+    ? chunk.dropped_reason_stats
+    : {};
+  Object.keys(stats).forEach((key) => {
+    parts.push(`${translatedDropReason(key)}：${stats[key]}`);
+  });
+  if (chunk && chunk.error) parts.push(`错误：${chunk.error}`);
+  return parts;
+}
+
+function appendChunkTableCell(row, text, className = '') {
+  const cell = document.createElement('td');
+  if (className) cell.className = className;
+  cell.textContent = text;
+  row.appendChild(cell);
+  return cell;
 }
 
 function renderPipelineDebugStatus(status, options = {}) {
@@ -2753,10 +3007,10 @@ function renderPipelineDebugStatus(status, options = {}) {
   const chips = document.createElement('div');
   chips.className = 'pipeline-debug-chip-grid';
   appendMetricChip(chips, '实时运行', timing.live_elapsed_seconds, '等待开始');
-  appendMetricChip(chips, 'OCR', timing.ocr_seconds);
-  appendMetricChip(chips, '生成', timing.generation_seconds);
-  appendMetricChip(chips, '无监督评估', timing.unsupervised_seconds);
+  appendMetricChip(chips, '文档解析', timing.document_seconds);
+  appendMetricChip(chips, '问答生成', timing.generation_seconds);
   appendMetricChip(chips, '评估', timing.evaluation_seconds);
+  appendMetricChip(chips, '存储输出', timing.storage_seconds);
   appendMetricChip(chips, '总耗时', timing.total_seconds);
   major.appendChild(chips);
   root.appendChild(major);
@@ -2765,17 +3019,30 @@ function renderPipelineDebugStatus(status, options = {}) {
   const generation = document.createElement('section');
   generation.className = 'pipeline-debug-section';
   const generationTitle = document.createElement('h4');
-  generationTitle.textContent = '生成阶段细分';
+  generationTitle.textContent = 'QA 生成墙钟细分';
   generation.appendChild(generationTitle);
+  if (detail.wall_detail_unavailable) {
+    const legacyNotice = document.createElement('div');
+    legacyNotice.className = 'pipeline-debug-empty';
+    legacyNotice.textContent = '这个任务创建时还没有记录墙钟细分；新任务会显示可相加的小阶段耗时。';
+    generation.appendChild(legacyNotice);
+  }
   const genGrid = document.createElement('div');
   genGrid.className = 'pipeline-debug-chip-grid';
+  const generationBreakdownTotal = sumNumbers(
+    detail.candidate_question_seconds,
+    detail.retrieval_seconds,
+    detail.answer_generation_seconds,
+    detail.validation_and_bookkeeping_seconds,
+    detail.scheduler_gap_seconds,
+  );
+  appendMetricChip(genGrid, 'QA 生成合计', firstNumber(detail.document_total_seconds, timing.generation_seconds));
   appendMetricChip(genGrid, '候选题生成', firstNumber(detail.candidate_question_seconds));
-  appendMetricChip(genGrid, '检索总计', firstNumber(detail.retrieval_seconds));
-  appendMetricChip(genGrid, 'query embedding', firstNumber(detail.retrieval_embedding_seconds));
-  appendMetricChip(genGrid, '排序/命中', firstNumber(detail.retrieval_ranking_seconds));
-  appendMetricChip(genGrid, '证据组装', firstNumber(detail.retrieval_unit_seconds));
+  appendMetricChip(genGrid, '检索', firstNumber(detail.retrieval_seconds));
   appendMetricChip(genGrid, '答案生成', firstNumber(detail.answer_generation_seconds));
   appendMetricChip(genGrid, '校验/丢弃', firstNumber(detail.validation_and_bookkeeping_seconds));
+  appendMetricChip(genGrid, '调度/等待', firstNumber(detail.scheduler_gap_seconds));
+  appendMetricChip(genGrid, '细分合计', generationBreakdownTotal);
   generation.appendChild(genGrid);
   const genMeta = document.createElement('div');
   genMeta.className = 'pipeline-debug-kv-grid';
@@ -2801,33 +3068,64 @@ function renderPipelineDebugStatus(status, options = {}) {
     empty.textContent = '生成阶段完成一个 chunk 后会显示明细。';
     chunkSection.appendChild(empty);
   } else {
-    const list = document.createElement('div');
-    list.className = 'pipeline-debug-chunk-list';
-    chunks.forEach((chunk) => {
-      const row = document.createElement('div');
-      row.className = 'pipeline-debug-chunk';
-      const rowHead = document.createElement('div');
-      rowHead.className = 'pipeline-debug-chunk-head';
-      rowHead.textContent = 'chunk ' + (chunk.chunk_index || '?');
-      const rowMeta = document.createElement('div');
-      rowMeta.className = 'pipeline-debug-kv-grid';
-      const ct = chunk.timing && typeof chunk.timing === 'object' ? chunk.timing : {};
-      appendTextMetric(rowMeta, '尝试次数', chunk.attempt_used);
-      appendTextMetric(rowMeta, '候选题数量', chunk.candidate_questions);
-      appendTextMetric(rowMeta, '进入答案生成', chunk.candidates_considered);
-      appendTextMetric(rowMeta, '有效 QA', chunk.valid_items);
-      appendTextMetric(rowMeta, 'chunk 总耗时', fmtSeconds(ct.chunk_total_seconds));
-      appendTextMetric(rowMeta, '答案耗时', fmtSeconds(ct.answer_generation_seconds));
-      const reasons = chunk.dropped_reason_stats && typeof chunk.dropped_reason_stats === 'object'
-        ? Object.keys(chunk.dropped_reason_stats).map((key) => key + ':' + chunk.dropped_reason_stats[key]).join('，')
-        : '';
-      appendTextMetric(rowMeta, '丢弃原因', reasons || '无');
-      if (chunk.error) appendTextMetric(rowMeta, '错误', chunk.error);
-      row.appendChild(rowHead);
-      row.appendChild(rowMeta);
-      list.appendChild(row);
+    const tableWrap = document.createElement('div');
+    tableWrap.className = 'pipeline-debug-chunk-table-wrap';
+    const table = document.createElement('table');
+    table.className = 'pipeline-debug-chunk-table';
+    const thead = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    [
+      'chunk',
+      '状态',
+      '候选题',
+      '进入答案',
+      '有效 QA',
+      '总耗时',
+      '候选',
+      '检索',
+      '答案',
+      '丢弃或错误',
+    ].forEach((label) => {
+      const th = document.createElement('th');
+      th.textContent = label;
+      headRow.appendChild(th);
     });
-    chunkSection.appendChild(list);
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    chunks.forEach((chunk) => {
+      const row = document.createElement('tr');
+      const ct = chunk.timing && typeof chunk.timing === 'object' ? chunk.timing : {};
+      appendChunkTableCell(row, debugCountText(chunk.chunk_index, '?'), 'mono');
+      const stateCell = appendChunkTableCell(row, chunkStatusText(chunk));
+      stateCell.dataset.state = chunkStatusText(chunk);
+      appendChunkTableCell(row, debugCountText(chunk.candidate_questions));
+      appendChunkTableCell(row, debugCountText(chunk.candidates_considered));
+      appendChunkTableCell(row, debugCountText(chunk.valid_items, '未返回'));
+      appendChunkTableCell(row, debugSecondsText(ct.chunk_total_seconds), 'mono');
+      appendChunkTableCell(row, debugSecondsText(ct.candidate_question_seconds), 'mono');
+      appendChunkTableCell(row, debugSecondsText(ct.retrieval_seconds), 'mono');
+      appendChunkTableCell(row, debugSecondsText(ct.answer_generation_seconds), 'mono');
+      const reasonCell = document.createElement('td');
+      reasonCell.className = 'pipeline-debug-reason-cell';
+      const reasons = chunkReasonParts(chunk);
+      if (!reasons.length) {
+        reasonCell.textContent = '无';
+      } else {
+        const details = document.createElement('details');
+        const summary = document.createElement('summary');
+        summary.textContent = reasons.length === 1 ? '查看 1 项' : `查看 ${reasons.length} 项`;
+        const body = document.createElement('div');
+        body.textContent = reasons.join('；');
+        details.append(summary, body);
+        reasonCell.appendChild(details);
+      }
+      row.appendChild(reasonCell);
+      tbody.appendChild(row);
+    });
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+    chunkSection.appendChild(tableWrap);
   }
   root.appendChild(chunkSection);
 
@@ -2889,7 +3187,7 @@ function applyPipelineStatus(status, { base = '', taskId = '', activateStatus = 
   renderDwIntegratedProgress(status);
 
   const statusText = String(status?.status || '').trim() || 'unknown';
-  const msg = String(status?.message || '').trim();
+  const msg = translatePipelineMessage(status?.message);
   updatePipelineTaskHint(
     `当前查看 task_id=${normalizedTaskId}（${statusText}${msg ? `，${msg}` : ''}）。上方“终止当前/指定任务”会优先使用这个 task_id。`,
   );
@@ -3171,10 +3469,9 @@ function renderPipelineOutputsList(base, outputs) {
     const timingRow = document.createElement('div');
     timingRow.className = 'pipeline-output-timing';
     const outputTimingValues = [
-      ['OCR', timing.ocr_seconds],
-      ['生成', timing.generation_seconds],
-      ['无监督评估', timing.unsupervised_seconds],
-      ['评估', timing.evaluation_seconds],
+      ['文档解析', timing.ocr_seconds],
+      ['问答生成', timing.generation_seconds],
+      ['评估', sumNumbers(timing.unsupervised_seconds, timing.evaluation_seconds)],
     ];
     let outputTimingTotal = 0;
     let outputTimingFound = false;

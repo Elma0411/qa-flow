@@ -1702,21 +1702,81 @@ pre {
   font-size: 12px;
 }
 
-.pipeline-debug-chunk-list {
-  display: grid;
-  gap: 10px;
-}
-
-.pipeline-debug-chunk {
-  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+.pipeline-debug-chunk-table-wrap {
+  max-height: min(420px, 52vh);
+  overflow: auto;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
   border-radius: 10px;
-  padding: 10px;
-  background: color-mix(in srgb, var(--surface-2) 34%, transparent);
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
 }
 
-.pipeline-debug-chunk-head {
+.pipeline-debug-chunk-table {
+  width: 100%;
+  min-width: 860px;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+}
+
+.pipeline-debug-chunk-table th,
+.pipeline-debug-chunk-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  text-align: left;
+  vertical-align: top;
+}
+
+.pipeline-debug-chunk-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--muted);
   font-weight: 700;
-  font-size: 13px;
+  background: var(--surface);
+}
+
+.pipeline-debug-chunk-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.pipeline-debug-chunk-table td {
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.pipeline-debug-chunk-table td[data-state] {
+  font-weight: 700;
+}
+
+.pipeline-debug-chunk-table td[data-state="完成"] {
+  color: var(--success);
+}
+
+.pipeline-debug-chunk-table td[data-state="失败"] {
+  color: var(--danger);
+}
+
+.pipeline-debug-chunk-table td[data-state="等待"] {
+  color: var(--muted);
+}
+
+.pipeline-debug-reason-cell {
+  min-width: 180px;
+  max-width: 320px;
+  white-space: normal !important;
+}
+
+.pipeline-debug-reason-cell summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 650;
+}
+
+.pipeline-debug-reason-cell details > div {
+  margin-top: 6px;
+  color: var(--text);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .pipeline-debug-raw {

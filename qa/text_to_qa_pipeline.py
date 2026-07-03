@@ -162,6 +162,97 @@ def _build_jsonl_debug_writer(path: Optional[str]) -> Optional[Callable[[Dict[st
     return _write
 
 
+_GENERATION_WALL_STAGE_TO_FIELD = {
+    "candidate_question": "candidate_question_seconds",
+    "retrieval": "retrieval_seconds",
+    "answer_generation": "answer_generation_seconds",
+    "validation_and_bookkeeping": "validation_and_bookkeeping_seconds",
+}
+
+_GENERATION_WALL_FIELDS = (
+    "candidate_question_seconds",
+    "retrieval_seconds",
+    "answer_generation_seconds",
+    "validation_and_bookkeeping_seconds",
+)
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        number = float(value)
+    except Exception:
+        return None
+    return number if number >= 0.0 else None
+
+
+def _attribute_generation_wall_detail(
+    intervals: List[Dict[str, Any]],
+    *,
+    document_started_at: float,
+    document_finished_at: float,
+) -> Dict[str, float]:
+    document_total_seconds = max(0.0, document_finished_at - document_started_at)
+    detail: Dict[str, float] = {field: 0.0 for field in _GENERATION_WALL_FIELDS}
+    normalized: List[Tuple[float, float, str]] = []
+
+    for interval in intervals:
+        if not isinstance(interval, dict):
+            continue
+        field = _GENERATION_WALL_STAGE_TO_FIELD.get(str(interval.get("stage") or ""))
+        if not field:
+            continue
+        start = _safe_float(interval.get("start"))
+        end = _safe_float(interval.get("end"))
+        if start is None or end is None:
+            continue
+        start = max(document_started_at, start)
+        end = min(document_finished_at, end)
+        if end <= start:
+            continue
+        normalized.append((start, end, field))
+
+    if normalized and document_total_seconds > 0:
+        boundaries = {document_started_at, document_finished_at}
+        for start, end, _field in normalized:
+            boundaries.add(start)
+            boundaries.add(end)
+        ordered = sorted(boundaries)
+        for idx in range(len(ordered) - 1):
+            left = ordered[idx]
+            right = ordered[idx + 1]
+            if right <= left:
+                continue
+            active_fields = [
+                field for start, end, field in normalized if start < right and end > left
+            ]
+            if not active_fields:
+                continue
+            share = (right - left) / len(active_fields)
+            for field in active_fields:
+                detail[field] += share
+
+    attributed_seconds = sum(detail[field] for field in _GENERATION_WALL_FIELDS)
+    detail["scheduler_gap_seconds"] = max(0.0, document_total_seconds - attributed_seconds)
+    detail["document_total_seconds"] = document_total_seconds
+    return detail
+
+
+def _generation_timing_with_metadata(
+    base: Dict[str, float],
+    *,
+    index_seconds: float,
+    total_chunks: int,
+    chunks_completed: int,
+    qa_generated: int,
+) -> Dict[str, Any]:
+    return {
+        **base,
+        "index_build_seconds": index_seconds,
+        "chunks_total": total_chunks,
+        "chunks_completed": chunks_completed,
+        "qa_generated": qa_generated,
+    }
+
 
 def process_text_to_qa_one_step(
     client: Any,
@@ -221,6 +312,7 @@ def process_text_to_qa_one_step(
     chunk_items_by_index: Dict[int, List[Dict[str, Any]]] = {}
     chunk_errors: List[str] = []
     chunk_debug_details: List[Dict[str, Any]] = []
+    generation_wall_intervals: List[Dict[str, Any]] = []
     generation_accumulator: Dict[str, float] = {
         "candidate_question_seconds": 0.0,
         "retrieval_seconds": 0.0,
@@ -284,6 +376,13 @@ def process_text_to_qa_one_step(
                         generation_accumulator[key] += float(timing.get(key) or 0.0)
                     except Exception:
                         pass
+                raw_wall_intervals = payload.get("wall_intervals")
+                if isinstance(raw_wall_intervals, list):
+                    generation_wall_intervals.extend(
+                        interval
+                        for interval in raw_wall_intervals
+                        if isinstance(interval, dict)
+                    )
                 chunk_detail = {
                     "chunk_index": chunk_index_int,
                     "attempt_used": payload.get("attempt_used"),
@@ -334,14 +433,33 @@ def process_text_to_qa_one_step(
                 results.append(item)
     if progress_callback:
         try:
-            document_total_seconds = time.perf_counter() - document_started_at
+            document_finished_at = time.perf_counter()
+            document_total_seconds = max(0.0, document_finished_at - document_started_at)
+            generation_cumulative_detail = _generation_timing_with_metadata(
+                {
+                    **generation_accumulator,
+                    "document_total_seconds": document_total_seconds,
+                },
+                index_seconds=index_seconds,
+                total_chunks=total_chunks,
+                chunks_completed=len(chunk_debug_details),
+                qa_generated=len(results),
+            )
+            generation_wall_detail = _generation_timing_with_metadata(
+                _attribute_generation_wall_detail(
+                    generation_wall_intervals,
+                    document_started_at=document_started_at,
+                    document_finished_at=document_finished_at,
+                ),
+                index_seconds=index_seconds,
+                total_chunks=total_chunks,
+                chunks_completed=len(chunk_debug_details),
+                qa_generated=len(results),
+            )
             generation_summary = {
-                **generation_accumulator,
-                "index_build_seconds": index_seconds,
-                "document_total_seconds": document_total_seconds,
-                "chunks_total": total_chunks,
-                "chunks_completed": len(chunk_debug_details),
-                "qa_generated": len(results),
+                **generation_wall_detail,
+                "generation_wall_detail": generation_wall_detail,
+                "generation_cumulative_detail": generation_cumulative_detail,
             }
             progress_callback(
                 {

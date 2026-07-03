@@ -356,6 +356,22 @@ Rules:
   Stage-specific timing in `extra` remains authoritative for domain metrics
   such as QA candidate generation, retrieval, and answer generation; generic
   `elapsed_seconds` is the fallback for live progress display.
+- QA generation timing may include both wall-clock and cumulative diagnostic
+  views:
+  - `generation_wall_detail`: wall-clock attribution for the QA generation
+    document run. Its `candidate_question_seconds`, `retrieval_seconds`,
+    `answer_generation_seconds`, `validation_and_bookkeeping_seconds`, and
+    `scheduler_gap_seconds` sum to `document_total_seconds` within normal
+    floating-point tolerance. Frontend main timing views must use this object
+    when present.
+  - `generation_cumulative_detail`: per-worker cumulative diagnostics across
+    concurrent chunks. These values can be much larger than wall-clock elapsed
+    time and must not be added to task or stage totals.
+  - `generation_detail`: retained for compatibility. New tasks write the
+    wall-clock view here; consumers that need an explicit contract should read
+    `generation_wall_detail`.
+  `generation_chunk_details` remains the compact per-chunk diagnostic list and
+  does not carry raw timing intervals.
 - `doc_handoff` means document preprocessing has produced `file_contents` /
   `pre_split_chunks` for QA; it is not the terminal state of the full pipeline.
 

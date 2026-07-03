@@ -174,6 +174,26 @@ def _dedup_chunk_pool(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return deduped
 
 
+def _append_wall_interval(
+    intervals: List[Dict[str, Any]],
+    stage: str,
+    started_at: float,
+    ended_at: Optional[float] = None,
+) -> None:
+    end = time.perf_counter() if ended_at is None else float(ended_at)
+    start = float(started_at)
+    if end <= start:
+        return
+    intervals.append(
+        {
+            "stage": stage,
+            "start": start,
+            "end": end,
+            "seconds": end - start,
+        }
+    )
+
+
 def run_one_step_chunk_worker(
     *,
     chunk_index: int,
@@ -204,6 +224,7 @@ def run_one_step_chunk_worker(
     dropped_answer_reasons: Dict[str, int] = {}
     seen_questions: set[str] = set()
     chunk_started_at = time.perf_counter()
+    wall_intervals: List[Dict[str, Any]] = []
     candidate_question_seconds = 0.0
     retrieval_embedding_seconds = 0.0
     retrieval_ranking_seconds = 0.0
@@ -233,25 +254,51 @@ def run_one_step_chunk_worker(
             chunk_index=chunk_index,
             debug_writer=debug_writer,
         )
-        candidate_question_seconds += time.perf_counter() - candidate_started_at
+        candidate_ended_at = time.perf_counter()
+        candidate_question_seconds += candidate_ended_at - candidate_started_at
+        _append_wall_interval(
+            wall_intervals,
+            "candidate_question",
+            candidate_started_at,
+            candidate_ended_at,
+        )
         candidate_questions_total += len(candidates)
         retrieval_timing: Dict[str, float] = {}
+        retrieval_started_at = time.perf_counter()
         retrieval_map = evidence_index.retrieve_many(
             [str(candidate.get("question") or "") for candidate in candidates],
             source_chunk_index=chunk_index,
             top_k=runtime.semantic_top_k,
             timing=retrieval_timing,
         )
+        retrieval_ended_at = time.perf_counter()
+        _append_wall_interval(
+            wall_intervals,
+            "retrieval",
+            retrieval_started_at,
+            retrieval_ended_at,
+        )
         retrieval_embedding_seconds += float(retrieval_timing.get("embedding_seconds") or 0.0)
         retrieval_ranking_seconds += float(retrieval_timing.get("ranking_seconds") or 0.0)
         for candidate in candidates:
+            validation_started_at = time.perf_counter()
             question_key = str(candidate.get("question") or "").strip()
             if not question_key or question_key in seen_questions:
                 skipped_empty_or_duplicate += 1
+                _append_wall_interval(
+                    wall_intervals,
+                    "validation_and_bookkeeping",
+                    validation_started_at,
+                )
                 continue
             seen_questions.add(question_key)
             candidates_considered += 1
             semantic_hits, raw_semantic_trace = retrieval_map.get(question_key, (None, None))
+            _append_wall_interval(
+                wall_intervals,
+                "validation_and_bookkeeping",
+                validation_started_at,
+            )
             unit_started_at = time.perf_counter()
             generation_unit = evidence_index.build_generation_unit(
                 source_chunk_index=chunk_index,
@@ -262,7 +309,14 @@ def run_one_step_chunk_worker(
                 semantic_hits=semantic_hits,
                 raw_semantic_trace=raw_semantic_trace,
             )
-            retrieval_unit_seconds += time.perf_counter() - unit_started_at
+            unit_ended_at = time.perf_counter()
+            retrieval_unit_seconds += unit_ended_at - unit_started_at
+            _append_wall_interval(
+                wall_intervals,
+                "retrieval",
+                unit_started_at,
+                unit_ended_at,
+            )
             answer_started_at = time.perf_counter()
             item, reason = call_evidence_answer_llm(
                 client=client,
@@ -283,18 +337,44 @@ def run_one_step_chunk_worker(
                 chunk_index=chunk_index,
                 debug_writer=debug_writer,
             )
-            answer_generation_seconds += time.perf_counter() - answer_started_at
+            answer_ended_at = time.perf_counter()
+            answer_generation_seconds += answer_ended_at - answer_started_at
+            _append_wall_interval(
+                wall_intervals,
+                "answer_generation",
+                answer_started_at,
+                answer_ended_at,
+            )
+            validation_started_at = time.perf_counter()
             if item:
                 items_final.append(item)
                 if len(items_final) >= target:
+                    _append_wall_interval(
+                        wall_intervals,
+                        "validation_and_bookkeeping",
+                        validation_started_at,
+                    )
                     break
             else:
                 dropped_answer_reasons[reason] = dropped_answer_reasons.get(reason, 0) + 1
+            _append_wall_interval(
+                wall_intervals,
+                "validation_and_bookkeeping",
+                validation_started_at,
+            )
         if len(items_final) >= target:
             break
 
+    validation_started_at = time.perf_counter()
     items_final = _dedup_chunk_pool(items_final)[:target]
-    chunk_total_seconds = time.perf_counter() - chunk_started_at
+    chunk_finished_at = time.perf_counter()
+    _append_wall_interval(
+        wall_intervals,
+        "validation_and_bookkeeping",
+        validation_started_at,
+        chunk_finished_at,
+    )
+    chunk_total_seconds = chunk_finished_at - chunk_started_at
     retrieval_seconds = (
         retrieval_embedding_seconds + retrieval_ranking_seconds + retrieval_unit_seconds
     )
@@ -320,6 +400,7 @@ def run_one_step_chunk_worker(
         "candidates_considered": candidates_considered,
         "valid_items": len(items_final),
         "dropped_reason_stats": dropped_reason_stats,
+        "wall_intervals": wall_intervals,
         "timing": {
             "chunk_total_seconds": chunk_total_seconds,
             "candidate_question_seconds": candidate_question_seconds,

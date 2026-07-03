@@ -64,6 +64,24 @@ from app.services.unsupervised_evaluation import (
     execute_unsupervised_suite_blocking,
 )
 
+
+def _extract_generation_timing_views(timing: Any) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    if not isinstance(timing, dict):
+        return {}, {}
+    wall = timing.get("generation_wall_detail")
+    if isinstance(wall, dict):
+        wall_detail = dict(wall)
+    else:
+        wall_detail = {
+            key: value
+            for key, value in timing.items()
+            if key not in {"generation_wall_detail", "generation_cumulative_detail"}
+        }
+    cumulative = timing.get("generation_cumulative_detail")
+    cumulative_detail = dict(cumulative) if isinstance(cumulative, dict) else {}
+    return wall_detail, cumulative_detail
+
+
 async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None:
     """
     核心异步流水线：针对一个或多个文件执行
@@ -277,7 +295,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
 
     await update_job_fields(
         status="processing",
-        message="Batch started",
+        message="批量流水线开始",
         started_at=now_server_local_iso(),
         total_files=len(file_contents),
     )
@@ -375,13 +393,6 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                 )
                 safe_name = sanitize_filename(filename)
                 debug_file = get_output_path(f"{task_id}_{safe_name}_one_step_debug", ".jsonl")
-                await update_file_progress(
-                    filename,
-                    "qa_generation",
-                    "processing",
-                    "一步式生成问答对中",
-                    extra={"debug_file": debug_file},
-                )
                 client = get_llm_client_pool().get_client(
                     LLMClientConfig(
                         api_base=llm_config.get("base_url"),
@@ -415,6 +426,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                                         "chunks_total": total_chunks,
                                         "chunks_done": 0,
                                         "generation_timing": (info or {}).get("timing") or {},
+                                        "debug_file": debug_file,
                                         "llm_max_concurrent_requests": llm_max_concurrent_requests,
                                     },
                                 ),
@@ -424,6 +436,9 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
 
                         if event == "done":
                             generation_timing_summary = dict((info or {}).get("timing") or {})
+                            wall_detail, cumulative_detail = _extract_generation_timing_views(
+                                generation_timing_summary
+                            )
                             raw_chunk_details = (info or {}).get("chunk_details")
                             if isinstance(raw_chunk_details, list):
                                 generation_chunk_details[:] = [
@@ -440,6 +455,8 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                                         "chunks_done": int((info or {}).get("total_chunks") or 0),
                                         "total_items": int((info or {}).get("total_items") or 0),
                                         "generation_timing": generation_timing_summary,
+                                        "generation_wall_detail": wall_detail,
+                                        "generation_cumulative_detail": cumulative_detail,
                                         "generation_chunk_details": generation_chunk_details,
                                     },
                                 ),
@@ -721,6 +738,9 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                         if idx > 0 and idx in chunk_id_map:
                             qa["source"] = chunk_id_map[idx]
                 generation_duration = time.time() - generation_start
+                generation_wall_detail, generation_cumulative_detail = _extract_generation_timing_views(
+                    generation_timing_summary
+                )
                 if not qa_data:
                     raise ValueError(
                         f"一步式问答生成失败：未生成任何有效 items（请下载调试日志查看 LLM 原始响应：{os.path.basename(debug_file)}）"
@@ -845,6 +865,8 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                     extra={
                         "generation_seconds": generation_duration,
                         "generation_timing": generation_timing_summary,
+                        "generation_wall_detail": generation_wall_detail,
+                        "generation_cumulative_detail": generation_cumulative_detail,
                         "generation_chunk_details": generation_chunk_details,
                         "qa_generated": len(qa_data),
                     },
@@ -1136,7 +1158,9 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                         "generation_avg_seconds_per_qa": (generation_duration / primary_count)
                         if primary_count
                         else None,
-                        "generation_detail": generation_timing_summary,
+                        "generation_detail": generation_wall_detail,
+                        "generation_wall_detail": generation_wall_detail,
+                        "generation_cumulative_detail": generation_cumulative_detail,
                         "generation_chunk_details": generation_chunk_details,
                         "qa_generated": len(qa_data),
                         "unsupervised_seconds": unsupervised_duration,
@@ -1219,7 +1243,12 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                 if isinstance(entry.get("payload"), dict):
                     entry_timing = entry["payload"].setdefault("timing", {})
                     if isinstance(entry_timing, dict):
-                        for detail_key in ("generation_detail", "generation_chunk_details"):
+                        for detail_key in (
+                            "generation_detail",
+                            "generation_wall_detail",
+                            "generation_cumulative_detail",
+                            "generation_chunk_details",
+                        ):
                             if detail_key in timing:
                                 entry_timing[detail_key] = timing.get(detail_key)
                 excerpt = file_result.get("source_text_excerpt")
@@ -1247,9 +1276,14 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                 orphan_artifacts.append(candidate)
 
     final_status = "completed" if consolidated_entries else "failed"
-    final_message = f"Batch finished: {len(consolidated_entries)} success, {len(failed_messages)} failed"
-    if final_status == "completed" and failed_messages:
-        final_message = f"Batch finished with partial failures ({len(failed_messages)} files)"
+    success_count = len(consolidated_entries)
+    failed_count = len(failed_messages)
+    if final_status == "completed" and failed_count:
+        final_message = f"任务部分完成：{success_count} 成功，{failed_count} 失败"
+    elif final_status == "completed":
+        final_message = f"任务完成：{success_count} 成功，0 失败"
+    else:
+        final_message = f"任务失败：0 成功，{failed_count} 失败"
 
     def _finalize_pipeline_artifacts(record: Dict[str, Any], artifact_paths: List[Optional[str]]) -> Dict[str, Any]:
         normalized_paths = [path for path in [_normalize_artifact_path(p) for p in artifact_paths] if path]
@@ -1392,7 +1426,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
             artifacts_expire_at=(artifacts_expire_at or None),
             details={"failed_reasons": failed_messages} if failed_messages else {},
         )
-        await log_progress(f"batch done: {final_message}")
+        logger.info("[batch %s] %s", task_id, final_message)
     elif orphan_artifacts:
         register_temporary_artifacts(
             owner_kind="pipeline_task",
@@ -1411,7 +1445,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
             artifacts_expire_at=get_owner_artifact_expire_at("pipeline_task", task_id),
             details={"failed_reasons": failed_messages} if failed_messages else {},
         )
-        await log_progress(f"batch done: {final_message}")
+        logger.info("[batch %s] %s", task_id, final_message)
     else:
         await update_job_fields(
             status=final_status,
@@ -1423,6 +1457,6 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
             artifacts_expire_at=None,
             details={"failed_reasons": failed_messages} if failed_messages else {},
         )
-        await log_progress(f"batch done: {final_message}")
+        logger.info("[batch %s] %s", task_id, final_message)
 
 __all__ = ["run_batch_complete_pipeline_async"]
