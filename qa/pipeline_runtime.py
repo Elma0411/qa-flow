@@ -8,8 +8,13 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from qa.generation import (
+    DEFAULT_HYBRID_WEIGHT_DENSE,
+    DEFAULT_HYBRID_WEIGHT_LEXICAL,
     DEFAULT_MAX_UNIT_CHARS,
+    DEFAULT_RETRIEVAL_MODE,
+    DEFAULT_RERANK_TOP_N,
     DEFAULT_SEMANTIC_TOP_K,
+    DEFAULT_STRUCTURE_WEIGHT,
     QADocumentEvidenceIndex,
     build_question_type_plan,
     call_candidate_question_llm,
@@ -46,6 +51,12 @@ class OneStepPipelineRuntime:
     candidate_multiplier: int
     semantic_top_k: int
     max_unit_chars: int
+    retrieval_mode: str
+    hybrid_weight_dense: float
+    hybrid_weight_lexical: float
+    retrieval_structure_weight: float
+    rerank_top_n: int
+    answer_scope_policy: str
 
 
 def parse_one_step_pipeline_runtime(config: Dict[str, Any]) -> OneStepPipelineRuntime:
@@ -126,6 +137,28 @@ def parse_one_step_pipeline_runtime(config: Dict[str, Any]) -> OneStepPipelineRu
     candidate_multiplier = max(1, int(config.get("candidate_multiplier") or 2))
     semantic_top_k = max(0, int(config.get("semantic_top_k") or DEFAULT_SEMANTIC_TOP_K))
     max_unit_chars = max(1000, int(config.get("max_unit_chars") or DEFAULT_MAX_UNIT_CHARS))
+    retrieval_mode = str(config.get("retrieval_mode") or DEFAULT_RETRIEVAL_MODE).strip().lower()
+    if retrieval_mode not in {"semantic", "hybrid"}:
+        retrieval_mode = DEFAULT_RETRIEVAL_MODE
+    try:
+        hybrid_weight_dense = float(config.get("hybrid_weight_dense", DEFAULT_HYBRID_WEIGHT_DENSE))
+    except Exception:
+        hybrid_weight_dense = DEFAULT_HYBRID_WEIGHT_DENSE
+    try:
+        hybrid_weight_lexical = float(config.get("hybrid_weight_lexical", DEFAULT_HYBRID_WEIGHT_LEXICAL))
+    except Exception:
+        hybrid_weight_lexical = DEFAULT_HYBRID_WEIGHT_LEXICAL
+    try:
+        retrieval_structure_weight = float(config.get("retrieval_structure_weight", DEFAULT_STRUCTURE_WEIGHT))
+    except Exception:
+        retrieval_structure_weight = DEFAULT_STRUCTURE_WEIGHT
+    hybrid_weight_dense = max(0.0, min(1.0, hybrid_weight_dense))
+    hybrid_weight_lexical = max(0.0, min(1.0, hybrid_weight_lexical))
+    retrieval_structure_weight = max(0.0, min(0.5, retrieval_structure_weight))
+    rerank_top_n = max(1, int(config.get("rerank_top_n") or DEFAULT_RERANK_TOP_N))
+    answer_scope_policy = str(config.get("answer_scope_policy") or "source_primary").strip().lower()
+    if answer_scope_policy not in {"source_primary", "same_section", "cross_chunk"}:
+        answer_scope_policy = "source_primary"
 
     return OneStepPipelineRuntime(
         chunk_size=chunk_size,
@@ -151,6 +184,12 @@ def parse_one_step_pipeline_runtime(config: Dict[str, Any]) -> OneStepPipelineRu
         candidate_multiplier=candidate_multiplier,
         semantic_top_k=semantic_top_k,
         max_unit_chars=max_unit_chars,
+        retrieval_mode=retrieval_mode,
+        hybrid_weight_dense=hybrid_weight_dense,
+        hybrid_weight_lexical=hybrid_weight_lexical,
+        retrieval_structure_weight=retrieval_structure_weight,
+        rerank_top_n=rerank_top_n,
+        answer_scope_policy=answer_scope_policy,
     )
 
 
@@ -192,6 +231,38 @@ def _append_wall_interval(
             "seconds": end - start,
         }
     )
+
+
+def _normalize_answer_scope(raw: Any) -> str:
+    scope = str(raw or "").strip().lower()
+    return scope if scope in {"source_primary", "same_section", "cross_chunk"} else "source_primary"
+
+
+def _effective_answer_scope(candidate_scope: Any, policy: str) -> str:
+    requested = _normalize_answer_scope(candidate_scope)
+    policy_scope = _normalize_answer_scope(policy)
+    if policy_scope == "source_primary":
+        return "source_primary"
+    if policy_scope == "same_section" and requested == "cross_chunk":
+        return "same_section"
+    if policy_scope == "same_section":
+        return requested if requested in {"source_primary", "same_section"} else "source_primary"
+    return requested
+
+
+def _candidate_retrieval_query(candidate: Dict[str, Any], source_chunk_meta: Dict[str, Any]) -> str:
+    explicit = str(candidate.get("retrieval_query") or "").strip()
+    if explicit:
+        return explicit
+    parts = [
+        str(candidate.get("question") or "").strip(),
+        str(candidate.get("source_anchor_text") or "").strip(),
+        str(source_chunk_meta.get("title_path") or "").strip(),
+    ]
+    terms = candidate.get("must_have_terms")
+    if isinstance(terms, list):
+        parts.extend(str(term).strip() for term in terms if str(term).strip())
+    return "\n".join(part for part in parts if part)
 
 
 def run_one_step_chunk_worker(
@@ -265,11 +336,29 @@ def run_one_step_chunk_worker(
         candidate_questions_total += len(candidates)
         retrieval_timing: Dict[str, float] = {}
         retrieval_started_at = time.perf_counter()
+        retrieval_payloads = [
+            {
+                "key": str(candidate.get("question") or "").strip(),
+                "query": _candidate_retrieval_query(candidate, source_chunk_meta),
+                "must_have_terms": candidate.get("must_have_terms") or [],
+                "answer_scope": _effective_answer_scope(
+                    candidate.get("answer_scope"),
+                    runtime.answer_scope_policy,
+                ),
+            }
+            for candidate in candidates
+            if str(candidate.get("question") or "").strip()
+        ]
         retrieval_map = evidence_index.retrieve_many(
-            [str(candidate.get("question") or "") for candidate in candidates],
+            retrieval_payloads,
             source_chunk_index=chunk_index,
             top_k=runtime.semantic_top_k,
             timing=retrieval_timing,
+            retrieval_mode=runtime.retrieval_mode,
+            hybrid_weight_dense=runtime.hybrid_weight_dense,
+            hybrid_weight_lexical=runtime.hybrid_weight_lexical,
+            structure_weight=runtime.retrieval_structure_weight,
+            rerank_top_n=runtime.rerank_top_n,
         )
         retrieval_ended_at = time.perf_counter()
         _append_wall_interval(
@@ -293,6 +382,15 @@ def run_one_step_chunk_worker(
                 continue
             seen_questions.add(question_key)
             candidates_considered += 1
+            retrieval_query = _candidate_retrieval_query(candidate, source_chunk_meta)
+            effective_answer_scope = _effective_answer_scope(
+                candidate.get("answer_scope"),
+                runtime.answer_scope_policy,
+            )
+            candidate_for_answer = dict(candidate)
+            candidate_for_answer["retrieval_query"] = retrieval_query
+            candidate_for_answer["answer_scope"] = effective_answer_scope
+            candidate_for_answer["must_have_terms"] = candidate.get("must_have_terms") or []
             semantic_hits, raw_semantic_trace = retrieval_map.get(question_key, (None, None))
             _append_wall_interval(
                 wall_intervals,
@@ -303,9 +401,17 @@ def run_one_step_chunk_worker(
             generation_unit = evidence_index.build_generation_unit(
                 source_chunk_index=chunk_index,
                 question=question_key,
-                source_anchor_text=str(candidate.get("source_anchor_text") or ""),
+                source_anchor_text=str(candidate_for_answer.get("source_anchor_text") or ""),
+                retrieval_query=retrieval_query,
+                must_have_terms=candidate_for_answer.get("must_have_terms") or [],
+                answer_scope=effective_answer_scope,
                 semantic_top_k=runtime.semantic_top_k,
                 max_unit_chars=runtime.max_unit_chars,
+                retrieval_mode=runtime.retrieval_mode,
+                hybrid_weight_dense=runtime.hybrid_weight_dense,
+                hybrid_weight_lexical=runtime.hybrid_weight_lexical,
+                structure_weight=runtime.retrieval_structure_weight,
+                rerank_top_n=runtime.rerank_top_n,
                 semantic_hits=semantic_hits,
                 raw_semantic_trace=raw_semantic_trace,
             )
@@ -321,7 +427,7 @@ def run_one_step_chunk_worker(
             item, reason = call_evidence_answer_llm(
                 client=client,
                 model=runtime.model,
-                candidate=candidate,
+                candidate=candidate_for_answer,
                 generation_unit=generation_unit,
                 qa_detail_mode=runtime.qa_detail_mode,
                 prompt_language=runtime.prompt_language,

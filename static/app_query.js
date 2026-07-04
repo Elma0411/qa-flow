@@ -397,7 +397,7 @@ function renderTraceSection(title, traces) {
     const right = document.createElement('div');
     right.className = 'chunk-debug-trace-score';
     right.textContent =
-      trace.score !== undefined && trace.score !== null ? `score ${Number(trace.score).toFixed(4)}` : '';
+      trace.score !== undefined && trace.score !== null ? `综合 ${Number(trace.score).toFixed(4)}` : '';
     head.appendChild(left);
     head.appendChild(right);
     block.appendChild(head);
@@ -406,6 +406,15 @@ function renderTraceSection(title, traces) {
     meta.textContent = [
       trace.chunk_id ? `id ${trace.chunk_id}` : '',
       trace.parent_index_path ? `父路径 ${trace.parent_index_path}` : '',
+      trace.final_rank ? `最终排序 ${trace.final_rank}` : '',
+      trace.dense_rank ? `向量排序 ${trace.dense_rank}` : '',
+      trace.lexical_rank ? `词项排序 ${trace.lexical_rank}` : '',
+      trace.dense_score !== undefined && trace.dense_score !== null ? `向量 ${Number(trace.dense_score).toFixed(4)}` : '',
+      trace.lexical_score !== undefined && trace.lexical_score !== null ? `词项 ${Number(trace.lexical_score).toFixed(4)}` : '',
+      trace.structure_score !== undefined && trace.structure_score !== null ? `结构 ${Number(trace.structure_score).toFixed(4)}` : '',
+      trace.score_gap_top1_top2 !== undefined && trace.score_gap_top1_top2 !== null ? `top1-top2 差 ${Number(trace.score_gap_top1_top2).toFixed(4)}` : '',
+      trace.same_parent ? '同章节' : '',
+      trace.adjacent ? '相邻块' : '',
       trace.is_source_chunk ? '主来源块' : '',
     ]
       .filter(Boolean)
@@ -462,7 +471,7 @@ function createEvidenceCard(trace) {
   const score = document.createElement('div');
   score.className = 'chunk-debug-trace-score';
   score.textContent =
-    trace.score !== undefined && trace.score !== null ? `score ${Number(trace.score).toFixed(4)}` : '';
+    trace.score !== undefined && trace.score !== null ? `综合 ${Number(trace.score).toFixed(4)}` : '';
 
   head.appendChild(title);
   head.appendChild(score);
@@ -474,6 +483,10 @@ function createEvidenceCard(trace) {
     trace.chunk_id ? `id ${trace.chunk_id}` : '',
     trace.title_path ? `标题 ${trace.title_path}` : '',
     trace.parent_index_path ? `父路径 ${trace.parent_index_path}` : '',
+    trace.retrieval_rank ? `排序 ${trace.retrieval_rank}` : '',
+    trace.dense_score !== undefined && trace.dense_score !== null ? `向量 ${Number(trace.dense_score).toFixed(4)}` : '',
+    trace.lexical_score !== undefined && trace.lexical_score !== null ? `词项 ${Number(trace.lexical_score).toFixed(4)}` : '',
+    trace.structure_score !== undefined && trace.structure_score !== null ? `结构 ${Number(trace.structure_score).toFixed(4)}` : '',
     trace.is_source_chunk ? '主来源块' : '',
   ]
     .filter(Boolean)
@@ -516,6 +529,21 @@ function renderEvidenceSection(item) {
   traces.forEach((trace) => list.appendChild(createEvidenceCard(trace)));
   section.appendChild(list);
   return section;
+}
+
+function translateRetrievalMode(mode) {
+  const value = String(mode || '').trim().toLowerCase();
+  if (value === 'semantic') return 'semantic（仅向量语义排序）';
+  if (value === 'hybrid') return 'hybrid（向量 + 词项 + 结构加权）';
+  return value || '';
+}
+
+function translateAnswerScope(scope) {
+  const value = String(scope || '').trim().toLowerCase();
+  if (value === 'source_primary') return 'source_primary（主来源块优先）';
+  if (value === 'same_section') return 'same_section（允许同章节补证据）';
+  if (value === 'cross_chunk') return 'cross_chunk（允许跨 chunk 证据）';
+  return value || '';
 }
 
 function buildQaDetailCard(item, options = {}) {
@@ -581,12 +609,23 @@ function buildQaDetailCard(item, options = {}) {
   if (evidenceSection) {
     card.appendChild(evidenceSection);
   }
-  if (retrievalTrace.query) {
+  if (retrievalTrace.query || retrievalTrace.retrieval_query) {
+    const weightSummary = [
+      retrievalTrace.hybrid_weight_dense !== undefined && retrievalTrace.hybrid_weight_dense !== null ? `向量 ${retrievalTrace.hybrid_weight_dense}` : '',
+      retrievalTrace.hybrid_weight_lexical !== undefined && retrievalTrace.hybrid_weight_lexical !== null ? `词项 ${retrievalTrace.hybrid_weight_lexical}` : '',
+      retrievalTrace.structure_weight !== undefined && retrievalTrace.structure_weight !== null ? `结构 ${retrievalTrace.structure_weight}` : '',
+    ].filter(Boolean).join(' ｜ ');
     card.appendChild(
       createKvGrid([
-        ['检索 query', retrievalTrace.query],
-        ['semantic_top_k', retrievalTrace.semantic_top_k],
-        ['max_unit_chars', retrievalTrace.max_unit_chars],
+        ['原始问题', retrievalTrace.query],
+        ['检索查询', retrievalTrace.retrieval_query],
+        ['必含术语', Array.isArray(retrievalTrace.must_have_terms) ? retrievalTrace.must_have_terms.join('、') : retrievalTrace.must_have_terms],
+        ['答案证据范围', translateAnswerScope(retrievalTrace.answer_scope)],
+        ['检索模式', translateRetrievalMode(retrievalTrace.retrieval_mode)],
+        ['evidence 数量', retrievalTrace.semantic_top_k],
+        ['轻量重排候选数', retrievalTrace.rerank_top_n],
+        ['权重', weightSummary],
+        ['最大上下文字符', retrievalTrace.max_unit_chars],
       ]),
     );
   }

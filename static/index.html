@@ -871,6 +871,48 @@
             <small>每个 chunk 生成不足目标 QA 时最多尝试几轮；追求速度可设 1，追求覆盖率可设 2 或更高。</small>
           </label>
           <label>
+            检索排序模式（retrieval_mode）
+            <select id="retrievalMode">
+              <option value="hybrid" selected>hybrid（向量 + 词项 + 结构加权）</option>
+              <option value="semantic">semantic（仅向量语义排序）</option>
+            </select>
+            <small>hybrid 更适合分数接近时拉开 evidence 差距；semantic 接近旧逻辑。</small>
+          </label>
+          <label>
+            evidence 数量（semantic_top_k）
+            <input type="number" id="semanticTopK" value="3" min="0" max="20" step="1" />
+            <small>每个候选问题放入答案上下文的检索块数量；0 表示只用主来源块。</small>
+          </label>
+          <label>
+            轻量重排候选数（rerank_top_n）
+            <input type="number" id="rerankTopN" value="12" min="1" max="80" step="1" />
+            <small>先取多少个候选 chunk 做 hybrid/结构重排；越大越全面但略慢。</small>
+          </label>
+          <label>
+            向量权重（hybrid_weight_dense）
+            <input type="number" id="hybridWeightDense" value="0.68" min="0" max="1" step="0.05" />
+            <small>向量语义相似度权重；和词项权重会自动归一。</small>
+          </label>
+          <label>
+            词项权重（hybrid_weight_lexical）
+            <input type="number" id="hybridWeightLexical" value="0.24" min="0" max="1" step="0.05" />
+            <small>关键术语、实体、条件词的匹配权重；可提升区分度。</small>
+          </label>
+          <label>
+            结构加权（retrieval_structure_weight）
+            <input type="number" id="retrievalStructureWeight" value="0.08" min="0" max="0.5" step="0.02" />
+            <small>同章节、相邻 chunk、标题路径重合的加权，避免纯语义分数过平。</small>
+          </label>
+          <label>
+            答案证据范围（answer_scope_policy）
+            <select id="answerScopePolicy">
+              <option value="source_primary" selected>source_primary（主来源块优先）</option>
+              <option value="same_section">same_section（允许同章节补证据）</option>
+              <option value="cross_chunk">cross_chunk（允许跨 chunk 证据）</option>
+            </select>
+            <small>越往后越能利用检索证据，但也更需要人工抽查答案是否漂移。</small>
+          </label>
+          <label>
             增广并发（augment_max_concurrency，可选）
             <input
               type="number"
@@ -1088,8 +1130,8 @@
     <script src="/ui/app_runtime.js?v=2026-07-03-1"></script>
     <script src="/ui/app_config.js?v=2026-06-25-1"></script>
     <script src="/ui/app_render.js?v=2026-07-03-1"></script>
-    <script src="/ui/app_query.js?v=2026-05-21-3"></script>
-    <script src="/ui/app.js?v=2026-07-04-1"></script>
+    <script src="/ui/app_query.js?v=2026-07-05-1"></script>
+    <script src="/ui/app.js?v=2026-07-05-1"></script>
     <script>
       (function () {
         if (window.__QA_UI_APPJS_READY__) return;

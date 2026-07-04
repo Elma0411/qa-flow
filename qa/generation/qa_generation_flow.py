@@ -235,11 +235,27 @@ def _normalize_candidate_question(
         difficulty_score = None
     if difficulty_score is not None:
         difficulty_score = max(0.0, min(1.0, difficulty_score))
+    retrieval_query = str(item.get("retrieval_query") or "").strip()
+    raw_terms = item.get("must_have_terms")
+    if isinstance(raw_terms, list):
+        must_have_terms = [str(term).strip() for term in raw_terms if str(term).strip()]
+    else:
+        must_have_terms = [
+            term.strip()
+            for term in str(raw_terms or "").replace("，", ",").split(",")
+            if term.strip()
+        ]
+    answer_scope = str(item.get("answer_scope") or "source_primary").strip().lower()
+    if answer_scope not in {"source_primary", "same_section", "cross_chunk"}:
+        answer_scope = "source_primary"
 
     return (
         {
             "question": question,
             "source_anchor_text": source_anchor_text,
+            "retrieval_query": retrieval_query,
+            "must_have_terms": must_have_terms[:8],
+            "answer_scope": answer_scope,
             "question_type": question_type,
             "question_type_reason": str(item.get("question_type_reason") or "").strip(),
             "difficulty_level": difficulty_level,
@@ -445,10 +461,18 @@ def call_evidence_answer_llm(
     prompt_template_key = resolve_category_prompt_template_key(prompt_template_category)
     candidate_question = str(candidate.get("question") or "").strip()
     source_anchor_text = str(candidate.get("source_anchor_text") or "").strip()
+    retrieval_query = str(candidate.get("retrieval_query") or "").strip()
+    must_have_terms = candidate.get("must_have_terms") if isinstance(candidate.get("must_have_terms"), list) else []
+    answer_scope = str(candidate.get("answer_scope") or "source_primary").strip().lower()
+    if answer_scope not in {"source_primary", "same_section", "cross_chunk"}:
+        answer_scope = "source_primary"
     question_type = str(candidate.get("question_type") or "简答题").strip() or "简答题"
     user_content = (
         f"candidate_question: {candidate_question}\n"
         f"source_anchor_text: {source_anchor_text}\n"
+        f"retrieval_query: {retrieval_query}\n"
+        f"must_have_terms: {json.dumps(must_have_terms, ensure_ascii=False)}\n"
+        f"answer_scope: {answer_scope}\n"
         f"question_type: {question_type}\n"
         f"question_type_reason: {candidate.get('question_type_reason') or ''}\n"
         f"difficulty_level: {candidate.get('difficulty_level') or '中等'}\n"
@@ -505,6 +529,7 @@ def call_evidence_answer_llm(
         raise
 
     normalized_item: Optional[Dict[str, Any]] = None
+    raw_item: Optional[Dict[str, Any]] = raw_items[0] if raw_items else None
     if not raw_items:
         dropped_reason = "missing_items"
     else:
@@ -516,6 +541,12 @@ def call_evidence_answer_llm(
             fixed_knowledge_category_confidence=fixed_knowledge_category_confidence,
             fixed_knowledge_category_reason=fixed_knowledge_category_reason,
         )
+        if normalized_item and raw_item:
+            evidence_usage = raw_item.get("evidence_usage")
+            if isinstance(evidence_usage, list):
+                normalized_item["evidence_usage"] = [
+                    entry for entry in evidence_usage if isinstance(entry, dict)
+                ][:12]
     if normalized_item:
         if str(normalized_item.get("question") or "").strip() != candidate_question:
             dropped_reason = "question_mismatch"
@@ -555,6 +586,9 @@ def call_evidence_answer_llm(
         )
         normalized_item["question"] = candidate_question
         normalized_item["source_anchor_text"] = source_anchor_text
+        normalized_item["retrieval_query"] = retrieval_query
+        normalized_item["must_have_terms"] = must_have_terms
+        normalized_item["answer_scope"] = answer_scope
         normalized_item["source_chunk_id"] = source_chunk.get("chunk_id")
         normalized_item["source_chunk_index"] = source_chunk.get("chunk_index")
         normalized_item["source_chunk_title_path"] = source_chunk.get("title_path")

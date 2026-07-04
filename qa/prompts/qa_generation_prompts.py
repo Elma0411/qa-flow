@@ -104,6 +104,11 @@ def build_candidate_question_system_prompt(
 - Do not use the title path alone as source_anchor_text.
 - source_anchor_text should be the shortest sufficient span, not a random long excerpt.
 
+## Retrieval planning fields
+- retrieval_query: a concise search query for finding same-document evidence. Combine the concrete subject, action/condition, key terms, and title context. Do not use a generic restatement of the question.
+- must_have_terms: 1 to 6 important entity/action/condition terms that should appear in useful evidence.
+- answer_scope: "source_primary" when the main source chunk is enough; "same_section" when nearby same-section chunks may be needed; "cross_chunk" only when the question intentionally needs related chunks.
+
 ## Question type plan
 - Follow question_type_plan order when possible.
 - If a planned type cannot be supported by a concrete point in the chunk, skip that item instead of inventing weak content.
@@ -113,6 +118,9 @@ def build_candidate_question_system_prompt(
 ## Required item fields
 - question: string
 - source_anchor_text: string copied from the source chunk
+- retrieval_query: string
+- must_have_terms: string[]
+- answer_scope: "source_primary" | "same_section" | "cross_chunk"
 - question_type: "简答题" | "单选题" | "判断题" | "计算题"
 - question_type_reason: string
 - difficulty_level: "简单" | "中等" | "困难"
@@ -173,6 +181,11 @@ Output ONLY raw JSON: {{"items":[...]}}.
 - 不要只把标题路径作为 source_anchor_text。
 - source_anchor_text 应尽量短而足够，不要随意摘一大段无关内容。
 
+## 检索规划字段
+- retrieval_query：用于检索同文档证据的短查询，必须包含具体对象、动作/条件、关键术语和必要标题语境；不要只是机械复述问题。
+- must_have_terms：1 到 6 个关键实体、动作、条件或术语，用于帮助检索筛选证据。
+- answer_scope：主来源块足够时填 "source_primary"；需要同章节上下文时填 "same_section"；确实需要跨 chunk 相关证据时才填 "cross_chunk"。
+
 ## 题型计划
 - 尽量按 question_type_plan 的顺序输出题型。
 - 如果某个计划题型在当前块中找不到具体、可靠的问题点，就跳过该 item，不要硬凑低质量题。
@@ -182,6 +195,9 @@ Output ONLY raw JSON: {{"items":[...]}}.
 ## 每条 item 必须包含
 - question: string
 - source_anchor_text: string（直接摘自主来源块）
+- retrieval_query: string
+- must_have_terms: string[]
+- answer_scope: "source_primary" | "same_section" | "cross_chunk"
 - question_type: "简答题" | "单选题" | "判断题" | "计算题"
 - question_type_reason: string
 - difficulty_level: "简单" | "中等" | "困难"
@@ -222,6 +238,9 @@ def build_evidence_answer_system_prompt(
 ## Input
 - candidate_question
 - source_anchor_text
+- retrieval_query
+- must_have_terms
+- answer_scope
 - question_type
 - qa_generation_unit_text with 【主来源块】, optional 【同章节上下文】, and optional 【相关补充】
 
@@ -230,14 +249,16 @@ def build_evidence_answer_system_prompt(
 2. Apply evidence priority strictly:
    - First: 【主来源块】
    - Second: 【同章节上下文】 only when the main source has unresolved reference, omitted subject, definition, or direct local dependency
-   - Third: 【相关补充】 only when a small missing fact is needed
-3. If the core answer is not stated or clearly implied by 【主来源块】, reject the item.
-4. Produce a direct, natural answer without saying "according to the text/reference/document".
-5. Verify that source_fact_text contains all information needed to support the answer, with the main supporting snippet coming from 【主来源块】.
+   - Third: 【相关补充】 only when answer_scope is "cross_chunk" and the retrieved evidence directly supports the missing fact
+3. If answer_scope is "source_primary", reject the item when the core answer is not stated or clearly implied by 【主来源块】.
+4. If answer_scope is "same_section" or "cross_chunk", you may use selected evidence, but source_fact_text must still include source_anchor_text or a direct snippet from 【主来源块】.
+5. Produce a direct, natural answer without saying "according to the text/reference/document".
+6. Fill evidence_usage with the chunk_id and short snippet for every evidence chunk that materially supports the answer.
 
 ## Rejection rules
 - If the candidate question is broad, generic, meta-level, duplicate-like, or only asks about document purpose/importance/impact/role/meaning, output {{"items":[]}}.
-- If the answer mainly depends on supplemental evidence rather than 【主来源块】, output {{"items":[]}}.
+- If answer_scope is "source_primary" and the answer mainly depends on supplemental evidence rather than 【主来源块】, output {{"items":[]}}.
+- If answer_scope is "same_section" or "cross_chunk" but retrieved evidence does not directly support the missing fact, output {{"items":[]}}.
 - If source_fact_text cannot be copied from qa_generation_unit_text, output {{"items":[]}}.
 - If the candidate uses vague references that cannot be made clear without changing the question, output {{"items":[]}}.
 - If the candidate can be answered only as a generic management slogan, output {{"items":[]}}.
@@ -245,7 +266,7 @@ def build_evidence_answer_system_prompt(
 ## Constraints
 1. Keep question exactly the same as candidate_question.
 2. The topic must remain centered on 【主来源块】.
-3. source_fact_text must be copied from qa_generation_unit_text. It must contain a direct snippet from 【主来源块】. Add context snippets only when strictly necessary.
+3. source_fact_text must be copied from qa_generation_unit_text. It must contain a direct snippet from 【主来源块】 or source_anchor_text. Add retrieved context snippets only when answer_scope permits it and they are necessary.
 4. qa_detail_mode=point: source_fact_text must be one atomic, standalone fact.
 5. qa_detail_mode=summary: source_fact_text may combine related snippets, but the first and most important supporting snippet must come from 【主来源块】, and every extra snippet must be necessary.
 6. answer_explanation must explain why the answer is supported, not repeat vague rhetoric.
@@ -258,6 +279,7 @@ def build_evidence_answer_system_prompt(
 ## Required fields
 - question, answer, answer_explanation, source_fact_text, source
 {kc_fields}
+- evidence_usage: list of objects with chunk_id, role, snippet, usage
 - question_type, question_type_reason, difficulty_level, difficulty_score, options, correct_option
 
 ## Question type
@@ -285,6 +307,9 @@ qa_detail_mode={qa_detail_mode}
 ## 输入内容
 - candidate_question
 - source_anchor_text
+- retrieval_query
+- must_have_terms
+- answer_scope
 - question_type
 - qa_generation_unit_text，其中包含【主来源块】、可能存在的【同章节上下文】和【相关补充】
 
@@ -293,14 +318,16 @@ qa_detail_mode={qa_detail_mode}
 2. 严格按以下证据优先级定位答案依据：
    - 第一优先：【主来源块】
    - 第二优先：【同章节上下文】；仅在主来源块存在定义缺失、主语省略、局部指代、前后条款直接依赖时使用
-   - 第三优先：【相关补充】；仅在确实缺少一个小背景事实时使用
-3. 如果答案核心不在【主来源块】中，而主要依赖补充内容，直接丢弃该题。
-4. 生成直接、自然的答案，不要写“根据原文/根据通知/文中提到”。
-5. 检查 source_fact_text 是否包含支撑答案所需的全部信息，且主证据必须来自【主来源块】。
+   - 第三优先：【相关补充】；仅当 answer_scope 为 "cross_chunk" 且检索证据直接支撑缺失事实时使用
+3. 如果 answer_scope 为 "source_primary"，且答案核心不在【主来源块】中，直接丢弃该题。
+4. 如果 answer_scope 为 "same_section" 或 "cross_chunk"，可以使用选中的检索证据，但 source_fact_text 仍必须包含 source_anchor_text 或【主来源块】直接片段。
+5. 生成直接、自然的答案，不要写“根据原文/根据通知/文中提到”。
+6. 填写 evidence_usage，列出每个真正支撑答案的 chunk_id、短片段和用途。
 
 ## 丢弃规则
 - 如果候选问题宽泛、泛化、元信息化、疑似重复，或只是询问文件目的、意义、作用、影响、重要性，输出 {{"items":[]}}。
-- 如果答案主要依赖补充证据，而不是【主来源块】，输出 {{"items":[]}}。
+- 如果 answer_scope 为 "source_primary" 且答案主要依赖补充证据，而不是【主来源块】，输出 {{"items":[]}}。
+- 如果 answer_scope 为 "same_section" 或 "cross_chunk"，但检索证据不能直接支撑缺失事实，输出 {{"items":[]}}。
 - 如果 source_fact_text 无法从 qa_generation_unit_text 中摘取，输出 {{"items":[]}}。
 - 如果候选问题存在无法在不改写问题的情况下消除的指代不明，输出 {{"items":[]}}。
 - 如果该题最终只能回答成“加强管理、提高效率、降低风险、形成闭环”这类空泛管理话术，输出 {{"items":[]}}。
@@ -308,7 +335,7 @@ qa_detail_mode={qa_detail_mode}
 ## 约束
 1. question 必须与 candidate_question 完全一致。
 2. 问题主题必须围绕【主来源块】。
-3. source_fact_text 必须摘自 qa_generation_unit_text，并且必须包含来自【主来源块】的直接证据；只有严格必要时才补充上下文片段。
+3. source_fact_text 必须摘自 qa_generation_unit_text，并且必须包含来自【主来源块】的直接证据或 source_anchor_text；只有 answer_scope 允许且严格必要时才补充检索上下文片段。
 4. qa_detail_mode=point 时，source_fact_text 必须是单点、可独立成立的事实。
 5. qa_detail_mode=summary 时，source_fact_text 可以合并相关片段，但第一条、最核心的证据必须来自【主来源块】，其余片段必须确实参与了答案成立。
 6. answer_explanation 必须解释“为什么这个答案成立”，而不是重复空泛套话。
@@ -321,6 +348,7 @@ qa_detail_mode={qa_detail_mode}
 ## 必填字段
 - question、answer、answer_explanation、source_fact_text、source
 {kc_fields}
+- evidence_usage: 对象列表，每个对象包含 chunk_id、role、snippet、usage
 - question_type、question_type_reason、difficulty_level、difficulty_score、options、correct_option
 
 ## 题型要求
