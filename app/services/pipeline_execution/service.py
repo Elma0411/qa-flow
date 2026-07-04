@@ -928,7 +928,6 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                 filtered_qa_data: Optional[List[Dict[str, Any]]] = None
                 local_evaluation_results: Optional[Dict[str, Any]] = None
                 evaluation_duration: Optional[float] = None
-                evaluation_file: Optional[str] = None
 
                 if include_evaluation and qa_data:
                     current_stage = "evaluation"
@@ -1074,12 +1073,6 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                         filtered_qa_data = None
 
                     evaluation_duration = (time.time() - eval_start) if timed_evaluation else None
-                    # 将完整评估结果（含原始 LLM 响应）落盘，便于排查
-                    if evaluation_results:
-                        eval_safe_name = sanitize_filename(filename or "evaluation")
-                        evaluation_file = get_output_path(f"{task_id}_{eval_safe_name}_evaluation", ".json")
-                        with open(evaluation_file, "w", encoding="utf-8") as f:
-                            json.dump(evaluation_results, f, ensure_ascii=False, indent=2)
                     await update_file_progress(
                         filename,
                         current_stage,
@@ -1146,7 +1139,6 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                     if include_unsupervised_evaluation
                     else None,
                     "evaluation_results": evaluation_results,
-                    "evaluation_file": evaluation_file,
                     "debug_file": debug_file,
                     "filtered_qa_data": filtered_qa_data,
                     "processing_result": file_result,
@@ -1208,13 +1200,11 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
             failed_messages.append(str(result))
 
     consolidated_entries: List[Dict[str, Any]] = []
-    evaluation_file_map: Dict[str, Optional[str]] = {}
     debug_file_map: Dict[str, Optional[str]] = {}
     orphan_artifacts: List[str] = []
     if successful_files:
         for file_result in successful_files:
             try:
-                evaluation_file_map[file_result.get("filename")] = file_result.get("evaluation_file")
                 debug_file_map[file_result.get("filename")] = file_result.get("debug_file")
                 timing = file_result.get("timing") or {}
                 entry = build_consolidated_entry(
@@ -1270,7 +1260,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
             continue
         if result.get("status") == "success":
             continue
-        for key in ("debug_file", "evaluation_file"):
+        for key in ("debug_file",):
             candidate = _normalize_artifact_path(result.get(key))
             if candidate:
                 orphan_artifacts.append(candidate)
@@ -1349,7 +1339,6 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                     json.dump(entry["payload"], f, ensure_ascii=False, indent=2)
                 csv_path = get_output_path(f"{task_id}_{safe_name}_consolidated", ".csv")
                 write_consolidated_csv(entry["payload"].get("items", []), csv_path)
-                evaluation_json = evaluation_file_map.get(entry["filename"])
                 record: Dict[str, Any] = {
                     "mode": "separate",
                     "source_file": entry["filename"],
@@ -1359,8 +1348,6 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                     "filtered_pairs": entry["payload"].get("counts", {}).get("filtered_qa_pairs", 0),
                     "timing": entry["payload"].get("timing") or {},
                 }
-                if evaluation_json:
-                    record["evaluation_json"] = evaluation_json
                 debug_json = debug_file_map.get(entry["filename"])
                 if debug_json:
                     record["debug_jsonl"] = debug_json
@@ -1370,7 +1357,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                 output_records.append(
                     _finalize_pipeline_artifacts(
                         record,
-                        [json_path, csv_path, evaluation_json, debug_json],
+                        [json_path, csv_path, debug_json],
                     )
                 )
         else:
@@ -1402,9 +1389,6 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                 "filtered_pairs": combined_payload.get("counts", {}).get("filtered_qa_pairs", 0),
                 "timing": combined_payload.get("timing") or {},
             }
-            eval_files = [f.get("evaluation_file") for f in successful_files if f.get("evaluation_file")]
-            if eval_files:
-                record["evaluation_json_files"] = eval_files
             debug_files = [f.get("debug_file") for f in successful_files if f.get("debug_file")]
             if debug_files:
                 record["debug_json_files"] = debug_files
@@ -1414,7 +1398,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
             output_records.append(
                 _finalize_pipeline_artifacts(
                     record,
-                    [json_path, csv_path, *(eval_files or []), *(debug_files or [])],
+                    [json_path, csv_path, *(debug_files or [])],
                 )
             )
 

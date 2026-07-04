@@ -468,6 +468,7 @@ Stable task output fields:
 - `debug_jsonl`
 - `debug_json_files`
 - `consolidated_json`
+- `consolidated_csv`
 - `history_source`
 - `milvus_task_id`
 - `vector_storage_result`
@@ -475,6 +476,12 @@ Stable task output fields:
 - `manual_ingest_selected_count`
 - `manual_ingest_select_all`
 - `artifacts_expire_at`
+
+Integrated pipeline evaluation scores, reasons, filtering metadata, and timing
+belong in `consolidated_json`. New integrated pipeline tasks do not create a
+standalone `evaluation_json` / `evaluation_json_files` artifact; those fields
+are legacy-compatible cleanup/read fields only when present on older task
+records.
 
 Public endpoints:
 
