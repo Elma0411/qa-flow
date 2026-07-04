@@ -5196,3 +5196,111 @@ body.qa-workbench-redesign .settings-tab-panel .module-settings-shell {
       "action";
   }
 }
+
+/* Fixed-height review workspace: keep provenance/QA panels from stretching the page. */
+.review-grid {
+  align-items: stretch;
+  min-height: 0;
+}
+
+.review-panel {
+  min-width: 0;
+  min-height: 0;
+}
+
+.review-panel--chunk,
+.review-panel--qa {
+  height: min(74vh, 820px);
+  max-height: min(74vh, 820px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.review-panel--chunk > h2,
+.review-panel--qa > h2 {
+  flex: 0 0 auto;
+}
+
+.review-panel--chunk > .form-grid {
+  flex: 0 0 auto;
+}
+
+.review-panel--chunk > .chunk-tree-grid {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  overflow: hidden;
+}
+
+.review-panel--chunk .chunk-tree-box,
+.review-panel--chunk .chunk-debug-panel {
+  height: auto;
+  min-height: 0;
+  max-height: none;
+}
+
+.review-panel--chunk .chunk-debug-view.is-active,
+.review-panel--chunk #chunkDebugChunkView,
+.review-panel--chunk #chunkDebugQaDetail,
+.review-panel--qa > #qaResults {
+  min-height: 0;
+}
+
+.review-panel--qa > #qaResults {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
+}
+
+.review-panel--qa .qa-card:first-child {
+  margin-top: 0;
+}
+
+.review-panel--qa .qa-card:last-child {
+  margin-bottom: 0;
+}
+
+.review-panel--chunk .chunk-debug-view[data-debug-view-panel="chunk"] .chunk-debug-trace-list {
+  max-height: min(360px, 42vh);
+  overflow: auto;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
+}
+
+@media (max-width: 1180px) {
+  .review-panel--chunk,
+  .review-panel--qa {
+    height: min(70vh, 720px);
+    max-height: min(70vh, 720px);
+  }
+}
+
+@media (max-width: 900px) {
+  .review-panel--chunk,
+  .review-panel--qa {
+    height: min(72vh, 680px);
+    max-height: min(72vh, 680px);
+  }
+
+  .review-panel--chunk > .chunk-tree-grid {
+    overflow: auto;
+  }
+
+  .review-panel--chunk .chunk-tree-box,
+  .review-panel--chunk .chunk-debug-panel,
+  .review-panel--chunk .chunk-debug-view.is-active,
+  .review-panel--chunk .chunk-debug-qa-list-box,
+  .review-panel--chunk .chunk-debug-qa-detail-box {
+    overflow: hidden;
+  }
+
+  .review-panel--chunk #chunkTree,
+  .review-panel--chunk .chunk-debug-panel .chunk-debug-view,
+  .review-panel--chunk #chunkDebugQaList,
+  .review-panel--chunk #chunkDebugQaDetail {
+    overflow: auto;
+  }
+}

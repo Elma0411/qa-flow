@@ -4,31 +4,31 @@
 
 ## Objective
 
-减少完整流水线的重复临时产物，明确 `consolidated JSON/CSV`、`evaluation JSON`、`one_step_debug JSONL` 的职责边界。
+修复流水线工作台中 Chunk 溯源右侧 QA 预览过长、撑高整个页面的问题，让左右审阅面板保持固定高度，内容多时在面板内部滚动。
 
 ## What Changed
 
-- 完整流水线新任务不再单独生成 `*_evaluation_*.json`。
-  - LLM/local/无监督评估结果仍会进入最终 `consolidated JSON`。
-  - 前端预览、人工审阅入库、Milvus 入库继续以 `consolidated JSON` 为权威结果。
-- `consolidated CSV` 继续保留。
-  - 它是从 `consolidated JSON` 派生出来的表格导出文件，数据上有重叠，但面向人工下载和表格查看。
-- `one_step_debug JSONL` 继续保留。
-  - 它包含 chunk 级模型调用、原始响应、检索证据和丢弃原因，是“查看模型原始响应”的排查文件，不和 consolidated 结果合并。
-- 旧任务兼容逻辑保留。
-  - 已存在的 `evaluation_json/evaluation_json_files` 仍会被状态读取和 artifact lifecycle 识别，避免历史临时文件漏清。
+- 工作台审阅区 `Chunk 溯源` 和 `QA 预览` 面板改为固定视口高度。
+  - 桌面端高度为 `min(74vh, 820px)`。
+  - 中小屏使用更适合窗口的高度限制。
+- 右侧 `QA 预览` 的 `#qaResults` 改为内部滚动。
+  - QA 数量很多时不再把页面撑得很长。
+  - 顶部标题保持在面板内，列表内容独立滚动。
+- 左侧 Chunk 溯源面板也补齐固定高度上下文。
+  - Tree、Chunk 调试面板、按 QA 看详情都在各自容器内滚动。
+  - `按 Chunk 看` 里的“该块关联 QA”列表增加最大高度和内部滚动。
+- 静态样式版本更新到 `2026-07-04-2`，避免浏览器沿用旧 CSS 缓存。
 
-## Artifact Cleanup Rule
+## Expected Behavior
 
-- 新生成的完整流水线临时产物主要是 `consolidated JSON/CSV` 和 `one_step_debug JSONL`。
-- 默认 TTL 仍是 24 小时：未自动入库的 consolidated 文件和 debug JSONL 会登记到 artifact lifecycle，过期后由后台清理。
-- 已自动入库到 Milvus 的任务会清理 consolidated JSON/CSV；debug JSONL 仍保留到 TTL 后再清理，方便短期排查。
-- 历史任务里已经存在的 `evaluation JSON` 仍按旧兼容规则参与清理；新任务不再新增它。
+- 打开流水线工作台后，Chunk 溯源和右侧 QA 预览保持同一高度，不再把整页拉长。
+- QA 预览很多时，只滚动右侧 QA 列表区域。
+- Chunk 树、Chunk 调试、QA 详情内容很多时，只滚动对应内部区域。
 
 ## Validation
 
 ```bash
 cd /data2/hjk/qa-flow
-python -m py_compile app/services/pipeline_execution/service.py app/routers/pipeline_common.py app/services/pipeline_state/status.py app/services/artifacts/lifecycle.py
+node --check static/app.js static/admin.js static/eval.js static/app_config.js static/app_render.js static/app_runtime.js static/ui.js static/app_query.js
 git diff --check
 ```
