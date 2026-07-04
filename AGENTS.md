@@ -130,6 +130,27 @@ rather than using another user's home directory. Each Linux user who works on
 this repository needs their own CodeGraph executable/MCP setup and filesystem
 permission to read the repository.
 
+## Local Third-Party Reference Repositories
+Use `external_repos/` as the local-only workspace for downloading third-party
+open-source repositories that can be studied, compared, or adapted while
+working on QA Flow.
+
+- Do not commit or push `external_repos/` to the QA Flow GitHub remote.
+- On each developer machine, add `external_repos/` to the parent repository's
+  local `.git/info/exclude` so large reference repositories do not appear in
+  normal `git status`.
+- Keep every downloaded project in its own subdirectory and record its source
+  URL and checkout/commit in that subdirectory when practical.
+- Treat third-party code as reference material unless the user explicitly asks
+  to import or adapt it. Preserve licenses and attribution when copying code.
+- `external_repos/` is initialized as its own CodeGraph project. After adding
+  or updating reference repositories, run `codegraph sync external_repos` from
+  the QA Flow repository root, or `codegraph index --force external_repos` after
+  large changes.
+- When using CodeGraph MCP for reference code, pass
+  `projectPath: "/data2/hjk/qa-flow/external_repos"`. Use the normal QA Flow
+  repository CodeGraph project for first-party code.
+
 ## Collaboration rules
 This section defines repository-level collaboration expectations for future
 work. Treat these rules as default constraints when discussing requirements,

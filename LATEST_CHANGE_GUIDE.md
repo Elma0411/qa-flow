@@ -4,31 +4,40 @@
 
 ## Objective
 
-修复流水线工作台中 Chunk 溯源右侧 QA 预览过长、撑高整个页面的问题，让左右审阅面板保持固定高度，内容多时在面板内部滚动。
+新增本地第三方开源代码参考区，方便下载成熟项目供 QA Flow 后续改造时对照、模仿和学习，同时避免把参考仓库推送到远程。
 
 ## What Changed
 
-- 工作台审阅区 `Chunk 溯源` 和 `QA 预览` 面板改为固定视口高度。
-  - 桌面端高度为 `min(74vh, 820px)`。
-  - 中小屏使用更适合窗口的高度限制。
-- 右侧 `QA 预览` 的 `#qaResults` 改为内部滚动。
-  - QA 数量很多时不再把页面撑得很长。
-  - 顶部标题保持在面板内，列表内容独立滚动。
-- 左侧 Chunk 溯源面板也补齐固定高度上下文。
-  - Tree、Chunk 调试面板、按 QA 看详情都在各自容器内滚动。
-  - `按 Chunk 看` 里的“该块关联 QA”列表增加最大高度和内部滚动。
-- 静态样式版本更新到 `2026-07-04-2`，避免浏览器沿用旧 CSS 缓存。
+- 新建本地目录：`external_repos/`。
+  - 用于放第三方开源仓库或参考代码。
+  - 每个外部项目应放在独立子目录中。
+  - 建议在对应子目录记录来源 URL、分支/commit 和参考目的。
+- `external_repos/` 已加入本机 `.git/info/exclude`。
+  - 不会出现在普通 `git status`。
+  - 不会被提交或 push 到 `origin/master`。
+  - 该 exclude 是本机 Git 配置，不会随仓库同步；其他开发用户需要在自己的 `.git/info/exclude` 中添加同样规则。
+- `external_repos/` 已单独初始化为 CodeGraph 项目。
+  - 后续添加参考代码后，从 QA Flow 根目录执行：
 
-## Expected Behavior
+```bash
+codegraph sync external_repos
+```
 
-- 打开流水线工作台后，Chunk 溯源和右侧 QA 预览保持同一高度，不再把整页拉长。
-- QA 预览很多时，只滚动右侧 QA 列表区域。
-- Chunk 树、Chunk 调试、QA 详情内容很多时，只滚动对应内部区域。
+  - 大量新增或替换参考仓库后可执行：
+
+```bash
+codegraph index --force external_repos
+```
+
+- `AGENTS.md` 已记录使用规则。
+  - 分析本项目代码仍使用 QA Flow 根目录的 CodeGraph。
+  - 分析参考代码时，CodeGraph MCP 传入 `projectPath: "/data2/hjk/qa-flow/external_repos"`。
 
 ## Validation
 
 ```bash
 cd /data2/hjk/qa-flow
-node --check static/app.js static/admin.js static/eval.js static/app_config.js static/app_render.js static/app_runtime.js static/ui.js static/app_query.js
-git diff --check
+git status --short
+git status --short --ignored external_repos
+codegraph status external_repos
 ```
