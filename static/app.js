@@ -183,7 +183,11 @@ setupModuleSettingsUI();
 setupWorkbenchRedesign();
 const cancelTaskBtn = $('#cancelTaskBtn');
 if (cancelTaskBtn) {
-  cancelTaskBtn.addEventListener('click', handleCancelTask);
+  cancelTaskBtn.addEventListener('click', handleCancelCurrentTask);
+}
+const cancelTaskByIdBtn = $('#btnCancelTaskById');
+if (cancelTaskByIdBtn) {
+  cancelTaskByIdBtn.addEventListener('click', handleCancelInputTask);
 }
 const loadTaskStatusBtn = $('#btnLoadTaskStatus');
 if (loadTaskStatusBtn) {
@@ -1474,6 +1478,13 @@ function pipelineEvaluationSummary() {
   return `${method} / ${filter}`;
 }
 
+function pipelineStorageSummary() {
+  const vector = $('#enableVectorStorage')?.checked ? '自动入库' : '人工审阅';
+  const chunks = $('#enableChunkStorage')?.checked ? '保存溯源' : '不保存溯源';
+  const wait = $('#syncMode')?.checked ? '等待完成' : '异步返回';
+  return `${vector} / ${chunks} / ${wait}`;
+}
+
 function setupPipelineModuleConsole() {
   const form = $('#pipelineForm');
   const modeNode = nodeForField('pipelineProcessingMode');
@@ -1582,7 +1593,7 @@ function setupPipelineModuleConsole() {
           { field: 'syncMode' },
           { field: 'saveMode' },
         ],
-        summary: () => `${$('#enableVectorStorage')?.checked ? 'QA自动入库' : 'QA待审阅'} / ${$('#enableChunkStorage')?.checked ? '保存溯源' : '不保存溯源'} / ${$('#saveMode')?.value || 'separate'}`,
+        summary: () => pipelineStorageSummary(),
       },
     ],
   });
@@ -2117,6 +2128,7 @@ function setupWorkbenchHero() {
     items.push(createSummaryChip('生成', () => `${checkedQuestionTypesSummary()} / 尝试 ${$('#chunkMaxAttempts')?.value || 2}`, { moduleKey: 'pipeline.generation' }));
     items.push(createSummaryChip('评估', () => pipelineEvaluationSummary(), { moduleKey: 'pipeline.evaluation' }));
     items.push(createSummaryChip('并发', () => `chunk ${$('#chunkMaxConcurrency')?.value || '8'} / API ${$('#llmMaxConcurrentRequests')?.value || '默认'}`, { moduleKey: 'pipeline.performance' }));
+    items.push(createSummaryChip('存储', () => pipelineStorageSummary(), { moduleKey: 'pipeline.output' }));
     items.forEach((item) => summary.appendChild(item));
   }
 
@@ -3585,7 +3597,7 @@ function updatePipelineTaskHint(text) {
   if (!hintEl) return;
   hintEl.textContent =
     String(text || '').trim() ||
-    '页面会记住最近查看或正在运行的流水线任务。上方“终止当前/指定任务”会优先使用这里填写的 task_id；如果任务已经结束或变成僵尸记录，可直接在下方任务列表里删除记录。';
+    '页面会记住最近查看或正在运行的流水线任务。“终止当前任务”使用当前选中的 task_id；输入 task_id 后可点“终止此 task_id”。如果任务已经结束或变成僵尸记录，可直接在下方任务列表里删除记录。';
 }
 
 function clearPipelineOutputsView() {
@@ -3630,7 +3642,7 @@ function applyPipelineStatus(status, { base = '', taskId = '', activateStatus = 
   const statusText = String(status?.status || '').trim() || 'unknown';
   const msg = translatePipelineMessage(status?.message);
   updatePipelineTaskHint(
-    `当前查看 task_id=${normalizedTaskId}（${statusText}${msg ? `，${msg}` : ''}）。上方“终止当前/指定任务”会优先使用这个 task_id。`,
+    `当前查看 task_id=${normalizedTaskId}（${statusText}${msg ? `，${msg}` : ''}）。“终止当前任务”会使用这个 task_id；也可在输入框粘贴其他 task_id 后点“终止此 task_id”。`,
   );
 }
 
@@ -3718,13 +3730,28 @@ function startTaskPolling(base, taskId) {
   currentTaskPoller = timerId;
 }
 
+function resolveCurrentTaskIdForCancel() {
+  const page = getRuntimePageState();
+  return String(page.activeTaskId || page.selectedTaskId || lastTaskId || $('#taskIdInput')?.value || '').trim();
+}
+
+function handleCancelCurrentTask() {
+  const taskId = resolveCurrentTaskIdForCancel();
+  return handleCancelTask(taskId);
+}
+
+function handleCancelInputTask() {
+  const taskId = String($('#taskIdInput')?.value || '').trim();
+  return handleCancelTask(taskId);
+}
+
 async function handleCancelTask(explicitTaskId) {
   const base = getApiBaseUrl();
   const statusEl = $('#pipelineStatus');
-  const inputId = explicitTaskId || $('#taskIdInput')?.value.trim();
+  const inputId = typeof explicitTaskId === 'string' ? explicitTaskId.trim() : '';
   const taskId = inputId || lastTaskId;
   if (!taskId) {
-    if (statusEl) statusEl.textContent = '请先填入任务ID或执行过一次任务再终止';
+    if (statusEl) statusEl.textContent = '请先填入 task_id，或先恢复/查询一个当前任务再终止';
     return;
   }
   if (currentTaskPoller) {

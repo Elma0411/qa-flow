@@ -10,7 +10,7 @@
       href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@300;400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/ui/styles.css?v=2026-07-03-7" />
+    <link rel="stylesheet" href="/ui/styles.css?v=2026-07-04-1" />
   </head>
   <body>
     <a class="skip-link" href="#main">跳到内容</a>
@@ -882,7 +882,7 @@
           </label>
           <div class="actions-row">
             <button type="submit">开始执行流水线</button>
-            <button type="button" id="cancelTaskBtn" class="secondary">终止当前/指定任务</button>
+            <button type="button" id="cancelTaskBtn" class="secondary">终止当前任务</button>
           </div>
         </form>
         <div class="task-console">
@@ -893,8 +893,9 @@
             </label>
             <button type="button" id="btnLoadTaskStatus" class="secondary">查询任务</button>
             <button type="button" id="btnRestoreLastTask" class="secondary">恢复当前任务</button>
+            <button type="button" id="btnCancelTaskById" class="secondary danger-subtle">终止此 task_id</button>
           </div>
-          <p class="hint" id="pipelineTaskHint">页面会记住最近查看或正在运行的流水线任务。上方“终止当前/指定任务”会优先使用这里填写的 task_id；如果任务已经结束或变成僵尸记录，可直接在下方任务列表里删除记录。</p>
+          <p class="hint" id="pipelineTaskHint">页面会记住最近查看或正在运行的流水线任务。“终止当前任务”使用当前选中的 task_id；如果要终止指定任务，先在这里输入 task_id，再点“终止此 task_id”。已结束或僵尸记录可直接在下方任务列表里删除记录。</p>
           <div id="pipelineTaskHistory" class="task-history-list"></div>
         </div>
         <div id="pipelineOutputsPanel">
@@ -1088,7 +1089,7 @@
     <script src="/ui/app_config.js?v=2026-06-25-1"></script>
     <script src="/ui/app_render.js?v=2026-07-03-1"></script>
     <script src="/ui/app_query.js?v=2026-05-21-3"></script>
-    <script src="/ui/app.js?v=2026-07-03-7"></script>
+    <script src="/ui/app.js?v=2026-07-04-1"></script>
     <script>
       (function () {
         if (window.__QA_UI_APPJS_READY__) return;

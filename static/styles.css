@@ -2731,6 +2731,7 @@ tbody tr.row-selected td {
 .chunk-debug-panel {
   height: min(74vh, 820px);
   min-height: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   container-type: inline-size;
@@ -2904,7 +2905,9 @@ tbody tr.row-selected td {
   background: color-mix(in srgb, var(--surface) 76%, transparent);
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
@@ -2919,6 +2922,8 @@ tbody tr.row-selected td {
   gap: 12px;
   min-height: 0;
   height: 100%;
+  max-height: 100%;
+  overflow: hidden;
   align-items: stretch;
 }
 
@@ -2938,7 +2943,10 @@ tbody tr.row-selected td {
 }
 
 .chunk-debug-qa-detail-box > #chunkDebugQaDetail {
+  min-height: 0;
+  max-height: 100%;
   overflow: auto;
+  padding-right: 2px;
 }
 
 .chunk-debug-qa-item {
@@ -4645,6 +4653,17 @@ body.qa-workbench-redesign pre {
   .settings-tab-layout {
     min-height: 0;
   }
+
+  .chunk-debug-qa-layout {
+    grid-template-columns: 1fr;
+    overflow: auto;
+  }
+
+  .chunk-debug-qa-list-box,
+  .chunk-debug-qa-detail-box {
+    min-height: 260px;
+    height: auto;
+  }
 }
 
 @media (max-width: 640px) {
@@ -4742,6 +4761,16 @@ body.qa-workbench-redesign .workbench-core {
   border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
   background: color-mix(in srgb, var(--accent) 5%, var(--surface));
   opacity: 1;
+}
+
+.danger-subtle {
+  border-color: color-mix(in srgb, var(--danger) 30%, var(--border)) !important;
+  color: color-mix(in srgb, var(--danger) 72%, var(--text)) !important;
+}
+
+.danger-subtle:hover {
+  border-color: color-mix(in srgb, var(--danger) 46%, var(--border)) !important;
+  background: color-mix(in srgb, var(--danger) 7%, var(--surface)) !important;
 }
 
 .summary-chip-label {

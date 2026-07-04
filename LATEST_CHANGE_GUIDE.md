@@ -1,56 +1,35 @@
 # Latest Change Guide
 
-更新时间：2026-07-03（Asia/Shanghai）
+更新时间：2026-07-04（Asia/Shanghai）
 
 ## Objective
 
-补全流水线排查和人工入库闭环：在 chunk 明细里查看模型原始响应；自动入库后 debug JSONL 继续保留到 TTL；关闭自动入库时，可先人工审阅 QA，再勾选或一键全选入库。
+修复流水线工作台里存储设置不可见、终止任务入口含糊、Chunk QA 详情撑高页面的问题，并明确临时流水线产物的 24 小时清理范围。
 
 ## What Changed
 
-- 新增 `GET /pipeline-tasks/{task_id}/debug-jsonl`。
-  - 只读取任务状态中登记过的 debug JSONL basename。
-  - 支持按 `chunk_index` 和 `event` 过滤。
-  - 返回候选题生成、答案生成、检索 trace、丢弃原因、prompt 和 raw response。
-- 新增 `POST /pipeline-tasks/{task_id}/ingest-selected-qa`。
-  - 从当前任务未过期的 `consolidated_json` 中读取 QA。
-  - 支持 `selected_ids` 勾选入库，也支持 `select_all_task` 一键全选当前任务。
-  - 入库成功后更新任务输出记录的 `history_source`、`milvus_task_id`、`vector_storage_result` 和 manual ingest 元数据。
-- 自动 Milvus 入库成功后不再删除 `debug_jsonl` / `debug_json_files`。
-  - consolidated JSON/CSV/evaluation 仍可按原逻辑清理。
-  - debug JSONL 会继续注册到 artifact lifecycle，保留到 `artifacts_expire_at` 后自动清理。
-- 前端流水线调试面板：
-  - chunk 明细新增“查看”按钮，打开“模型原始响应”弹窗。
-  - 长字段默认折叠，不写入 localStorage。
-- 前端 QA 预览：
-  - 未自动入库且临时 JSON 未过期时显示“人工审阅入库”工具栏。
-  - 支持逐条勾选、清空选择、一键全选当前任务、入库所选 QA。
-- 存储输出文案统一：
-  - `写入 Milvus 向量库` -> `自动入库 QA 到向量库`
-  - `chunk 入库` -> `保存 chunk 溯源索引`
-  - `入库失败即失败` -> `溯源索引失败时终止任务`
-  - `同步等待完成` -> `提交后等待任务完成再返回`
+- 工作台顶部摘要新增 `存储` chip。
+  - 显示 `自动入库/人工审阅`、`保存溯源/不保存溯源`、`等待完成/异步返回`。
+  - 点击会打开任务设置里的 `存储输出` 面板。
+- 终止任务入口拆分为两个清晰动作。
+  - 主操作区按钮改为 `终止当前任务`。
+  - task_id 输入区新增 `终止此 task_id`。
+  - 修复点击事件对象可能被误当成 task_id 的问题。
+- Chunk 溯源的右侧 `QA 详情` 固定在调试面板高度内。
+  - 长内容在右侧详情区域内部滚动，不再把页面撑得很长。
+- 静态资源版本更新到 `2026-07-04-1`，避免浏览器使用旧缓存。
 
-## Expected Behavior
+## Artifact Cleanup Rule
 
-- 自动入库任务完成后，仍可在 TTL 内从 chunk 明细查看模型原始响应。
-- 关闭“自动入库 QA 到向量库”后，任务完成会保留 consolidated JSON；QA 预览区可人工勾选入库。
-- 一键全选当前任务不会让前端传所有 QA ID，而是由后端按任务 consolidated JSON 读取。
-- debug JSONL 过期或缺失时，前端显示中文空态/错误提示。
+- 流水线临时产物默认 TTL 是 24 小时：`consolidated JSON/CSV`、`evaluation JSON`、`one_step_debug JSONL` 等会登记到 artifact lifecycle，过期后由后台清理。
+- `pipeline_jobs_store.json`、`llm_configs.json`、`ocr_configs.json`、`artifact_lifecycle_registry.json`、SQLite 元数据等长期状态/配置文件不会按 24 小时删除。
+- 已自动入库到 Milvus 的任务可清理 consolidated JSON/CSV，但 debug JSONL 会保留到 TTL 后再清理。
+- 任务历史记录本身不会因为 24 小时 TTL 自动消失；只是临时产物过期后，历史记录里可下载/预览的文件会不可用。
 
 ## Validation
 
 ```bash
 cd /data2/hjk/qa-flow
-python -m py_compile app/routers/pipeline_history_routes.py app/services/milvus/store_search.py app/services/milvus/service.py app/services/pipeline_execution/service.py app/services/pipeline_state/status.py app/routers/pipeline_batch_routes.py app/routers/pipeline_integrated_routes.py app/services/doc_chunks/service.py
 node --check static/app.js static/admin.js static/eval.js static/app_config.js static/app_render.js static/app_runtime.js static/ui.js
 git diff --check
-```
-
-Docker runtime smoke:
-
-```bash
-docker compose -f docker/docker-compose.yml restart qa-flow-runtime
-curl http://localhost:12000/test-connection
-curl http://localhost:12000/environment-check
 ```
