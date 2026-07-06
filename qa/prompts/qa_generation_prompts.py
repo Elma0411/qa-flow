@@ -48,6 +48,8 @@ def _candidate_detail_mode_section(*, qa_detail_mode: str, language_code: str) -
 - qa_detail_mode=summary.
 - Generate only questions that naturally require two or more related facts from the source chunk to answer.
 - Prefer procedures, condition sets, responsibility splits, required material lists, handling rules, comparisons, or grouped requirements.
+- The question wording must explicitly ask for a grouped answer, such as steps, materials, conditions, responsibilities, rules, differences, or multiple requirements.
+- Do not ask a single condition-action question such as "what should be done if X happens" unless the expected answer contains multiple required actions or branches.
 - Do not create a summary question by loosely combining unrelated facts.
 - source_anchor_text must still be copied from the main source chunk and must prove the central topic of the summary question.
 - retrieval_query should connect the shared topic with the key facets that must be checked.
@@ -70,6 +72,8 @@ def _candidate_detail_mode_section(*, qa_detail_mode: str, language_code: str) -
 - qa_detail_mode=summary。
 - 只生成天然需要 2 个以上相关事实共同回答的问题。
 - 优先选择流程步骤、条件集合、职责分工、材料清单、处理规则、对比归纳或同一主体的多项要求。
+- 问题表述必须明确要求分组答案，例如步骤、材料、条件、职责、规则、差异或多项要求。
+- 不要生成“如果发生 X 应采取什么措施”这类单一条件-动作问题，除非预期答案确实包含多个必须动作或多个分支。
 - 不要把彼此松散无关的事实强行拼成总结题。
 - source_anchor_text 仍必须逐字摘自主来源块，并能证明总结题的中心主题来自当前块。
 - retrieval_query 应连接共同主题和需要核对的关键侧面。
@@ -99,7 +103,9 @@ def _answer_detail_mode_section(*, qa_detail_mode: str, language_code: str) -> s
 - source_fact_text must contain at least two evidence segments copied from qa_generation_unit_text, separated by semicolons or new lines.
 - At least one source_fact_text segment must come from the main source chunk or include source_anchor_text.
 - Every key fact in the answer must be represented in source_fact_text and evidence_usage.
+- answer_explanation must map each answer point to concrete evidence directly; do not write meta explanations such as "this answer is based on the main source chunk".
 - Reject the item if the evidence segments do not form one coherent answer to the candidate question.
+- Reject the item if candidate_question can be fully answered by one person, one time limit, one amount, one material, or one condition-action fact.
 """
         return """## Detail mode contract: point
 - qa_detail_mode=point.
@@ -119,7 +125,9 @@ def _answer_detail_mode_section(*, qa_detail_mode: str, language_code: str) -> s
 - source_fact_text 必须包含至少 2 个摘自 qa_generation_unit_text 的证据片段，使用分号或换行分隔。
 - 至少 1 个 source_fact_text 片段必须来自【主来源块】或包含 source_anchor_text。
 - 答案里的每个关键事实都必须在 source_fact_text 和 evidence_usage 中有对应证据。
+- answer_explanation 必须直接说明“哪个事实支撑哪个结论”，不要写“这个答案基于主来源块/其中提到”这类元叙述。
 - 如果这些证据片段不能组成对候选问题的同一个连贯回答，输出 {"items":[]}。
+- 如果 candidate_question 只需要回答一个主体、一个时限、一个金额、一个材料或一个条件-动作事实即可完整成立，输出 {"items":[]}。
 """
     return """## 粒度模式契约：单点
 - qa_detail_mode=point。
@@ -381,7 +389,10 @@ def build_evidence_answer_system_prompt(
 3. source_fact_text must be copied from qa_generation_unit_text. It must contain a direct snippet from 【主来源块】 or source_anchor_text. Add retrieved context snippets only when answer_scope permits it and they are necessary.
 4. qa_detail_mode=point: source_fact_text must be one atomic, standalone fact.
 5. qa_detail_mode=summary: source_fact_text may combine related snippets, but the first and most important supporting snippet must come from 【主来源块】, and every extra snippet must be necessary.
-6. answer_explanation must explain why the answer is supported, not repeat vague rhetoric.
+6. answer_explanation must explain why the answer is supported with concrete subjects and facts, not repeat vague rhetoric.
+   - Do not mention the source container, such as "main source chunk", "source text", "document", "reference", "content", or "description".
+   - Do not use deictic/meta phrasing such as "this answer", "the above", "it", or "these".
+   - Good style: "External inspection and quantity check are assigned to the user department; supplier handling is assigned to the purchasing specialist; asset numbering and ledger updates are assigned to the asset administrator."
 7. Do not add outside knowledge or assumptions.
 8. Do not include citation-style phrases such as "according to the reference", "the document mentions", or "the text states".
 9. Do not expand the question scope beyond what candidate_question asks.
@@ -452,7 +463,10 @@ qa_detail_mode={qa_detail_mode}
 3. source_fact_text 必须摘自 qa_generation_unit_text，并且必须包含来自【主来源块】的直接证据或 source_anchor_text；只有 answer_scope 允许且严格必要时才补充检索上下文片段。
 4. qa_detail_mode=point 时，source_fact_text 必须是单点、可独立成立的事实。
 5. qa_detail_mode=summary 时，source_fact_text 可以合并相关片段，但第一条、最核心的证据必须来自【主来源块】，其余片段必须确实参与了答案成立。
-6. answer_explanation 必须解释“为什么这个答案成立”，而不是重复空泛套话。
+6. answer_explanation 必须用具体主体和事实解释“为什么答案成立”，而不是重复空泛套话。
+   - 不要提到来源容器，例如“主来源块、原文、文本、文档、参考内容、资料、内容、描述”。
+   - 不要使用元叙述或指代词，例如“这个答案、该答案、上述答案、其中、其、这些、该内容”。
+   - 推荐写法：“外观检查和数量核对对应使用部门，异常处理对应采购专员，资产编号登记和台账更新对应资产管理员。”
 7. 禁止引入外部知识或常识补全。
 8. 答案、解释和来源事实中不要出现“根据参考内容/根据通知/文中提到/原文说明”等引用式表达。
 9. 不要把问题范围扩写到 candidate_question 之外。

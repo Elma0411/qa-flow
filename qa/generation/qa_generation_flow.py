@@ -303,6 +303,58 @@ def _is_source_anchored(
     return False
 
 
+def _summary_question_shape_reason(question: str, *, language_code: str) -> str:
+    text = str(question or "").strip().lower()
+    if not text:
+        return "missing_question"
+    if language_code == "zh":
+        grouped_markers = (
+            "哪些",
+            "哪几",
+            "包括",
+            "包含",
+            "分别",
+            "流程",
+            "步骤",
+            "职责",
+            "分工",
+            "材料",
+            "清单",
+            "条件",
+            "规则",
+            "要求",
+            "事项",
+            "内容",
+            "差异",
+            "区别",
+            "要点",
+        )
+        if any(marker in text for marker in grouped_markers):
+            return ""
+        return "summary_question_not_grouped"
+
+    grouped_markers = (
+        "which",
+        "what are",
+        "what steps",
+        "what materials",
+        "what conditions",
+        "what requirements",
+        "what rules",
+        "what responsibilities",
+        "list",
+        "steps",
+        "materials",
+        "conditions",
+        "requirements",
+        "responsibilities",
+        "differences",
+    )
+    if any(marker in text for marker in grouped_markers):
+        return ""
+    return "summary_question_not_grouped"
+
+
 def _resolve_generation_language(prompt_language: str, text: str) -> Tuple[str, str]:
     lang = (prompt_language or "auto").strip().lower()
     if lang == "auto":
@@ -407,6 +459,14 @@ def call_candidate_question_llm(
         if not candidate:
             dropped_reasons[reason] = dropped_reasons.get(reason, 0) + 1
             continue
+        if (qa_detail_mode or "point").strip().lower() == "summary":
+            shape_reason = _summary_question_shape_reason(
+                str(candidate.get("question") or ""),
+                language_code=language_code,
+            )
+            if shape_reason:
+                dropped_reasons[shape_reason] = dropped_reasons.get(shape_reason, 0) + 1
+                continue
         key = normalize_grounding_text(str(candidate.get("question") or ""))
         if key in seen_questions:
             dropped_reasons["duplicate_question"] = dropped_reasons.get("duplicate_question", 0) + 1

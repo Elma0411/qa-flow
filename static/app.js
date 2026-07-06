@@ -3013,6 +3013,7 @@ function translatedDropReason(reason) {
     summary_source_fact_segments_insufficient: '总结模式下来源事实片段不足，至少需要两个可定位的信息点',
     summary_source_fact_segment_not_grounded_in_chunk: '总结模式下部分来源事实片段未在证据中定位',
     summary_source_fact_not_grounded_in_chunk: '总结模式下来源事实整体未在证据中定位',
+    summary_question_not_grouped: '总结模式下候选问题不像分组/流程/清单/条件集合问题',
     ambiguous_reference_question: '问题里有指代不明的词',
     ambiguous_reference_answer: '答案里有指代不明的词',
     ambiguous_reference_answer_explanation: '答案解释里有指代不明的词',
