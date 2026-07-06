@@ -2131,8 +2131,20 @@ function setupWorkbenchHero() {
   const originalActions = $('#cancelTaskBtn')?.closest('.actions-row');
   if (heroActions && originalActions) {
     heroActions.appendChild(originalActions);
-    const submit = heroActions.querySelector('button[type="submit"]');
-    if (submit) submit.setAttribute('form', 'pipelineForm');
+    const submit = $('#pipelineSubmitBtn') || heroActions.querySelector('button[type="submit"]');
+    if (submit) {
+      submit.type = 'button';
+      submit.removeAttribute('form');
+      if (!submit.dataset.directSubmitBound) {
+        submit.dataset.directSubmitBound = 'true';
+        submit.addEventListener('click', () => {
+          handlePipelineSubmit({
+            preventDefault() {},
+            submitter: submit,
+          });
+        });
+      }
+    }
   }
 
   const summary = $('#workbenchSummary');
@@ -2246,9 +2258,14 @@ async function handlePipelineSubmit(e) {
   const statusEl = $('#pipelineStatus');
   const submitBtn =
     (e && e.submitter) ||
+    $('#pipelineSubmitBtn') ||
     (pipelineForm ? pipelineForm.querySelector('button[type="submit"]') : null);
   if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
-    if (statusEl) statusEl.textContent = '请先选择要上传的文件';
+    if (statusEl) {
+      statusEl.textContent = '请先选择要上传的文件';
+      activateTaskTab('status');
+    }
+    notify('请先选择要上传的文件', 'warning');
     return;
   }
 
