@@ -4,65 +4,45 @@
 
 ## Objective
 
-把问答生成里的证据范围控制从“大模型决定”改成“大模型只建议，系统按证据质量裁决”。目标是继续保留候选问题阶段的检索规划能力，但避免模型单方面扩大答案可用证据范围。
+让问答生成的 `qa_detail_mode=point` 和 `qa_detail_mode=summary` 真正成为两套不同生成策略。候选问题阶段现在会知道当前粒度模式，答案阶段也会按同一模式约束 `source_fact_text` 和证据使用，避免单点题被生成成多事实总结，或总结题只有一个孤立事实。
 
 ## What Changed
 
-- 候选问题 prompt 的证据范围字段改为 `answer_scope_hint`。
-  - 这是模型建议范围，只用于诊断和申请放宽上下文。
-  - 解析层兼容旧响应里的 `answer_scope`，但新 prompt 会要求输出 `answer_scope_hint`。
-- 新增系统最终范围裁决。
-  - `answer_scope_policy` 仍来自前端，是当前任务允许的最大范围。
-  - 系统会结合同章节/相邻 chunk、top1/top2 分数差距、`must_have_terms` 覆盖率、dense/lexical/structure 综合分，以及未来 `rerank_score`，生成最终 `effective_answer_scope`。
-  - `answer_scope` 保留为兼容字段，现在与 `effective_answer_scope` 同义，表示系统最终生效范围。
-- 生成上下文按最终范围硬过滤。
-  - `source_primary`：只给答案模型主来源块，不再把补充 evidence 塞进上下文后只靠 prompt 约束。
-  - `same_section`：只允许同章节或相邻 chunk 的补充证据。
-  - `cross_chunk`：只有前端允许、模型建议且检索质量通过阈值时才允许跨 chunk 补证据。
-- 调试输出新增裁决解释。
-  - 顶层 QA、consolidated JSON、debug QA store、admin 查询都会保留：
-    - `answer_scope_hint`
-    - `answer_scope`
-    - `effective_answer_scope`
-    - `answer_scope_decision`
-  - `retrieval_trace` 中同步保留这些字段，并在 `raw_semantic_hits` 中增加 `must_term_hits`、`must_term_total`、`must_term_coverage`。
-- 前端 QA 详情拆开展示：
-  - 模型建议范围
-  - 系统最终范围
-  - 前端范围策略
-  - 范围裁决原因
-  - 关键词覆盖率和未来 rerank 分
+- 候选问题 prompt 新增粒度模式契约。
+  - `point` 只允许单事实、单答案方向的问题。
+  - `summary` 只允许需要 2 个以上相关事实共同回答的问题。
+  - `answer_scope_hint` 仍只是模型建议，最终证据范围仍由系统裁决。
+- 答案生成 prompt 新增粒度模式契约。
+  - `point` 要求 `source_fact_text` 是单个 atomic fact，不能多句、分号或跨行。
+  - `summary` 要求 `source_fact_text` 至少包含 2 个证据片段，使用分号或换行分隔，并在 `evidence_usage` 中覆盖关键证据。
+- 生成调用链会把当前 `qa_detail_mode` 传入候选问题 LLM。
+  - debug JSONL 的 `candidate_question_llm_call` 会记录 `qa_detail_mode`。
+  - 不改变前端字段、后端 API、最终 QA 主字段结构。
+- summary 校验收紧。
+  - `summary_source_fact_segments_insufficient` 表示总结型来源事实没有拆出至少 2 个有效片段。
+  - summary 的每个有效片段都必须能在 `qa_generation_unit_text` 中定位。
+  - 主来源锚定会按拆分后的片段检查，至少一个片段需要锚回主来源块或候选问题原文锚点。
+- 前端丢弃原因补充中文解释。
 
 ## Practical Behavior
 
-- 默认 `answer_scope_policy=source_primary` 时，系统永远不会使用补充 evidence。
-- 如果希望同章节补证据，把前端最大证据范围调到 `same_section`。
-- 如果希望跨 chunk 补证据，把前端最大证据范围调到 `cross_chunk`，但系统仍会因分数差距小、关键词覆盖弱、章节关系差等原因自动收窄。
-- 大模型的 `answer_scope_hint` 只能申请放宽，不能直接授权放宽。
+- 使用 `point` 时，模型会更倾向于生成“谁/何时/什么条件/什么材料/什么阈值”这类单点直答问题。
+- 使用 `summary` 时，模型会更倾向于生成流程、清单、条件集合、职责分工、处理规则、对比归纳类问题。
+- 如果 summary 只生成了一个事实片段，会被丢弃并显示“总结模式下来源事实片段不足”。
+- 如果 point 生成了多句或分号拼接的来源事实，会继续按单点规则丢弃。
 
 ## Validation
 
 ```bash
 cd /data2/hjk/qa-flow
 python -m py_compile \
-  qa/generation/evidence_units.py \
-  qa/generation/qa_generation_flow.py \
   qa/prompts/qa_generation_prompts.py \
-  qa/pipeline_runtime.py \
+  qa/generation/qa_generation_flow.py \
+  qa/grounding/source_fact_grounding.py \
   qa/text_to_qa_pipeline.py \
-  app/services/pipeline_execution/service.py \
-  app/services/storage/consolidation.py \
-  app/services/debug/qa_store.py \
-  app/services/admin/qa_query.py \
-  app/routers/pipeline_batch_routes.py \
-  app/routers/pipeline_integrated_routes.py
+  qa/pipeline_runtime.py
 
 node --check static/app.js
-node --check static/app_query.js
-node --check static/app_config.js
-node --check static/app_render.js
-node --check static/app_runtime.js
-node --check static/ui.js
 
 git diff --check
 git status --short
@@ -73,9 +53,10 @@ Docker runtime 可用时再做：
 
 ```bash
 docker exec qa-flow-runtime python -m py_compile \
-  qa/generation/evidence_units.py \
-  qa/generation/qa_generation_flow.py \
   qa/prompts/qa_generation_prompts.py \
+  qa/generation/qa_generation_flow.py \
+  qa/grounding/source_fact_grounding.py \
+  qa/text_to_qa_pipeline.py \
   qa/pipeline_runtime.py
 
 curl http://localhost:12000/test-connection

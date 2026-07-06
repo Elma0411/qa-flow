@@ -14,7 +14,11 @@ from qa.common import (
     detect_language,
     safe_response_dump,
 )
-from qa.grounding import normalize_grounding_text, validate_source_fact_grounding
+from qa.grounding import (
+    normalize_grounding_text,
+    split_summary_grounding_segments,
+    validate_source_fact_grounding,
+)
 from qa.prompts.qa_generation_prompts import (
     build_candidate_question_system_prompt,
     build_evidence_answer_system_prompt,
@@ -283,8 +287,14 @@ def _is_source_anchored(
         return False
     if fact in source:
         return True
-    if anchor and (anchor in fact or fact in anchor):
-        return True
+    for segment in split_summary_grounding_segments(source_fact_text):
+        normalized_segment = normalize_grounding_text(segment)
+        if not normalized_segment:
+            continue
+        if normalized_segment in source:
+            return True
+        if anchor and (anchor in normalized_segment or normalized_segment in anchor):
+            return True
     if anchor and len(anchor) >= 8:
         grams = [anchor[index : index + 3] for index in range(max(0, len(anchor) - 2))]
         if grams:
@@ -315,6 +325,7 @@ def call_candidate_question_llm(
     few_shot_examples: Optional[List[Dict[str, Any]]],
     request_timeout: int,
     knowledge_category: Optional[str] = None,
+    qa_detail_mode: str = "point",
     chunk_index: Optional[int] = None,
     debug_writer: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> List[Dict[str, Any]]:
@@ -326,6 +337,7 @@ def call_candidate_question_llm(
         language_code=language_code,
         language_instruction=language_instruction,
         candidate_count=candidate_count,
+        qa_detail_mode=qa_detail_mode,
         question_type_plan=question_type_plan,
         few_shot_examples=few_shot_examples,
         knowledge_category=knowledge_category,
@@ -369,6 +381,7 @@ def call_candidate_question_llm(
                     "chunk_index": chunk_index,
                     "model": model,
                     "knowledge_category": knowledge_category,
+                    "qa_detail_mode": qa_detail_mode,
                     "prompt_template_key": prompt_template_key,
                     "system_prompt": system_prompt,
                     "user_content": user_content,
@@ -409,6 +422,7 @@ def call_candidate_question_llm(
                 "model": model,
                 "candidate_count": candidate_count,
                 "knowledge_category": knowledge_category,
+                "qa_detail_mode": qa_detail_mode,
                 "prompt_template_key": prompt_template_key,
                 "question_type_plan": question_type_plan,
                 "system_prompt": system_prompt,

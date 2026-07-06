@@ -39,23 +39,10 @@ def validate_source_fact_text_detail_mode(
                 return False, "point_source_fact_multi_sentence"
         return True, "ok"
 
-    if language_code == "zh":
-        if "；" in fact or "\n" in fact:
-            return True, "ok"
-        comma_like = fact.count("，") + fact.count("、") + fact.count(",")
-        if comma_like >= 2:
-            return True, "ok"
-        if fact.count("。") > 1:
-            return True, "ok"
-        return False, "summary_source_fact_not_compound"
-
-    if ";" in fact or "\n" in fact:
+    segments = split_summary_grounding_segments(fact)
+    if len(segments) >= 2:
         return True, "ok"
-    if fact.count(",") >= 2:
-        return True, "ok"
-    if fact.count(".") > 1:
-        return True, "ok"
-    return False, "summary_source_fact_not_compound"
+    return False, "summary_source_fact_segments_insufficient"
 
 
 _GROUNDING_TRANSLATION = str.maketrans(
@@ -189,24 +176,18 @@ def validate_source_fact_grounding(
         return False, "source_fact_not_grounded_in_chunk"
 
     segments = split_summary_grounding_segments(source_fact_text)
-    if len(segments) >= 2:
-        supported = 0
-        for segment in segments:
-            score, matched = best_chunk_grounding_score(segment, candidates)
-            if matched or score >= 0.84:
-                supported += 1
-                continue
-            return False, "summary_source_fact_segment_not_grounded_in_chunk"
-        if supported >= 2:
-            return True, "ok"
-
-    whole_score, whole_matched = best_chunk_grounding_score(source_fact_text, candidates)
-    if whole_matched or whole_score >= (0.80 if language_code == "zh" else 0.82):
-        return True, "ok"
-    return False, "summary_source_fact_not_grounded_in_chunk"
+    if len(segments) < 2:
+        return False, "summary_source_fact_segments_insufficient"
+    for segment in segments:
+        score, matched = best_chunk_grounding_score(segment, candidates)
+        if matched or score >= 0.84:
+            continue
+        return False, "summary_source_fact_segment_not_grounded_in_chunk"
+    return True, "ok"
 
 
 __all__ = [
+    "split_summary_grounding_segments",
     "validate_source_fact_text_detail_mode",
     "validate_source_fact_grounding",
 ]

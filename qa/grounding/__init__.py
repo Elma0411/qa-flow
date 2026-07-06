@@ -8,6 +8,7 @@ from typing import Any
 
 _EXPORTS = {
     "normalize_grounding_text": ".source_fact_grounding",
+    "split_summary_grounding_segments": ".source_fact_grounding",
     "validate_source_fact_grounding": ".source_fact_grounding",
     "validate_source_fact_text_detail_mode": ".source_fact_grounding",
 }

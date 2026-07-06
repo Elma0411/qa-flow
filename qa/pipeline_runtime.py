@@ -479,6 +479,7 @@ def run_one_step_chunk_worker(
             question_type_plan=plan_full,
             few_shot_examples=runtime.few_shot_examples,
             request_timeout=runtime.request_timeout,
+            qa_detail_mode=runtime.qa_detail_mode,
             knowledge_category=(
                 runtime.fixed_knowledge_category
                 if runtime.use_category_prompt_templates

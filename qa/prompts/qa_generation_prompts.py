@@ -35,6 +35,103 @@ def _knowledge_category_fields(*, language_code: str, enabled: bool) -> str:
     )
 
 
+def _normalize_qa_detail_mode(value: str) -> str:
+    mode = str(value or "point").strip().lower()
+    return mode if mode in {"point", "summary"} else "point"
+
+
+def _candidate_detail_mode_section(*, qa_detail_mode: str, language_code: str) -> str:
+    mode = _normalize_qa_detail_mode(qa_detail_mode)
+    if language_code == "en":
+        if mode == "summary":
+            return """## Detail mode contract: summary
+- qa_detail_mode=summary.
+- Generate only questions that naturally require two or more related facts from the source chunk to answer.
+- Prefer procedures, condition sets, responsibility splits, required material lists, handling rules, comparisons, or grouped requirements.
+- Do not create a summary question by loosely combining unrelated facts.
+- source_anchor_text must still be copied from the main source chunk and must prove the central topic of the summary question.
+- retrieval_query should connect the shared topic with the key facets that must be checked.
+- must_have_terms should cover the shared topic plus the main facets of the expected answer.
+- answer_scope_hint may be "same_section" or "cross_chunk" only when the summary cannot be completed from the source chunk alone; it is still only a hint.
+"""
+        return """## Detail mode contract: point
+- qa_detail_mode=point.
+- Generate only questions with one clear answer direction and one core fact.
+- Prefer one entity/action/condition/deadline/material/threshold/prohibition/exception at a time.
+- Do not generate procedure, checklist, comparison, responsibility-split, condition-set, or chapter-summary questions.
+- source_anchor_text must be a short, sufficient span copied from the main source chunk.
+- retrieval_query should find evidence for the same single fact, not broaden the question.
+- must_have_terms should focus on the single entity/action/condition that proves the answer.
+- answer_scope_hint should normally be "source_primary"; use wider hints only for unresolved local reference or definition.
+"""
+
+    if mode == "summary":
+        return """## 粒度模式契约：总结型
+- qa_detail_mode=summary。
+- 只生成天然需要 2 个以上相关事实共同回答的问题。
+- 优先选择流程步骤、条件集合、职责分工、材料清单、处理规则、对比归纳或同一主体的多项要求。
+- 不要把彼此松散无关的事实强行拼成总结题。
+- source_anchor_text 仍必须逐字摘自主来源块，并能证明总结题的中心主题来自当前块。
+- retrieval_query 应连接共同主题和需要核对的关键侧面。
+- must_have_terms 应覆盖共同主题以及预期答案中的主要侧面。
+- answer_scope_hint 只有在主来源块不足以完成总结时才可建议 "same_section" 或 "cross_chunk"；它仍只是系统裁决前的建议。
+"""
+    return """## 粒度模式契约：单点
+- qa_detail_mode=point。
+- 只生成答案方向单一、核心事实单一的问题。
+- 每题只问一个主体、动作、条件、时限、材料、阈值、禁止项或例外。
+- 不要生成流程题、清单题、对比题、职责分工题、条件集合题或章节总结题。
+- source_anchor_text 必须是短而充分的主来源块原文片段。
+- retrieval_query 只用于寻找同一个单点事实的证据，不要扩大问题范围。
+- must_have_terms 应聚焦证明答案所需的单个实体、动作或条件。
+- answer_scope_hint 通常应为 "source_primary"；只有主来源块存在局部指代或定义缺失时才建议更宽范围。
+"""
+
+
+def _answer_detail_mode_section(*, qa_detail_mode: str, language_code: str) -> str:
+    mode = _normalize_qa_detail_mode(qa_detail_mode)
+    if language_code == "en":
+        if mode == "summary":
+            return """## Detail mode contract: summary
+- qa_detail_mode=summary.
+- Keep the question unchanged, but answer it as a grouped, evidence-grounded summary.
+- The final answer may use short bullets or clauses when that makes the grouped facts clearer.
+- source_fact_text must contain at least two evidence segments copied from qa_generation_unit_text, separated by semicolons or new lines.
+- At least one source_fact_text segment must come from the main source chunk or include source_anchor_text.
+- Every key fact in the answer must be represented in source_fact_text and evidence_usage.
+- Reject the item if the evidence segments do not form one coherent answer to the candidate question.
+"""
+        return """## Detail mode contract: point
+- qa_detail_mode=point.
+- Keep the question unchanged and answer exactly one core fact.
+- The final answer must not combine multiple independent requirements, steps, conditions, or comparisons.
+- source_fact_text must be one atomic, standalone fact copied from qa_generation_unit_text.
+- Do not use semicolons, line breaks, or multiple sentences in source_fact_text.
+- Retrieved context may clarify a local reference, but it must not become the main answer basis.
+- Reject the item if the candidate question needs a list, procedure, comparison, or multi-fact synthesis.
+"""
+
+    if mode == "summary":
+        return """## 粒度模式契约：总结型
+- qa_detail_mode=summary。
+- question 必须保持不变，但答案应以有证据支撑的归纳方式回答。
+- 如果更清晰，答案可以使用简短分点、步骤或并列短句。
+- source_fact_text 必须包含至少 2 个摘自 qa_generation_unit_text 的证据片段，使用分号或换行分隔。
+- 至少 1 个 source_fact_text 片段必须来自【主来源块】或包含 source_anchor_text。
+- 答案里的每个关键事实都必须在 source_fact_text 和 evidence_usage 中有对应证据。
+- 如果这些证据片段不能组成对候选问题的同一个连贯回答，输出 {"items":[]}。
+"""
+    return """## 粒度模式契约：单点
+- qa_detail_mode=point。
+- question 必须保持不变，答案只能回答一个核心事实。
+- 答案不得综合多个独立要求、步骤、条件或对比关系。
+- source_fact_text 必须是从 qa_generation_unit_text 摘取的单点、可独立成立的事实。
+- source_fact_text 不得包含分号、换行或多个句子。
+- 检索上下文只能帮助消除局部指代或定义缺失，不能成为答案主体。
+- 如果候选问题需要清单、流程、对比或多事实归纳，输出 {"items":[]}。
+"""
+
+
 def build_candidate_question_system_prompt(
     *,
     language_code: str,
@@ -43,12 +140,17 @@ def build_candidate_question_system_prompt(
     question_type_plan: Optional[List[str]],
     few_shot_examples: Optional[List[Dict[str, Any]]],
     knowledge_category: Optional[str] = None,
+    qa_detail_mode: str = "point",
 ) -> str:
     plan_json = _safe_json_dumps(question_type_plan)
     examples_json = _safe_json_dumps(few_shot_examples)
     max_candidates = max(1, int(candidate_count))
     category_section = build_category_candidate_section(
         knowledge_category=knowledge_category,
+        language_code=language_code,
+    )
+    detail_mode_section = _candidate_detail_mode_section(
+        qa_detail_mode=qa_detail_mode,
         language_code=language_code,
     )
 
@@ -95,6 +197,8 @@ def build_candidate_question_system_prompt(
 6. If the chunk mainly contains advocacy, principles, background interpretation, or high-level rationale without operational details, return fewer items or an empty list.
 7. Only generate a multiple-choice candidate when the source chunk contains a stable, discriminative fact that can support one clearly correct option.
 8. Prefer practical, concrete questions about who must do what, under what conditions, by which process, with which records, or with what consequences.
+
+{detail_mode_section}
 
 {category_section}
 
@@ -173,6 +277,8 @@ Output ONLY raw JSON: {{"items":[...]}}.
 7. 只有当当前块存在稳定、可区分、可验证的事实点时，才生成单选题候选；不要为了凑题型硬出单选题。
 8. 优先设计关于“谁需要做什么、在什么条件下做、按什么流程做、留下什么记录、产生什么后果”的具体问题。
 
+{detail_mode_section}
+
 {category_section}
 
 ## 原文锚点要求
@@ -224,6 +330,10 @@ def build_evidence_answer_system_prompt(
         knowledge_category=knowledge_category,
         language_code=language_code,
     )
+    detail_mode_section = _answer_detail_mode_section(
+        qa_detail_mode=qa_detail_mode,
+        language_code=language_code,
+    )
 
     if language_code == "en":
         return f"""# Role: Fine-tuning QA answer generation expert
@@ -254,6 +364,8 @@ def build_evidence_answer_system_prompt(
 4. If answer_scope is "same_section" or "cross_chunk", you may use selected evidence, but source_fact_text must still include source_anchor_text or a direct snippet from 【主来源块】.
 5. Produce a direct, natural answer without saying "according to the text/reference/document".
 6. Fill evidence_usage with the chunk_id and short snippet for every evidence chunk that materially supports the answer.
+
+{detail_mode_section}
 
 ## Rejection rules
 - If the candidate question is broad, generic, meta-level, duplicate-like, or only asks about document purpose/importance/impact/role/meaning, output {{"items":[]}}.
@@ -323,6 +435,8 @@ qa_detail_mode={qa_detail_mode}
 4. 如果 answer_scope 为 "same_section" 或 "cross_chunk"，可以使用选中的检索证据，但 source_fact_text 仍必须包含 source_anchor_text 或【主来源块】直接片段。
 5. 生成直接、自然的答案，不要写“根据原文/根据通知/文中提到”。
 6. 填写 evidence_usage，列出每个真正支撑答案的 chunk_id、短片段和用途。
+
+{detail_mode_section}
 
 ## 丢弃规则
 - 如果候选问题宽泛、泛化、元信息化、疑似重复，或只是询问文件目的、意义、作用、影响、重要性，输出 {{"items":[]}}。

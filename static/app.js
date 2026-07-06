@@ -3010,6 +3010,7 @@ function translatedDropReason(reason) {
     point_source_fact_has_semicolon: '单点模式下来源事实包含分号，像是多个事实',
     point_source_fact_multi_sentence: '单点模式下来源事实包含多个句子',
     summary_source_fact_not_compound: '总结模式下来源事实过于单一，不像多信息点汇总',
+    summary_source_fact_segments_insufficient: '总结模式下来源事实片段不足，至少需要两个可定位的信息点',
     summary_source_fact_segment_not_grounded_in_chunk: '总结模式下部分来源事实片段未在证据中定位',
     summary_source_fact_not_grounded_in_chunk: '总结模式下来源事实整体未在证据中定位',
     ambiguous_reference_question: '问题里有指代不明的词',
