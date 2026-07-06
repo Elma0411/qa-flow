@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import random
+import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from qa.common import (
@@ -308,49 +309,92 @@ def _summary_question_shape_reason(question: str, *, language_code: str) -> str:
     if not text:
         return "missing_question"
     if language_code == "zh":
-        grouped_markers = (
-            "哪些",
-            "哪几",
-            "包括",
-            "包含",
+        relationship_markers = (
+            "组成",
+            "结构",
+            "维度",
+            "关系",
+            "对应",
             "分别",
-            "流程",
+            "顺序",
+            "先后",
+            "前后",
             "步骤",
-            "职责",
-            "分工",
-            "材料",
-            "清单",
+            "阶段",
+            "环节",
+            "过程",
+            "流程",
             "条件",
-            "规则",
-            "要求",
-            "事项",
-            "内容",
+            "前提",
+            "适用",
+            "限制",
+            "约束",
+            "例外",
+            "原因",
+            "为什么",
+            "结果",
+            "后果",
+            "影响",
+            "作用",
+            "用途",
+            "目的",
             "差异",
             "区别",
-            "要点",
+            "对比",
+            "取舍",
+            "权衡",
+            "依赖",
+            "关联",
+            "机制",
+            "协作",
+            "配合",
+            "连接",
         )
-        if any(marker in text for marker in grouped_markers):
+        has_relationship = any(marker in text for marker in relationship_markers)
+        shallow_list_pattern = re.compile(r"(有哪些|哪几种|哪几项|哪些|列出|列举)[^？?]{0,30}[？?]?$")
+        if shallow_list_pattern.search(text) and not has_relationship:
+            return "summary_question_too_shallow_list"
+        if has_relationship:
             return ""
         return "summary_question_not_grouped"
 
-    grouped_markers = (
-        "which",
-        "what are",
-        "what steps",
-        "what materials",
-        "what conditions",
-        "what requirements",
-        "what rules",
-        "what responsibilities",
-        "list",
+    relationship_markers = (
+        "composition",
+        "structure",
+        "components",
+        "relationship",
+        "relate",
+        "sequence",
+        "order",
         "steps",
-        "materials",
-        "conditions",
-        "requirements",
-        "responsibilities",
-        "differences",
+        "stages",
+        "process",
+        "procedure",
+        "condition",
+        "constraint",
+        "exception",
+        "cause",
+        "effect",
+        "result",
+        "consequence",
+        "impact",
+        "purpose",
+        "role",
+        "use",
+        "difference",
+        "compare",
+        "trade-off",
+        "dependency",
+        "mechanism",
+        "interact",
+        "cooperate",
+        "connect",
     )
-    if any(marker in text for marker in grouped_markers):
+    has_relationship = any(marker in text for marker in relationship_markers)
+    shallow_list_pattern = re.compile(r"\b(what|which|list)\b.{0,50}\??$", flags=re.IGNORECASE)
+    if shallow_list_pattern.search(text) and not has_relationship:
+        return "summary_question_too_shallow_list"
+    if has_relationship:
         return ""
     return "summary_question_not_grouped"
 

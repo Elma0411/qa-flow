@@ -47,8 +47,10 @@ def _candidate_detail_mode_section(*, qa_detail_mode: str, language_code: str) -
             return """## Detail mode contract: summary
 - qa_detail_mode=summary.
 - Generate only questions that naturally require two or more related facts from the source chunk to answer.
-- Prefer procedures, condition sets, responsibility splits, required material lists, handling rules, comparisons, or grouped requirements.
-- The question wording must explicitly ask for a grouped answer, such as steps, materials, conditions, responsibilities, rules, differences, or multiple requirements.
+- Prefer questions that require explaining relationships among facts: composition, sequence, conditions, cause/effect, comparison, purpose, constraints, exceptions, dependencies, or trade-offs.
+- The question wording must explicitly ask for a relationship-aware answer, not just a bag of names.
+- Do not generate shallow list questions that only ask to enumerate isolated items, labels, values, fields, options, or names. If the source only supports such a flat list, skip it.
+- Acceptable summary questions should ask how multiple facts work together, such as how parts form a whole, how stages connect, when different branches apply, why a constraint matters, or how alternatives differ.
 - Do not ask a single condition-action question such as "what should be done if X happens" unless the expected answer contains multiple required actions or branches.
 - Do not create a summary question by loosely combining unrelated facts.
 - source_anchor_text must still be copied from the main source chunk and must prove the central topic of the summary question.
@@ -71,8 +73,10 @@ def _candidate_detail_mode_section(*, qa_detail_mode: str, language_code: str) -
         return """## 粒度模式契约：总结型
 - qa_detail_mode=summary。
 - 只生成天然需要 2 个以上相关事实共同回答的问题。
-- 优先选择流程步骤、条件集合、职责分工、材料清单、处理规则、对比归纳或同一主体的多项要求。
-- 问题表述必须明确要求分组答案，例如步骤、材料、条件、职责、规则、差异或多项要求。
+- 优先生成需要解释多个事实之间关系的问题：组成关系、顺序关系、条件关系、因果关系、对比关系、作用关系、约束关系、例外关系、依赖关系或取舍关系。
+- 问题表述必须明确要求“关系型答案”，而不是只罗列一组名称。
+- 不要生成只列孤立条目的浅层清单题，例如只问有哪些条目、名称、标签、数值、字段、选项或对象。如果原文只支持这种平面清单题，应跳过。
+- 合格的总结题应当问多个事实如何共同构成整体、如何前后衔接、不同分支何时适用、某个约束为什么成立，或多个方案/对象之间有什么差异。
 - 不要生成“如果发生 X 应采取什么措施”这类单一条件-动作问题，除非预期答案确实包含多个必须动作或多个分支。
 - 不要把彼此松散无关的事实强行拼成总结题。
 - source_anchor_text 仍必须逐字摘自主来源块，并能证明总结题的中心主题来自当前块。
@@ -106,6 +110,7 @@ def _answer_detail_mode_section(*, qa_detail_mode: str, language_code: str) -> s
 - answer_explanation must map each answer point to concrete evidence directly; do not write meta explanations such as "this answer is based on the main source chunk".
 - Reject the item if the evidence segments do not form one coherent answer to the candidate question.
 - Reject the item if candidate_question can be fully answered by one person, one time limit, one amount, one material, or one condition-action fact.
+- Reject the item if candidate_question is only a shallow list of isolated items, labels, values, fields, options, or names without asking about composition, sequence, condition, cause/effect, comparison, purpose, constraint, exception, dependency, or trade-off relationships.
 """
         return """## Detail mode contract: point
 - qa_detail_mode=point.
@@ -128,6 +133,7 @@ def _answer_detail_mode_section(*, qa_detail_mode: str, language_code: str) -> s
 - answer_explanation 必须直接说明“哪个事实支撑哪个结论”，不要写“这个答案基于主来源块/其中提到”这类元叙述。
 - 如果这些证据片段不能组成对候选问题的同一个连贯回答，输出 {"items":[]}。
 - 如果 candidate_question 只需要回答一个主体、一个时限、一个金额、一个材料或一个条件-动作事实即可完整成立，输出 {"items":[]}。
+- 如果 candidate_question 只是浅层列举孤立条目、名称、标签、数值、字段、选项或对象，且没有询问组成、顺序、条件、因果、对比、作用、约束、例外、依赖或取舍关系，输出 {"items":[]}。
 """
     return """## 粒度模式契约：单点
 - qa_detail_mode=point。
