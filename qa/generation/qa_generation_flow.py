@@ -245,9 +245,11 @@ def _normalize_candidate_question(
             for term in str(raw_terms or "").replace("，", ",").split(",")
             if term.strip()
         ]
-    answer_scope = str(item.get("answer_scope") or "source_primary").strip().lower()
-    if answer_scope not in {"source_primary", "same_section", "cross_chunk"}:
-        answer_scope = "source_primary"
+    answer_scope_hint = str(
+        item.get("answer_scope_hint") or item.get("answer_scope") or "source_primary"
+    ).strip().lower()
+    if answer_scope_hint not in {"source_primary", "same_section", "cross_chunk"}:
+        answer_scope_hint = "source_primary"
 
     return (
         {
@@ -255,7 +257,10 @@ def _normalize_candidate_question(
             "source_anchor_text": source_anchor_text,
             "retrieval_query": retrieval_query,
             "must_have_terms": must_have_terms[:8],
-            "answer_scope": answer_scope,
+            "answer_scope_hint": answer_scope_hint,
+            # Backward-compatible alias. Downstream code replaces answer_scope
+            # with the system-approved effective scope before answer generation.
+            "answer_scope": answer_scope_hint,
             "question_type": question_type,
             "question_type_reason": str(item.get("question_type_reason") or "").strip(),
             "difficulty_level": difficulty_level,
@@ -466,6 +471,9 @@ def call_evidence_answer_llm(
     answer_scope = str(candidate.get("answer_scope") or "source_primary").strip().lower()
     if answer_scope not in {"source_primary", "same_section", "cross_chunk"}:
         answer_scope = "source_primary"
+    answer_scope_hint = str(candidate.get("answer_scope_hint") or answer_scope).strip().lower()
+    if answer_scope_hint not in {"source_primary", "same_section", "cross_chunk"}:
+        answer_scope_hint = "source_primary"
     question_type = str(candidate.get("question_type") or "简答题").strip() or "简答题"
     user_content = (
         f"candidate_question: {candidate_question}\n"
@@ -588,7 +596,10 @@ def call_evidence_answer_llm(
         normalized_item["source_anchor_text"] = source_anchor_text
         normalized_item["retrieval_query"] = retrieval_query
         normalized_item["must_have_terms"] = must_have_terms
+        normalized_item["answer_scope_hint"] = answer_scope_hint
         normalized_item["answer_scope"] = answer_scope
+        normalized_item["effective_answer_scope"] = answer_scope
+        normalized_item["answer_scope_decision"] = candidate.get("answer_scope_decision") or {}
         normalized_item["source_chunk_id"] = source_chunk.get("chunk_id")
         normalized_item["source_chunk_index"] = source_chunk.get("chunk_index")
         normalized_item["source_chunk_title_path"] = source_chunk.get("title_path")

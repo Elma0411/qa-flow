@@ -238,8 +238,14 @@ def _normalize_answer_scope(raw: Any) -> str:
     return scope if scope in {"source_primary", "same_section", "cross_chunk"} else "source_primary"
 
 
-def _effective_answer_scope(candidate_scope: Any, policy: str) -> str:
-    requested = _normalize_answer_scope(candidate_scope)
+def _candidate_answer_scope_hint(candidate: Dict[str, Any]) -> str:
+    return _normalize_answer_scope(
+        candidate.get("answer_scope_hint") or candidate.get("answer_scope")
+    )
+
+
+def _retrieval_scope_for_hint(candidate_scope_hint: Any, policy: str) -> str:
+    requested = _normalize_answer_scope(candidate_scope_hint)
     policy_scope = _normalize_answer_scope(policy)
     if policy_scope == "source_primary":
         return "source_primary"
@@ -248,6 +254,162 @@ def _effective_answer_scope(candidate_scope: Any, policy: str) -> str:
     if policy_scope == "same_section":
         return requested if requested in {"source_primary", "same_section"} else "source_primary"
     return requested
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _scope_trace_summary(trace: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(trace, dict):
+        return {}
+    return {
+        "chunk_index": trace.get("chunk_index"),
+        "title_path": trace.get("title_path"),
+        "score": trace.get("score"),
+        "dense_score": trace.get("dense_score"),
+        "lexical_score": trace.get("lexical_score"),
+        "structure_score": trace.get("structure_score"),
+        "must_term_hits": trace.get("must_term_hits"),
+        "must_term_total": trace.get("must_term_total"),
+        "must_term_coverage": trace.get("must_term_coverage"),
+        "score_gap_top1_top2": trace.get("score_gap_top1_top2"),
+        "same_parent": bool(trace.get("same_parent")),
+        "adjacent": bool(trace.get("adjacent")),
+        "title_overlap": trace.get("title_overlap"),
+        "rerank_score": trace.get("rerank_score")
+        if trace.get("rerank_score") is not None
+        else trace.get("cross_encoder_score"),
+    }
+
+
+def _term_evidence_ok(trace: Dict[str, Any]) -> bool:
+    total = int(_safe_float(trace.get("must_term_total"), 0.0))
+    if total <= 0:
+        return _safe_float(trace.get("lexical_score"), 0.0) >= 0.08
+    return (
+        _safe_float(trace.get("must_term_coverage"), 0.0) >= 0.34
+        or _safe_float(trace.get("lexical_score"), 0.0) >= 0.18
+    )
+
+
+def _gap_evidence_ok(trace: Dict[str, Any]) -> bool:
+    gap = trace.get("score_gap_top1_top2")
+    if gap is None:
+        return True
+    return (
+        _safe_float(gap, 0.0) >= 0.008
+        or _safe_float(trace.get("lexical_score"), 0.0) >= 0.24
+        or _safe_float(trace.get("structure_score"), 0.0) >= 0.45
+    )
+
+
+def _same_section_evidence_ok(trace: Dict[str, Any]) -> bool:
+    relation_ok = bool(trace.get("same_parent") or trace.get("adjacent"))
+    score_ok = (
+        _safe_float(trace.get("score"), 0.0) >= 0.38
+        or _safe_float(trace.get("structure_score"), 0.0) >= 0.45
+    )
+    return relation_ok and score_ok and _term_evidence_ok(trace) and _gap_evidence_ok(trace)
+
+
+def _cross_chunk_evidence_ok(trace: Dict[str, Any]) -> bool:
+    score_ok = _safe_float(trace.get("score"), 0.0) >= 0.42
+    rerank_score = trace.get("rerank_score")
+    rerank_ok = rerank_score is None or _safe_float(rerank_score, 0.0) >= 0.0
+    return score_ok and rerank_ok and _term_evidence_ok(trace) and _gap_evidence_ok(trace)
+
+
+def _decide_effective_answer_scope(
+    *,
+    candidate_scope_hint: Any,
+    policy: str,
+    raw_semantic_trace: Optional[List[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    hint = _normalize_answer_scope(candidate_scope_hint)
+    policy_scope = _normalize_answer_scope(policy)
+    non_source = [
+        trace
+        for trace in (raw_semantic_trace or [])
+        if isinstance(trace, dict) and not trace.get("is_source_chunk")
+    ]
+    same_section_candidates = [
+        trace for trace in non_source if trace.get("same_parent") or trace.get("adjacent")
+    ]
+    best_same = same_section_candidates[0] if same_section_candidates else None
+    best_any = non_source[0] if non_source else None
+
+    decision: Dict[str, Any] = {
+        "answer_scope_hint": hint,
+        "answer_scope_policy": policy_scope,
+        "effective_answer_scope": "source_primary",
+        "reason_code": "default_source_primary",
+        "reason": "默认只使用主来源块，避免补充证据漂移。",
+        "evidence": {
+            "best_same_section": _scope_trace_summary(best_same),
+            "best_any": _scope_trace_summary(best_any),
+        },
+        "checks": {
+            "same_section_evidence_ok": _same_section_evidence_ok(best_same)
+            if best_same
+            else False,
+            "cross_chunk_evidence_ok": _cross_chunk_evidence_ok(best_any)
+            if best_any
+            else False,
+        },
+    }
+
+    if policy_scope == "source_primary":
+        decision.update(
+            {
+                "reason_code": "policy_source_primary",
+                "reason": "前端策略限制为只使用主来源块，系统未放宽证据范围。",
+            }
+        )
+        return decision
+
+    if hint == "source_primary":
+        decision.update(
+            {
+                "reason_code": "hint_source_primary",
+                "reason": "模型建议主来源块已足够，系统保持主来源块范围。",
+            }
+        )
+        return decision
+
+    same_ok = bool(decision["checks"]["same_section_evidence_ok"])
+    cross_ok = bool(decision["checks"]["cross_chunk_evidence_ok"])
+
+    if policy_scope == "cross_chunk" and hint == "cross_chunk" and best_any and cross_ok:
+        decision.update(
+            {
+                "effective_answer_scope": "cross_chunk",
+                "reason_code": "cross_chunk_evidence_approved",
+                "reason": "前端允许跨 chunk，且召回证据的综合分、关键词覆盖和分数间隔达到阈值。",
+            }
+        )
+        return decision
+
+    if hint in {"same_section", "cross_chunk"} and best_same and same_ok:
+        decision.update(
+            {
+                "effective_answer_scope": "same_section",
+                "reason_code": "same_section_evidence_approved",
+                "reason": "前端允许同章节补充，且召回证据来自同章节或相邻块，质量达到阈值。",
+            }
+        )
+        return decision
+
+    decision.update(
+        {
+            "reason_code": "evidence_not_confident",
+            "reason": "补充证据的章节关系、综合分、关键词覆盖或 top1/top2 分差不足，系统收窄到主来源块。",
+        }
+    )
+    return decision
 
 
 def _candidate_retrieval_query(candidate: Dict[str, Any], source_chunk_meta: Dict[str, Any]) -> str:
@@ -341,8 +503,8 @@ def run_one_step_chunk_worker(
                 "key": str(candidate.get("question") or "").strip(),
                 "query": _candidate_retrieval_query(candidate, source_chunk_meta),
                 "must_have_terms": candidate.get("must_have_terms") or [],
-                "answer_scope": _effective_answer_scope(
-                    candidate.get("answer_scope"),
+                "answer_scope": _retrieval_scope_for_hint(
+                    _candidate_answer_scope_hint(candidate),
                     runtime.answer_scope_policy,
                 ),
             }
@@ -383,15 +545,23 @@ def run_one_step_chunk_worker(
             seen_questions.add(question_key)
             candidates_considered += 1
             retrieval_query = _candidate_retrieval_query(candidate, source_chunk_meta)
-            effective_answer_scope = _effective_answer_scope(
-                candidate.get("answer_scope"),
-                runtime.answer_scope_policy,
-            )
+            answer_scope_hint = _candidate_answer_scope_hint(candidate)
             candidate_for_answer = dict(candidate)
             candidate_for_answer["retrieval_query"] = retrieval_query
-            candidate_for_answer["answer_scope"] = effective_answer_scope
+            candidate_for_answer["answer_scope_hint"] = answer_scope_hint
             candidate_for_answer["must_have_terms"] = candidate.get("must_have_terms") or []
             semantic_hits, raw_semantic_trace = retrieval_map.get(question_key, (None, None))
+            scope_decision = _decide_effective_answer_scope(
+                candidate_scope_hint=answer_scope_hint,
+                policy=runtime.answer_scope_policy,
+                raw_semantic_trace=raw_semantic_trace,
+            )
+            effective_answer_scope = str(
+                scope_decision.get("effective_answer_scope") or "source_primary"
+            )
+            candidate_for_answer["answer_scope"] = effective_answer_scope
+            candidate_for_answer["effective_answer_scope"] = effective_answer_scope
+            candidate_for_answer["answer_scope_decision"] = scope_decision
             _append_wall_interval(
                 wall_intervals,
                 "validation_and_bookkeeping",
@@ -414,6 +584,9 @@ def run_one_step_chunk_worker(
                 rerank_top_n=runtime.rerank_top_n,
                 semantic_hits=semantic_hits,
                 raw_semantic_trace=raw_semantic_trace,
+                answer_scope_hint=answer_scope_hint,
+                answer_scope_policy=runtime.answer_scope_policy,
+                answer_scope_decision=scope_decision,
             )
             unit_ended_at = time.perf_counter()
             retrieval_unit_seconds += unit_ended_at - unit_started_at

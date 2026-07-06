@@ -1,50 +1,44 @@
 # Latest Change Guide
 
-更新时间：2026-07-05（Asia/Shanghai）
+更新时间：2026-07-06（Asia/Shanghai）
 
 ## Objective
 
-优化“候选问题 -> 同文档检索 -> evidence 答案生成”的检索质量和可调试性，并把第三方参考项目下载到本地-only 参考区，供后续继续学习 RAG、prompt 和 rerank 方案。
+把问答生成里的证据范围控制从“大模型决定”改成“大模型只建议，系统按证据质量裁决”。目标是继续保留候选问题阶段的检索规划能力，但避免模型单方面扩大答案可用证据范围。
 
 ## What Changed
 
-- 问答生成检索默认从 `semantic` 升级为 `hybrid`。
-  - `semantic` 仍是旧逻辑：归一化 dense embedding + dot product。
-  - `hybrid` 会融合 dense 分数、词项匹配分数、同章节/相邻 chunk/title_path 结构加权。
-  - 分数接近时会先取 dense 与词项候选池，再按综合分轻量重排。
-- 候选问题 prompt 新增检索规划字段。
-  - `retrieval_query`：用于检索 evidence 的短查询。
-  - `must_have_terms`：检索时必须重点命中的实体/动作/条件词。
-  - `answer_scope`：`source_primary`、`same_section`、`cross_chunk`。
-- 答案生成 prompt 会接收检索规划字段和证据范围策略。
-  - 默认仍以主来源块为第一依据。
-  - 只有配置允许时，才使用同章节或跨 chunk evidence。
-  - 最终 QA 会记录 `evidence_usage`、`retrieval_trace` 和选中 evidence 的评分诊断。
-- 前端流水线参数新增“检索证据”模块。
-  - 可配置：检索排序模式、evidence 数量、轻量重排候选数、dense/lexical/structure 权重、答案证据范围。
-  - 任务状态面板显示 resolved `retrieval_config`。
-  - QA 详情里的检索诊断改为中文字段，并展示综合/向量/词项/结构分、排序、top1-top2 差距、同章节/相邻块标记。
-- consolidated JSON、debug QA store、admin 查询响应会保留顶层检索字段。
-  - `retrieval_query`
-  - `must_have_terms`
-  - `answer_scope`
-  - `evidence_usage`
-  - `retrieval_trace`
-- 本地参考目录仍使用 `external_repos/`。
-  - 该目录已被 `.git/info/exclude` 忽略，不会提交或 push。
-  - 下载完成后执行 `codegraph sync external_repos`，让 CodeGraph 可以检索参考代码。
+- 候选问题 prompt 的证据范围字段改为 `answer_scope_hint`。
+  - 这是模型建议范围，只用于诊断和申请放宽上下文。
+  - 解析层兼容旧响应里的 `answer_scope`，但新 prompt 会要求输出 `answer_scope_hint`。
+- 新增系统最终范围裁决。
+  - `answer_scope_policy` 仍来自前端，是当前任务允许的最大范围。
+  - 系统会结合同章节/相邻 chunk、top1/top2 分数差距、`must_have_terms` 覆盖率、dense/lexical/structure 综合分，以及未来 `rerank_score`，生成最终 `effective_answer_scope`。
+  - `answer_scope` 保留为兼容字段，现在与 `effective_answer_scope` 同义，表示系统最终生效范围。
+- 生成上下文按最终范围硬过滤。
+  - `source_primary`：只给答案模型主来源块，不再把补充 evidence 塞进上下文后只靠 prompt 约束。
+  - `same_section`：只允许同章节或相邻 chunk 的补充证据。
+  - `cross_chunk`：只有前端允许、模型建议且检索质量通过阈值时才允许跨 chunk 补证据。
+- 调试输出新增裁决解释。
+  - 顶层 QA、consolidated JSON、debug QA store、admin 查询都会保留：
+    - `answer_scope_hint`
+    - `answer_scope`
+    - `effective_answer_scope`
+    - `answer_scope_decision`
+  - `retrieval_trace` 中同步保留这些字段，并在 `raw_semantic_hits` 中增加 `must_term_hits`、`must_term_total`、`must_term_coverage`。
+- 前端 QA 详情拆开展示：
+  - 模型建议范围
+  - 系统最终范围
+  - 前端范围策略
+  - 范围裁决原因
+  - 关键词覆盖率和未来 rerank 分
 
-## Practical Defaults
+## Practical Behavior
 
-- `retrieval_mode=hybrid`
-- `semantic_top_k=3`
-- `rerank_top_n=12`
-- `hybrid_weight_dense=0.68`
-- `hybrid_weight_lexical=0.24`
-- `retrieval_structure_weight=0.08`
-- `answer_scope_policy=source_primary`
-
-如果追求更强跨块补证据，可以把 `answer_scope_policy` 调成 `same_section` 或 `cross_chunk`，但建议抽查答案是否发生证据漂移。
+- 默认 `answer_scope_policy=source_primary` 时，系统永远不会使用补充 evidence。
+- 如果希望同章节补证据，把前端最大证据范围调到 `same_section`。
+- 如果希望跨 chunk 补证据，把前端最大证据范围调到 `cross_chunk`，但系统仍会因分数差距小、关键词覆盖弱、章节关系差等原因自动收窄。
+- 大模型的 `answer_scope_hint` 只能申请放宽，不能直接授权放宽。
 
 ## Validation
 
@@ -78,6 +72,12 @@ git status --short --ignored external_repos
 Docker runtime 可用时再做：
 
 ```bash
+docker exec qa-flow-runtime python -m py_compile \
+  qa/generation/evidence_units.py \
+  qa/generation/qa_generation_flow.py \
+  qa/prompts/qa_generation_prompts.py \
+  qa/pipeline_runtime.py
+
 curl http://localhost:12000/test-connection
 curl http://localhost:12000/environment-check
 ```

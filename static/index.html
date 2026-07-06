@@ -904,13 +904,13 @@
             <small>同章节、相邻 chunk、标题路径重合的加权，避免纯语义分数过平。</small>
           </label>
           <label>
-            答案证据范围（answer_scope_policy）
+            前端最大证据范围（answer_scope_policy）
             <select id="answerScopePolicy">
               <option value="source_primary" selected>source_primary（主来源块优先）</option>
               <option value="same_section">same_section（允许同章节补证据）</option>
               <option value="cross_chunk">cross_chunk（允许跨 chunk 证据）</option>
             </select>
-            <small>越往后越能利用检索证据，但也更需要人工抽查答案是否漂移。</small>
+            <small>这是系统允许的最大范围；模型只提供建议，最终由检索分数、章节关系和关键词覆盖裁决。</small>
           </label>
           <label>
             增广并发（augment_max_concurrency，可选）

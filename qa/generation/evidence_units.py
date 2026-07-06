@@ -443,6 +443,9 @@ class QADocumentEvidenceIndex:
                     "lexical_score": lexical_score,
                     "structure_score": structure_score,
                     "fused_score": fused_score,
+                    "must_term_hits": must_term_hits,
+                    "must_term_total": len(query_terms),
+                    "must_term_coverage": must_term_coverage,
                     "same_parent": same_parent,
                     "adjacent": adjacent,
                     "title_overlap": title_overlap,
@@ -491,6 +494,9 @@ class QADocumentEvidenceIndex:
                 "dense_score": item["dense_score"],
                 "lexical_score": item["lexical_score"],
                 "structure_score": item["structure_score"],
+                "must_term_hits": item["must_term_hits"],
+                "must_term_total": item["must_term_total"],
+                "must_term_coverage": item["must_term_coverage"],
                 "dense_rank": dense_rank.get(int(item["chunk"].get("chunk_index") or 0)),
                 "lexical_rank": lexical_rank.get(int(item["chunk"].get("chunk_index") or 0)),
                 "final_rank": rank,
@@ -547,6 +553,9 @@ class QADocumentEvidenceIndex:
         rerank_top_n: int = DEFAULT_RERANK_TOP_N,
         semantic_hits: Optional[List[EvidenceHit]] = None,
         raw_semantic_trace: Optional[List[Dict[str, Any]]] = None,
+        answer_scope_hint: str = "source_primary",
+        answer_scope_policy: str = "source_primary",
+        answer_scope_decision: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         source_chunk = self.get_chunk(source_chunk_index)
         clean_retrieval_query = _safe_text(retrieval_query) or _safe_text(question)
@@ -572,11 +581,21 @@ class QADocumentEvidenceIndex:
         selected_hits: List[EvidenceHit] = []
         remaining_budget = max(1000, int(max_unit_chars)) - len(_format_chunk_for_unit(source_chunk))
         for hit in hits:
+            hit_is_same_section = bool(
+                hit.parent_index_path
+                and source_parent
+                and hit.parent_index_path == source_parent
+            )
+            hit_is_adjacent = bool(abs(int(hit.chunk_index) - int(source_chunk_index)) == 1)
+            if normalized_scope == "source_primary":
+                continue
+            if normalized_scope == "same_section" and not (hit_is_same_section or hit_is_adjacent):
+                continue
             chunk = self.get_chunk(hit.chunk_index)
             hit_text = _format_chunk_for_unit(chunk)
             if remaining_budget - len(hit_text) < 0:
                 continue
-            role = "same_section_context" if hit.parent_index_path and hit.parent_index_path == source_parent else "related_context"
+            role = "same_section_context" if hit_is_same_section or hit_is_adjacent else "related_context"
             selected_hits.append(
                 EvidenceHit(
                     chunk_id=hit.chunk_id,
@@ -619,7 +638,11 @@ class QADocumentEvidenceIndex:
                 "query": _safe_text(question),
                 "retrieval_query": clean_retrieval_query,
                 "must_have_terms": normalized_terms,
+                "answer_scope_hint": _safe_text(answer_scope_hint) or "source_primary",
+                "answer_scope_policy": _safe_text(answer_scope_policy) or "source_primary",
                 "answer_scope": normalized_scope,
+                "effective_answer_scope": normalized_scope,
+                "answer_scope_decision": answer_scope_decision or {},
                 "retrieval_mode": _safe_text(retrieval_mode) or DEFAULT_RETRIEVAL_MODE,
                 "hybrid_weight_dense": _safe_float(hybrid_weight_dense, DEFAULT_HYBRID_WEIGHT_DENSE),
                 "hybrid_weight_lexical": _safe_float(hybrid_weight_lexical, DEFAULT_HYBRID_WEIGHT_LEXICAL),

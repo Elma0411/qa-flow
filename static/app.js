@@ -1550,7 +1550,7 @@ function setupPipelineModuleConsole() {
         icon: 'R',
         kicker: '检索',
         title: '检索证据',
-        description: '配置候选问题检索 evidence 的排序模式、topK、轻量重排、权重和答案证据范围。',
+        description: '配置候选问题检索 evidence 的排序模式、topK、轻量重排、权重和系统允许的最大证据范围。',
         nodes: [
           { field: 'retrievalMode' },
           { field: 'semanticTopK' },
@@ -3533,7 +3533,7 @@ function renderPipelineDebugStatus(status, options = {}) {
   appendTextMetric(genMeta, '检索模式', retrievalConfig.retrieval_mode || 'hybrid');
   appendTextMetric(genMeta, 'evidence topK', retrievalConfig.semantic_top_k ?? '3');
   appendTextMetric(genMeta, '轻量重排候选', retrievalConfig.rerank_top_n ?? '12');
-  appendTextMetric(genMeta, '答案证据范围', retrievalConfig.answer_scope_policy || 'source_primary');
+  appendTextMetric(genMeta, '前端范围策略', retrievalConfig.answer_scope_policy || 'source_primary');
   generation.appendChild(genMeta);
   root.appendChild(generation);
 

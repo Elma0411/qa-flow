@@ -118,7 +118,11 @@ def _build_debug_payload(item: Dict[str, Any]) -> Dict[str, Any]:
         "qa_generation_unit_text": item.get("qa_generation_unit_text"),
         "retrieval_query": item.get("retrieval_query"),
         "must_have_terms": item.get("must_have_terms") or [],
+        "answer_scope_hint": item.get("answer_scope_hint"),
         "answer_scope": item.get("answer_scope"),
+        "effective_answer_scope": item.get("effective_answer_scope")
+        or item.get("answer_scope"),
+        "answer_scope_decision": item.get("answer_scope_decision") or {},
         "evidence_usage": item.get("evidence_usage") or [],
         "retrieval_trace": item.get("retrieval_trace") or {},
         "filter_basis": item.get("filter_basis"),

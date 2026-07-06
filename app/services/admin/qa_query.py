@@ -365,7 +365,11 @@ def get_qa_item(qa_id: str) -> Dict[str, Any]:
         "qa_generation_unit_text": debug_payload.get("qa_generation_unit_text"),
         "retrieval_query": debug_payload.get("retrieval_query"),
         "must_have_terms": debug_payload.get("must_have_terms") or [],
+        "answer_scope_hint": debug_payload.get("answer_scope_hint"),
         "answer_scope": debug_payload.get("answer_scope"),
+        "effective_answer_scope": debug_payload.get("effective_answer_scope")
+        or debug_payload.get("answer_scope"),
+        "answer_scope_decision": debug_payload.get("answer_scope_decision") or {},
         "evidence_usage": debug_payload.get("evidence_usage") or [],
         "retrieval_trace": debug_payload.get("retrieval_trace") or {},
         "admin": meta.to_dict(),

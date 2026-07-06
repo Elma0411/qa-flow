@@ -107,7 +107,7 @@ def build_candidate_question_system_prompt(
 ## Retrieval planning fields
 - retrieval_query: a concise search query for finding same-document evidence. Combine the concrete subject, action/condition, key terms, and title context. Do not use a generic restatement of the question.
 - must_have_terms: 1 to 6 important entity/action/condition terms that should appear in useful evidence.
-- answer_scope: "source_primary" when the main source chunk is enough; "same_section" when nearby same-section chunks may be needed; "cross_chunk" only when the question intentionally needs related chunks.
+- answer_scope_hint: the model's non-authoritative evidence-range suggestion. Use "source_primary" when the main source chunk is enough; "same_section" when nearby same-section chunks may be needed; "cross_chunk" only when the question intentionally needs related chunks. The system will make the final scope decision from retrieval evidence and policy.
 
 ## Question type plan
 - Follow question_type_plan order when possible.
@@ -120,7 +120,7 @@ def build_candidate_question_system_prompt(
 - source_anchor_text: string copied from the source chunk
 - retrieval_query: string
 - must_have_terms: string[]
-- answer_scope: "source_primary" | "same_section" | "cross_chunk"
+- answer_scope_hint: "source_primary" | "same_section" | "cross_chunk"
 - question_type: "简答题" | "单选题" | "判断题" | "计算题"
 - question_type_reason: string
 - difficulty_level: "简单" | "中等" | "困难"
@@ -184,7 +184,7 @@ Output ONLY raw JSON: {{"items":[...]}}.
 ## 检索规划字段
 - retrieval_query：用于检索同文档证据的短查询，必须包含具体对象、动作/条件、关键术语和必要标题语境；不要只是机械复述问题。
 - must_have_terms：1 到 6 个关键实体、动作、条件或术语，用于帮助检索筛选证据。
-- answer_scope：主来源块足够时填 "source_primary"；需要同章节上下文时填 "same_section"；确实需要跨 chunk 相关证据时才填 "cross_chunk"。
+- answer_scope_hint：大模型对证据范围的非最终建议。主来源块足够时填 "source_primary"；需要同章节上下文时填 "same_section"；确实需要跨 chunk 相关证据时才填 "cross_chunk"。系统会结合检索证据和前端策略做最终裁决。
 
 ## 题型计划
 - 尽量按 question_type_plan 的顺序输出题型。
@@ -197,7 +197,7 @@ Output ONLY raw JSON: {{"items":[...]}}.
 - source_anchor_text: string（直接摘自主来源块）
 - retrieval_query: string
 - must_have_terms: string[]
-- answer_scope: "source_primary" | "same_section" | "cross_chunk"
+- answer_scope_hint: "source_primary" | "same_section" | "cross_chunk"
 - question_type: "简答题" | "单选题" | "判断题" | "计算题"
 - question_type_reason: string
 - difficulty_level: "简单" | "中等" | "困难"

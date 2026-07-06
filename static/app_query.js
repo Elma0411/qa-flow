@@ -412,6 +412,8 @@ function renderTraceSection(title, traces) {
       trace.dense_score !== undefined && trace.dense_score !== null ? `向量 ${Number(trace.dense_score).toFixed(4)}` : '',
       trace.lexical_score !== undefined && trace.lexical_score !== null ? `词项 ${Number(trace.lexical_score).toFixed(4)}` : '',
       trace.structure_score !== undefined && trace.structure_score !== null ? `结构 ${Number(trace.structure_score).toFixed(4)}` : '',
+      trace.must_term_coverage !== undefined && trace.must_term_coverage !== null ? `关键词覆盖 ${Number(trace.must_term_coverage).toFixed(2)}` : '',
+      trace.rerank_score !== undefined && trace.rerank_score !== null ? `rerank ${Number(trace.rerank_score).toFixed(4)}` : '',
       trace.score_gap_top1_top2 !== undefined && trace.score_gap_top1_top2 !== null ? `top1-top2 差 ${Number(trace.score_gap_top1_top2).toFixed(4)}` : '',
       trace.same_parent ? '同章节' : '',
       trace.adjacent ? '相邻块' : '',
@@ -546,6 +548,16 @@ function translateAnswerScope(scope) {
   return value || '';
 }
 
+function formatAnswerScopeDecision(decision) {
+  if (!decision || typeof decision !== 'object') return '';
+  const reason = String(decision.reason || '').trim();
+  const reasonCode = String(decision.reason_code || '').trim();
+  const parts = [];
+  if (reason) parts.push(reason);
+  if (reasonCode) parts.push(`规则：${reasonCode}`);
+  return parts.join(' ｜ ');
+}
+
 function buildQaDetailCard(item, options = {}) {
   if (!item || !Object.keys(item).length) {
     return createDebugEmpty('请选择一条 QA');
@@ -620,7 +632,10 @@ function buildQaDetailCard(item, options = {}) {
         ['原始问题', retrievalTrace.query],
         ['检索查询', retrievalTrace.retrieval_query],
         ['必含术语', Array.isArray(retrievalTrace.must_have_terms) ? retrievalTrace.must_have_terms.join('、') : retrievalTrace.must_have_terms],
-        ['答案证据范围', translateAnswerScope(retrievalTrace.answer_scope)],
+        ['模型建议范围', translateAnswerScope(retrievalTrace.answer_scope_hint || item.answer_scope_hint)],
+        ['系统最终范围', translateAnswerScope(retrievalTrace.effective_answer_scope || retrievalTrace.answer_scope || item.effective_answer_scope || item.answer_scope)],
+        ['前端范围策略', translateAnswerScope(retrievalTrace.answer_scope_policy)],
+        ['范围裁决原因', formatAnswerScopeDecision(retrievalTrace.answer_scope_decision || item.answer_scope_decision)],
         ['检索模式', translateRetrievalMode(retrievalTrace.retrieval_mode)],
         ['evidence 数量', retrievalTrace.semantic_top_k],
         ['轻量重排候选数', retrievalTrace.rerank_top_n],

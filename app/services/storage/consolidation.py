@@ -352,7 +352,11 @@ def build_consolidated_entry(
             "qa_generation_unit_text": merged.get("qa_generation_unit_text"),
             "retrieval_query": merged.get("retrieval_query"),
             "must_have_terms": merged.get("must_have_terms") or [],
+            "answer_scope_hint": merged.get("answer_scope_hint"),
             "answer_scope": merged.get("answer_scope"),
+            "effective_answer_scope": merged.get("effective_answer_scope")
+            or merged.get("answer_scope"),
+            "answer_scope_decision": merged.get("answer_scope_decision") or {},
             "evidence_usage": merged.get("evidence_usage") or [],
             "retrieval_trace": merged.get("retrieval_trace"),
             "filtered": filtered_flag,
