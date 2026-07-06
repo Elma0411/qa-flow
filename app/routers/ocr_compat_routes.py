@@ -26,6 +26,7 @@ from app.services.integrated_pipeline.ocr_worker import (
     resolve_ocr_use_gpu,
 )
 from app.services.llm import get_llm_client_pool, normalize_vlm_api_type
+from app.services.ocr import get_active_vlm_defaults
 
 router = APIRouter()
 
@@ -174,6 +175,29 @@ def _normalize_threshold(raw_value: float) -> float:
     return threshold
 
 
+def _clean_optional_str(value: Optional[str]) -> Optional[str]:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _resolve_vlm_defaults_from_active_ocr(
+    *,
+    vlm_api_base: Optional[str],
+    vlm_model_name: Optional[str],
+    vlm_api_key: Optional[str],
+    vlm_api_type: Optional[str],
+    vlm_model_version: Optional[str],
+) -> Dict[str, Optional[str]]:
+    defaults = get_active_vlm_defaults()
+    return {
+        "vlm_api_base": _clean_optional_str(vlm_api_base) or defaults.get("vlm_api_base"),
+        "vlm_model_name": _clean_optional_str(vlm_model_name) or defaults.get("vlm_model_name"),
+        "vlm_api_key": _clean_optional_str(vlm_api_key) or defaults.get("vlm_api_key"),
+        "vlm_api_type": _clean_optional_str(vlm_api_type) or defaults.get("vlm_api_type"),
+        "vlm_model_version": _clean_optional_str(vlm_model_version) or defaults.get("vlm_model_version"),
+    }
+
+
 def _cleanup_paths(*paths: Optional[Path]) -> None:
     for path in paths:
         if path is None:
@@ -214,6 +238,18 @@ def _build_job_params(
     docx_strategy: str,
 ) -> Dict[str, Any]:
     threshold = _normalize_threshold(classification_confidence_threshold)
+    vlm_defaults = _resolve_vlm_defaults_from_active_ocr(
+        vlm_api_base=vlm_api_base,
+        vlm_model_name=vlm_model_name,
+        vlm_api_key=vlm_api_key,
+        vlm_api_type=vlm_api_type,
+        vlm_model_version=vlm_model_version,
+    )
+    vlm_api_base = vlm_defaults["vlm_api_base"]
+    vlm_model_name = vlm_defaults["vlm_model_name"]
+    vlm_api_key = vlm_defaults["vlm_api_key"]
+    vlm_api_type = vlm_defaults["vlm_api_type"]
+    vlm_model_version = vlm_defaults["vlm_model_version"]
     resolved_vlm_api_type = normalize_vlm_api_type(vlm_api_type) if use_api else "openai"
     resolved_replace_images = resolve_ocr_replace_images(replace_images, default=True)
     return {
@@ -280,6 +316,18 @@ async def process_document(
 
     resolved_output_format = normalize_output_format(output_format)
     threshold = _normalize_threshold(classification_confidence_threshold)
+    vlm_defaults = _resolve_vlm_defaults_from_active_ocr(
+        vlm_api_base=vlm_api_base,
+        vlm_model_name=vlm_model_name,
+        vlm_api_key=vlm_api_key,
+        vlm_api_type=vlm_api_type,
+        vlm_model_version=vlm_model_version,
+    )
+    vlm_api_base = vlm_defaults["vlm_api_base"]
+    vlm_model_name = vlm_defaults["vlm_model_name"]
+    vlm_api_key = vlm_defaults["vlm_api_key"]
+    vlm_api_type = vlm_defaults["vlm_api_type"]
+    vlm_model_version = vlm_defaults["vlm_model_version"]
     resolved_vlm_api_type = normalize_vlm_api_type(vlm_api_type) if use_api else "openai"
     resolved_replace_images = resolve_ocr_replace_images(replace_images, default=True)
     docx_strategy = "pdf"

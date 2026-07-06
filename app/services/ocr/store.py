@@ -197,6 +197,25 @@ class OCRConfigStore:
             }
         )
 
+    def get_active_vlm_defaults(self) -> Dict[str, str]:
+        profile = self.get_active_profile()
+        request_obj = profile.get("request") if isinstance(profile.get("request"), dict) else {}
+        extra_fields = request_obj.get("extra_form_fields")
+        if not isinstance(extra_fields, dict):
+            return {}
+        defaults: Dict[str, str] = {}
+        for key in (
+            "vlm_api_base",
+            "vlm_model_name",
+            "vlm_api_key",
+            "vlm_api_type",
+            "vlm_model_version",
+        ):
+            value = str(extra_fields.get(key) or "").strip()
+            if value:
+                defaults[key] = value
+        return defaults
+
 
 _STORE = OCRConfigStore()
 
@@ -224,3 +243,6 @@ def get_profile(name: str) -> Optional[Dict[str, Any]]:
 def get_active_profile() -> Dict[str, Any]:
     return _STORE.get_active_profile()
 
+
+def get_active_vlm_defaults() -> Dict[str, str]:
+    return _STORE.get_active_vlm_defaults()

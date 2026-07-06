@@ -21,6 +21,7 @@ from app.services.gpu import admit_gpu_job, release_gpu_job
 from app.services.knowledge_tagging import normalize_knowledge_classifier
 from app.services.integrated_pipeline import resolve_uploaded_files_with_integrated_processing
 from app.services.integrated_pipeline.ocr_worker import resolve_ocr_replace_images
+from app.services.ocr import get_active_vlm_defaults
 from app.services.pipeline_execution import run_batch_complete_pipeline_async
 from app.services.pipeline_state import (
     get_pipeline_store_path,
@@ -70,6 +71,29 @@ def _resolve_concurrency_value(
     except (TypeError, ValueError):
         resolved = int(default)
     return max(1, min(maximum, resolved))
+
+
+def _clean_optional_str(value: Optional[str]) -> Optional[str]:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _resolve_vlm_defaults_from_active_ocr(
+    *,
+    vlm_api_base: Optional[str],
+    vlm_model_name: Optional[str],
+    vlm_api_key: Optional[str],
+    vlm_api_type: Optional[str],
+    vlm_model_version: Optional[str],
+) -> Dict[str, Optional[str]]:
+    defaults = get_active_vlm_defaults()
+    return {
+        "vlm_api_base": _clean_optional_str(vlm_api_base) or defaults.get("vlm_api_base"),
+        "vlm_model_name": _clean_optional_str(vlm_model_name) or defaults.get("vlm_model_name"),
+        "vlm_api_key": _clean_optional_str(vlm_api_key) or defaults.get("vlm_api_key"),
+        "vlm_api_type": _clean_optional_str(vlm_api_type) or defaults.get("vlm_api_type"),
+        "vlm_model_version": _clean_optional_str(vlm_model_version) or defaults.get("vlm_model_version"),
+    }
 
 
 async def _persist_uploads_for_background(
@@ -548,11 +572,18 @@ async def batch_upload_integrated_document_pipeline(
         except Exception as exc:
             raise HTTPException(status_code=400, detail="classification_confidence_threshold 必须是数字") from exc
         classification_confidence_threshold = max(0.0, min(1.0, classification_confidence_threshold))
-        vlm_api_base = str(vlm_api_base or "").strip() or None
-        vlm_model_name = str(vlm_model_name or "").strip() or None
-        vlm_api_key = str(vlm_api_key or "").strip() or None
-        vlm_api_type = str(vlm_api_type or "").strip() or None
-        vlm_model_version = str(vlm_model_version or "").strip() or None
+        vlm_defaults = _resolve_vlm_defaults_from_active_ocr(
+            vlm_api_base=vlm_api_base,
+            vlm_model_name=vlm_model_name,
+            vlm_api_key=vlm_api_key,
+            vlm_api_type=vlm_api_type,
+            vlm_model_version=vlm_model_version,
+        )
+        vlm_api_base = vlm_defaults["vlm_api_base"]
+        vlm_model_name = vlm_defaults["vlm_model_name"]
+        vlm_api_key = vlm_defaults["vlm_api_key"]
+        vlm_api_type = vlm_defaults["vlm_api_type"]
+        vlm_model_version = vlm_defaults["vlm_model_version"]
         image_fit_min_score = max(0.0, min(1.0, float(image_fit_min_score)))
 
         batch_task_id = f"integrated_document_task_{int(time.time())}"

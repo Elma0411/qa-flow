@@ -4,54 +4,55 @@
 
 ## Objective
 
-修复工作台重构后“开始执行流水线”按钮点击后看起来没有响应的问题。顶部工作台会把原表单按钮移动到表单外，如果继续依赖浏览器对外置 submit 按钮的兼容行为，部分环境可能无法稳定触发表单提交；同时缺少上传文件时，错误提示写在下方状态区，用户在顶部看不到反馈。
+修复一体流程和单独文档解析中 VLM 覆盖参数“留空未使用当前 OCR 配置默认值”的问题。现在如果前端不填写 `vlm_api_base`、`vlm_model_name`、`vlm_api_key`、`vlm_api_type`、`vlm_model_version`，后端会先读取当前激活 OCR 配置的 `request.extra_form_fields` 中同名字段。
 
 ## What Changed
 
+- `app/services/ocr/store.py`
+  - 新增 `get_active_vlm_defaults()`，从当前激活 OCR profile 的 `request.extra_form_fields` 读取 VLM 默认参数。
+  - 只返回非空字段，不输出或记录密钥。
+- `app/services/ocr/__init__.py`、`app/services/ocr/config.py`
+  - 导出 `get_active_vlm_defaults()`。
+- `app/routers/pipeline_integrated_routes.py`
+  - 一体流程图片理解 VLM 参数改为：前端表单值优先；表单留空时使用当前激活 OCR 配置里的 VLM 默认。
+- `app/routers/ocr_compat_routes.py`
+  - 单独文档解析异步任务 `/document-processing/jobs` 和同步兼容接口 `/process` 使用同样的默认解析逻辑。
 - `static/index.html`
-  - 给流水线启动按钮增加稳定 id：`pipelineSubmitBtn`。
-  - 更新 `app.js` 查询版本号，避免浏览器继续使用旧缓存。
-- `static/app.js`
-  - 工作台模式下把顶部启动按钮改为显式 `button` 点击处理。
-  - 点击时直接调用 `handlePipelineSubmit()`，不再依赖 `form="pipelineForm"` 的外置 submit 行为。
-  - `handlePipelineSubmit()` 优先使用 `pipelineSubmitBtn` 作为 loading 按钮。
-  - 未选择文件时：
-    - 下方任务状态区显示“请先选择要上传的文件”。
-    - 自动切换到“进度耗时”tab。
-    - 弹出 toast 提示，避免顶部看起来没有响应。
+  - VLM 覆盖参数的 placeholder 改为说明“留空使用当前激活 OCR 配置里的 VLM 参数”。
 
 ## Expected Behavior
 
-- 点击顶部“开始执行流水线”应稳定触发提交逻辑。
-- 如果未选择文件，会立即看到中文提示。
-- 如果已选择文件，按钮会进入 loading 状态，并向后端提交原有表单字段。
-- 不改变后端 API、请求字段、任务状态结构或生成流程。
+- `runtime_assets/outputs/ocr_configs.json` 中当前 active profile 的 `request.extra_form_fields.vlm_*` 会作为默认 VLM 参数使用。
+- 前端手动填写的 VLM 参数仍然优先，不会被 OCR 配置覆盖。
+- 标准 OCR 流程原本会直接把 `extra_form_fields` 转发给 OCR 服务；本次补齐的是一体流程和单独文档解析的本地 VLM 链路。
+- 任务状态中仍不展示 `vlm_api_key`。
 
 ## Validation
 
 ```bash
 cd /data2/hjk/qa-flow
 
-node --check static/app.js
-node --check static/app_config.js
-node --check static/app_render.js
-node --check static/app_runtime.js
-node --check static/ui.js
-
 python -m py_compile \
-  qa/prompts/qa_generation_prompts.py \
-  qa/generation/qa_generation_flow.py \
-  qa/grounding/source_fact_grounding.py \
-  qa/text_to_qa_pipeline.py \
-  qa/pipeline_runtime.py
+  app/services/ocr/store.py \
+  app/services/ocr/__init__.py \
+  app/services/ocr/config.py \
+  app/routers/pipeline_integrated_routes.py \
+  app/routers/ocr_compat_routes.py
 
+node --check static/app.js
 git diff --check
 curl http://localhost:12000/test-connection
 ```
 
-浏览器验证：
+轻量验证：
 
-- 刷新 `/ui/`。
-- 如果浏览器仍无响应，先强制刷新一次页面，确保加载 `app.js?v=2026-07-06-1`。
-- 不选文件点击“开始执行流水线”，应看到 toast 和状态区提示。
-- 选择一个小文件点击“开始执行流水线”，按钮应进入 loading，并出现任务进度。
+```bash
+python - <<'PY'
+from app.services.ocr import get_active_vlm_defaults
+defaults = get_active_vlm_defaults()
+assert defaults.get("vlm_api_base")
+assert defaults.get("vlm_model_name")
+assert defaults.get("vlm_api_key")
+print({k: ("***" if k == "vlm_api_key" else v) for k, v in defaults.items()})
+PY
+```
