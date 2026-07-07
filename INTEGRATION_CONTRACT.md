@@ -130,6 +130,10 @@ Docker API ports:
   `12000` and defaults to `12000`.
 - `OCR_API_HOST_PORT` controls the host port mapped to container port `11169`
   and defaults to `11169`.
+- `QA_FLOW_API_RELOAD` controls whether the mounted QA Flow API runs with
+  Uvicorn reload enabled. It defaults to `true` in the formal and debug Docker
+  environment so changes under `app/`, `qa/`, and `scripts/` are picked up
+  without recreating the container.
 
 Document preprocessing concurrency:
 

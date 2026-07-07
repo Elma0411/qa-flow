@@ -17,8 +17,16 @@ start_optional_classifier
 start_background "QA Flow OCR API" \
     python -u /app/scripts/start_ocr_api.py
 
-start_background "QA Flow API" \
-    python -u -c 'from scripts._launch_api import run_api; run_api(reload=False)'
+start_qa_flow_api() {
+    local reload_arg="False"
+    if is_truthy "${QA_FLOW_API_RELOAD:-true}"; then
+        reload_arg="True"
+    fi
+    echo "[qa-flow] QA Flow API reload=${reload_arg}"
+    python -u -c "from scripts._launch_api import run_api; run_api(reload=${reload_arg})"
+}
+
+start_background "QA Flow API" start_qa_flow_api
 
 wait_for_http "QA Flow OCR API" "http://127.0.0.1:11169/health" 180
 wait_for_http "QA Flow API" "http://127.0.0.1:12000/health" 180

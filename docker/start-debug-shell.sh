@@ -21,7 +21,7 @@ cat <<'EOF'
 [apiuse] main APIs are not started in this debug container.
 [apiuse] useful manual commands:
   python -u /app/scripts/start_ocr_api.py
-  python -u -c 'from scripts._launch_api import run_api; run_api(reload=False)'
+  python -u -c 'from scripts._launch_api import run_api; run_api(reload=True)'
   check-merged-runtime
 EOF
 

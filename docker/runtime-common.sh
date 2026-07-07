@@ -33,6 +33,7 @@ set_runtime_defaults() {
     export VLM_API_TYPE="${VLM_API_TYPE:-openai}"
     export VLM_MODEL_VERSION="${VLM_MODEL_VERSION:-}"
     export SOFFICE_BINARY="${SOFFICE_BINARY:-/usr/bin/soffice}"
+    export QA_FLOW_API_RELOAD="${QA_FLOW_API_RELOAD:-true}"
     export MILVUS_HOST="${MILVUS_HOST:-127.0.0.1}"
     export MILVUS_PORT="${MILVUS_PORT:-19530}"
     export MINIO_ROOT_USER="${MINIO_ROOT_USER:-minioadmin}"

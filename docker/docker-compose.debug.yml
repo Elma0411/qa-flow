@@ -32,6 +32,7 @@ x-runtime-environment: &runtime-environment
   SEED_LOCAL_OCR_PROFILE: "${SEED_LOCAL_OCR_PROFILE:-true}"
   START_CLASSIFIER_SERVICE: "${START_CLASSIFIER_SERVICE:-true}"
   DEBUG_START_INFRA: "${DEBUG_START_INFRA:-true}"
+  QA_FLOW_API_RELOAD: "${QA_FLOW_API_RELOAD:-true}"
   SOFFICE_BINARY: "/usr/bin/soffice"
   PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK: "True"
   TORCH_HOME: "/app/runtime_assets/cache/torch"
