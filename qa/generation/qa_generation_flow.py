@@ -309,94 +309,64 @@ def _summary_question_shape_reason(question: str, *, language_code: str) -> str:
     if not text:
         return "missing_question"
     if language_code == "zh":
-        relationship_markers = (
-            "组成",
-            "结构",
-            "维度",
-            "关系",
-            "对应",
-            "分别",
-            "顺序",
-            "先后",
-            "前后",
-            "步骤",
-            "阶段",
-            "环节",
-            "过程",
-            "流程",
-            "条件",
-            "前提",
-            "适用",
-            "限制",
-            "约束",
-            "例外",
-            "原因",
-            "为什么",
-            "结果",
-            "后果",
-            "影响",
-            "作用",
-            "用途",
-            "目的",
-            "差异",
-            "区别",
-            "对比",
-            "取舍",
-            "权衡",
-            "依赖",
-            "关联",
-            "机制",
-            "协作",
-            "配合",
-            "连接",
+        generic_list_subjects = (
+            "内容",
+            "条目",
+            "事项",
+            "项目",
+            "对象",
+            "选项",
+            "字段",
+            "名称",
+            "标签",
+            "数值",
+            "东西",
+            "方面",
+            "部分",
         )
-        has_relationship = any(marker in text for marker in relationship_markers)
-        shallow_list_pattern = re.compile(r"(有哪些|哪几种|哪几项|哪些|列出|列举)[^？?]{0,30}[？?]?$")
-        if shallow_list_pattern.search(text) and not has_relationship:
+        generic_list_pattern = re.compile(
+            r"(有哪些|哪几种|哪几项|哪些|列出|列举)[^？?]{0,24}"
+            r"("
+            + "|".join(re.escape(subject) for subject in generic_list_subjects)
+            + r")[^？?]{0,8}[？?]?$"
+        )
+        if generic_list_pattern.search(text):
             return "summary_question_too_shallow_list"
-        if has_relationship:
-            return ""
-        return "summary_question_not_grouped"
-
-    relationship_markers = (
-        "composition",
-        "structure",
-        "components",
-        "relationship",
-        "relate",
-        "sequence",
-        "order",
-        "steps",
-        "stages",
-        "process",
-        "procedure",
-        "condition",
-        "constraint",
-        "exception",
-        "cause",
-        "effect",
-        "result",
-        "consequence",
-        "impact",
-        "purpose",
-        "role",
-        "use",
-        "difference",
-        "compare",
-        "trade-off",
-        "dependency",
-        "mechanism",
-        "interact",
-        "cooperate",
-        "connect",
-    )
-    has_relationship = any(marker in text for marker in relationship_markers)
-    shallow_list_pattern = re.compile(r"\b(what|which|list)\b.{0,50}\??$", flags=re.IGNORECASE)
-    if shallow_list_pattern.search(text) and not has_relationship:
-        return "summary_question_too_shallow_list"
-    if has_relationship:
         return ""
-    return "summary_question_not_grouped"
+
+    generic_list_subjects = (
+        "item",
+        "items",
+        "thing",
+        "things",
+        "content",
+        "contents",
+        "field",
+        "fields",
+        "option",
+        "options",
+        "name",
+        "names",
+        "label",
+        "labels",
+        "value",
+        "values",
+        "object",
+        "objects",
+        "part",
+        "parts",
+        "aspect",
+        "aspects",
+    )
+    generic_list_pattern = re.compile(
+        r"\b(what|which|list)\b.{0,50}\b("
+        + "|".join(re.escape(subject) for subject in generic_list_subjects)
+        + r")\b.{0,16}\??$",
+        flags=re.IGNORECASE,
+    )
+    if generic_list_pattern.search(text):
+        return "summary_question_too_shallow_list"
+    return ""
 
 
 def _resolve_generation_language(prompt_language: str, text: str) -> Tuple[str, str]:

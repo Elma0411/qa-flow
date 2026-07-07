@@ -178,12 +178,16 @@ def validate_source_fact_grounding(
     segments = split_summary_grounding_segments(source_fact_text)
     if len(segments) < 2:
         return False, "summary_source_fact_segments_insufficient"
+    grounded_count = 0
     for segment in segments:
         score, matched = best_chunk_grounding_score(segment, candidates)
-        if matched or score >= 0.84:
-            continue
-        return False, "summary_source_fact_segment_not_grounded_in_chunk"
-    return True, "ok"
+        if matched or score >= 0.76:
+            grounded_count += 1
+    if grounded_count == 0:
+        return False, "summary_source_fact_not_grounded_in_chunk"
+    if grounded_count >= 2 and (grounded_count / len(segments)) >= 0.66:
+        return True, "ok"
+    return False, "summary_source_fact_segment_not_grounded_in_chunk"
 
 
 __all__ = [

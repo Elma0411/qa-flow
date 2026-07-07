@@ -17,6 +17,39 @@ _RE_AMBIGUOUS_EN = re.compile(
     r"\b(this|that|the above|above|aforementioned|herein|thereof)\b",
     flags=re.IGNORECASE,
 )
+_RE_EXPLICIT_EN_PHRASE = re.compile(
+    r"\b(this|that)\s+[a-z][a-z0-9_-]{2,}(?:\s+[a-z][a-z0-9_-]{2,}){0,5}\b",
+    flags=re.IGNORECASE,
+)
+_EN_REFERENCE_VERBS = {
+    "are",
+    "can",
+    "could",
+    "did",
+    "do",
+    "does",
+    "has",
+    "have",
+    "is",
+    "may",
+    "might",
+    "must",
+    "need",
+    "needs",
+    "require",
+    "required",
+    "requires",
+    "should",
+    "was",
+    "were",
+    "will",
+    "would",
+}
+
+
+def _zh_reference_has_local_head(text: str, marker_start: int) -> bool:
+    prefix = text[max(0, marker_start - 24) : marker_start]
+    return bool(re.search(r"[\u4e00-\u9fffA-Za-z0-9]{2,}(包括|分为|包含|设有|设置|由|按)", prefix))
 
 
 def contains_ambiguous_reference(text: str, *, language_code: str) -> bool:
@@ -33,14 +66,24 @@ def contains_ambiguous_reference(text: str, *, language_code: str) -> bool:
 
     if language_code == "zh":
         compact = re.sub(r"\s+", "", raw)
-        if _RE_AMBIGUOUS_ZH.search(compact):
+        match = _RE_AMBIGUOUS_ZH.search(compact)
+        if match and not _zh_reference_has_local_head(compact, match.start()):
             return True
-        if "其" in compact and _RE_AMBIGUOUS_ZH_QI.search(compact):
+        qi_match = _RE_AMBIGUOUS_ZH_QI.search(compact)
+        if qi_match and not _zh_reference_has_local_head(compact, qi_match.start()):
             return True
         return False
 
-    return bool(_RE_AMBIGUOUS_EN.search(raw))
+    match = _RE_AMBIGUOUS_EN.search(raw)
+    if not match:
+        return False
+    if match.group(1).lower() in {"this", "that"} and _RE_EXPLICIT_EN_PHRASE.search(raw):
+        tail = raw[match.end() :].strip().lower()
+        next_word = re.match(r"[a-z][a-z0-9_-]*", tail)
+        if next_word and next_word.group(0) in _EN_REFERENCE_VERBS:
+            return True
+        return False
+    return True
 
 
 __all__ = ["contains_ambiguous_reference"]
-

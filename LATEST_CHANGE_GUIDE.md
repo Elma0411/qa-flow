@@ -4,27 +4,36 @@
 
 ## Objective
 
-收紧 `qa_detail_mode=summary` 的候选问题生成与过滤，减少“只列孤立条目”的浅层清单题被当作总结型 QA 保留。总结型现在更偏向多个事实之间的关系：组成、顺序、条件、因果、对比、作用、约束、例外、依赖或取舍。
+优化 QA 生成调试中的硬过滤规则，降低 summary 模式误杀率。过滤策略从“问题必须命中固定关系词”调整为“只拦截明显泛化的浅层清单题”，并把 summary 来源事实定位从全片段强匹配改成多数关键片段可定位。
 
 ## What Changed
 
-- `qa/prompts/qa_generation_prompts.py`
-  - summary 候选问题 prompt 明确要求生成“多个事实之间是什么关系”的问题。
-  - 新增通用反例约束：不要只问孤立条目、名称、标签、数值、字段、选项或对象。
-  - summary 答案 prompt 同步要求：如果候选问题只是浅层清单，且没有询问组成、顺序、条件、因果、对比、作用、约束、例外、依赖或取舍，应输出空结果。
 - `qa/generation/qa_generation_flow.py`
-  - `_summary_question_shape_reason()` 不再因为出现“哪些”就放行。
-  - 新增浅层清单过滤：`summary_question_too_shallow_list`。
-  - 过滤依据是抽象关系语义，不绑定具体文件类型或业务场景。
+  - `_summary_question_shape_reason()` 不再要求总结题必须包含固定关系词。
+  - `summary_question_not_grouped` 保留为历史 reason code，但新逻辑不再主动产生。
+  - `summary_question_too_shallow_list` 只用于明显泛化的问题，例如“该部分有哪些内容？”或 “What items are listed?”。
+- `qa/grounding/source_fact_grounding.py`
+  - summary 来源事实分段定位阈值从 `0.84` 调整到 `0.76`。
+  - 多片段 summary 不再要求每个片段都命中；至少 2 个片段且不少于 66% 片段可定位即可通过。
+  - 如果没有任何片段命中，返回 `summary_source_fact_not_grounded_in_chunk`；部分命中不足时返回 `summary_source_fact_segment_not_grounded_in_chunk`。
+- `qa/generation/text_quality_filters.py`
+  - 指代过滤从简单词命中改为“未消解指代”判断。
+  - 允许同一句内有明确先行词的中文“其中/其”和英文 “this/that + 明确名词短语”。
 - `static/app.js`
-  - 新增 `summary_question_too_shallow_list` 的中文解释。
+  - 更新调试 reason 文案，避免把软化后的规则描述成绝对错误。
+- `tests/test_generation_quality_filters.py`
+  - 增加 summary 形态、summary grounding、未消解指代过滤测试。
+
+## External Reference
+
+这次调整参考了成熟 RAG 评估框架的通用做法：RAGAS/TruLens/DeepEval 的 faithfulness 或 groundedness 更强调答案 claim 与 retrieval context 的证据一致性/覆盖率，而不是仅靠问题表面关键词一票否决。DeepEval 的 faithfulness 文档也把判断建模为 truthful claims / total claims，并把 ambiguous claims 作为可配置惩罚项，而不是默认永久硬失败。
 
 ## Expected Behavior
 
-- summary 模式下，候选问题会减少简单清单题。
-- 只问“有哪些条目/对象/选项”的问题会倾向于被丢弃。
-- 问“这些条目如何组成整体、前后如何衔接、不同条件下如何变化、差异和取舍是什么”的问题会被保留。
-- 不改变接口字段、任务流程、检索算法或最终 QA schema。
+- summary 模式下，“需要哪些材料和记录”“覆盖哪些步骤”这类可由多个事实回答的问题不再因为没有固定关系词被丢弃。
+- 过于泛化的“该部分有哪些内容”“What items are listed?” 仍会被过滤。
+- summary 来源事实允许少量片段因改写、截断或表达差异未能定位，但多数核心片段必须能回到证据。
+- 未消解指代仍会被拦截；同一句中已经给出明确先行词的局部指代不再误杀。
 
 ## Validation
 
@@ -32,28 +41,12 @@
 cd /data2/hjk/qa-flow
 
 python -m py_compile \
-  qa/prompts/qa_generation_prompts.py \
-  qa/generation/qa_generation_flow.py
+  qa/generation/qa_generation_flow.py \
+  qa/generation/text_quality_filters.py \
+  qa/grounding/source_fact_grounding.py
+
+python -m unittest tests.test_generation_quality_filters
 
 node --check static/app.js
 git diff --check
-```
-
-轻量断言：
-
-```bash
-python - <<'PY'
-from qa.generation.qa_generation_flow import _summary_question_shape_reason
-
-assert _summary_question_shape_reason("系统结构由哪些部分组成，各部分之间是什么关系？", language_code="zh") == ""
-assert _summary_question_shape_reason("不同条件下的处理结果有什么差异？", language_code="zh") == ""
-assert _summary_question_shape_reason("该部分有哪些条目？", language_code="zh") == "summary_question_too_shallow_list"
-assert _summary_question_shape_reason("可以选择哪些选项？", language_code="zh") == "summary_question_too_shallow_list"
-assert _summary_question_shape_reason("该部分包含哪些内容？", language_code="zh") == "summary_question_too_shallow_list"
-
-assert _summary_question_shape_reason("Which components form the system structure and how do they relate?", language_code="en") == ""
-assert _summary_question_shape_reason("What results differ under different conditions?", language_code="en") == ""
-assert _summary_question_shape_reason("Which items are available?", language_code="en") == "summary_question_too_shallow_list"
-assert _summary_question_shape_reason("What does this section contain?", language_code="en") == "summary_question_too_shallow_list"
-PY
 ```
