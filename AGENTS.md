@@ -118,14 +118,31 @@ the proxy helper functions.
   that setup.
 
 ## Codex CodeGraph Workflow
-When the CodeGraph MCP tools are available, use them actively for repository
+When CodeGraph MCP tools are available, use them actively for repository
 understanding, architecture tracing, impact analysis, and code modification
-planning before opening many files manually. Prefer `codegraph_explore` for
-area surveys and flow questions, `codegraph_search` for symbol locations, and
-`codegraph_callers` / `codegraph_callees` for impact checks. If the MCP reports
-that the repository is not initialized, run the available `codegraph`
-executable from the repository root, usually `codegraph init -i`; if
-`codegraph` is not on `PATH`, locate the current user's installation first
+planning before opening many files manually. Treat the MCP tool surface as
+version-dependent: use the tool or tools actually exposed by the current MCP
+server, and prefer the broad exploration tool for area surveys, flow questions,
+and edit planning. Current CodeGraph versions may expose only
+`codegraph_explore`; do not assume narrower tools exist unless they are listed
+in the active session.
+
+If CodeGraph is unavailable in a conversation, tell the user briefly and then
+try to fix it before falling back permanently. "Unavailable" includes the MCP
+tool missing, `Transport closed`, hung tool calls, stale MCP sessions, missing
+indexes, PATH mismatches, or version/configuration conflicts. Check local state
+first with commands such as `command -v codegraph`, `codegraph version`,
+`codegraph status <path>`, the agent MCP config, and the project's `.codegraph/`
+directory. Resolve common local problems by aligning the MCP command with the
+shell `PATH`, restarting or reinstalling CodeGraph, applying upstream-recommended
+MCP environment variables when relevant, and running `codegraph init`,
+`codegraph sync`, or `codegraph index` from the repository root as appropriate.
+If local checks do not explain the failure, consult upstream sources such as the
+official README, release notes, and GitHub issues or PRs for the exact error and
+apply the documented workaround. Use the CLI equivalent, such as
+`codegraph explore`, as a temporary fallback while MCP is being restored.
+
+If `codegraph` is not on `PATH`, locate the current user's installation first
 rather than using another user's home directory. Each Linux user who works on
 this repository needs their own CodeGraph executable/MCP setup and filesystem
 permission to read the repository.
