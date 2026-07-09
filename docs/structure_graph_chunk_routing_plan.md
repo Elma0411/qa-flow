@@ -1,557 +1,980 @@
-# 轻量结构图与自动出题策略方案总览
+# 轻量结构图、Generation Unit 与自动问答粒度改造方案
 
-## 一句话说明
+## 目标
 
-这个方案不是要做复杂知识图谱，而是让 QA Flow 在出题前先理解文档的基本结构：哪些 chunk 是同一章节的兄弟，哪些 chunk 只是低价值碎片，哪些内容适合单点问答，哪些内容需要合并成一段上下文后再生成总结题。
-
-最终目标是让系统少处理无用 chunk，少生成浅层或证据不完整的问题，并且在构建答案提示词时继续保留“基于具体问题检索证据”的能力。
-
-## 当前流程先保持不变
-
-当前 QA Flow 大体流程可以理解为：
+这次改造不是要把 QA Flow 改成完整知识图谱系统，也不是靠一组关键词硬猜 `point` 或 `summary`。更合适的目标是借鉴 LlamaIndex、Haystack、LangChain 都在用的 small-to-big 思路：
 
 ```text
-文档输入 / OCR
--> 文本整合
--> chunk 切分
--> 一步式 QA 生成
-   -> 每个 chunk 生成候选问题
-   -> 根据候选问题检索同文档证据
-   -> 构建答案提示词
-   -> 生成最终 QA
--> 评估
--> 保存结果 / 入库
+小块负责精确命中
+父级章节负责提供完整上下文
+命中到多个同父子块时，自动合并成父级上下文
+出题时不再直接按 chunk，而是按 generation unit
 ```
 
-这条主流程不需要推倒重做。新方案只是在“chunk 切分之后、候选问题生成之前”增加一层轻量决策，并在“答案提示词构建时”增加去重和合并逻辑。
+落到 QA Flow 上，就是在现有 chunk 切分之后，先用 `title_path`、`index_path`、`parent_index_path`、`chunk_index` 组织一个轻量结构图，再把平铺 chunk 转成适合出题的 generation unit。后续候选问题生成、问题检索、答案提示词构建都围绕 generation unit 运行。
 
-## 要做的改进
+## 参考依据
 
-### 1. 把 flat chunk list 组织成轻量结构图
+本方案参考的是本地已经下载并阅读过的成熟实现，不再使用凭空设计的规则。
 
-当前 chunk 虽然是平铺列表，但每个 chunk 已经有这些信息：
+### LlamaIndex
 
-- `chunk_index`
-- `index_path`
-- `title_path`
-- `parent_index_path`
-- `root_index_path`
-- `level`
-- `text`
-- `text_for_embedding`
+本地参考路径：
 
-这些信息足够先在内存里组织出一个轻量结构图：
+- `external_repos/llama_index/llama-index-core/llama_index/core/node_parser/relational/hierarchical.py`
+- `external_repos/llama_index/llama-index-core/llama_index/core/retrievers/auto_merging_retriever.py`
+
+关键实现方式：
+
+- `HierarchicalNodeParser` 把文档切成多层节点，默认类似 `[2048, 512, 128]` 这种父块、子块、叶子块结构。
+- 节点之间保留 `parent/child` 关系，也可以保留 `prev/next` 相邻关系。
+- 返回结果仍然可以是一个 flat node list，只是每个节点带关系元数据。
+- `AutoMergingRetriever` 先从向量库召回小节点，再检查这些小节点是否属于同一个父节点。
+- 如果命中的子节点数 / 父节点子节点总数超过阈值，默认阈值是 `0.5`，就删除子节点，加入父节点。
+- 它还会用 `prev/next` 补齐中间缺失节点，然后递归尝试继续向上合并。
+
+对 QA Flow 的启示：
 
 ```text
-同一个 parent_index_path 下的 chunk 是兄弟
-chunk_index 前后相邻的是 prev / next
-title_path 和 level 表示章节路径
+flat list 不等于没有层级。
+只要每个 chunk 有 parent、prev、next 元数据，就可以在运行时构造层级。
+自动合并不应该靠关键词判断，而应该靠“同父子节点覆盖率”判断。
 ```
 
-第一版不需要新建数据库表，也不需要把 parent 节点持久化。运行时临时构建即可。
+### Haystack
 
-插入位置：
+本地参考路径：
+
+- `external_repos/haystack/haystack/components/preprocessors/hierarchical_document_splitter.py`
+- `external_repos/haystack/haystack/components/retrievers/auto_merging_retriever.py`
+
+关键实现方式：
+
+- `HierarchicalDocumentSplitter` 把原始文档切成 root、parent、leaf 多层文档。
+- 每个文档用元数据保存 `__parent_id`、`__children_ids`、`__level`、`__block_size`。
+- `AutoMergingRetriever` 假设已经有层级结构，输入是被普通 retriever 命中的 leaf documents。
+- 它按 parent 分组，计算：
 
 ```text
-chunk 切分完成
--> build_document_chunks
--> 新增：构建轻量结构图
--> 后续 QA 生成
+merge_score = matched_child_count / parent_children_count
 ```
 
-### 2. 加 chunk 质量门控
+- 如果 `merge_score > threshold`，默认阈值也是 `0.5`，就返回 parent document，而不是零散 leaf documents。
+- 如果 parent 继续有 parent，会递归向上合并。
 
-不是所有 chunk 都值得单独调用大模型生成问题。比如：
-
-- 只有标题
-- 目录行
-- 页眉页脚
-- 表格列名残片
-- 图片或附件占位
-- 和前后 chunk 高度重复
-
-这些 chunk 不应该直接生成问题。它们可以被跳过，或者作为上下文交给相邻 chunk / 同章节 summary 使用。
-
-质量门控不需要大模型，第一版只用轻量规则：
-
-- 长度和行数
-- 标题路径是否存在
-- 是否有完整句
-- 是否包含日期、金额、电话、定义、条件、步骤等信息信号
-- 是否和前后 chunk 重复
-- 是否处在同一章节的连续片段中
-
-插入位置：
+对 QA Flow 的启示：
 
 ```text
-构建轻量结构图
--> 新增：判断每个 chunk 的质量
--> 只把值得处理的 chunk / unit 交给候选问题生成
+同父节点覆盖率是成熟方案里的核心机制。
+它不是语义标签，也不是人工关键词，而是一个结构比例。
+QA Flow 当前的 parent_index_path 已经足够实现第一版。
 ```
 
-### 3. 从“按 chunk 出题”改成“按 generation unit 出题”
+### LangChain
 
-这是本方案最重要的调整。
+本地参考路径：
 
-之前容易把问题简化成：这个 chunk 走 `point` 还是 `summary`。这个判断会有矛盾，因为一个 chunk 可能很长，内部已经包含多个条件、流程、材料、分类项，本身就适合 summary；也可能一个章节被切成多个短 chunk，需要合起来才适合 summary。
+- `external_repos/langchain_classic_wheel/langchain_classic/retrievers/parent_document_retriever.py`
 
-因此后续不应该直接按单个 chunk 二选一，而是先生成 generation unit。
+说明：已尝试通过 `proxyon + gitproxyon` clone `https://github.com/langchain-ai/langchain.git`，`127.0.0.1:7897` 代理恢复后能访问 GitHub，但 LangChain 全仓库浅克隆仍在 240 秒内超时。为了避免网络阻塞，当前使用 PyPI 下载的官方 `langchain-classic==1.0.8` wheel 源码作为参考。
 
-generation unit 可以有三类：
+关键实现方式：
+
+- `ParentDocumentRetriever` 的目标是在“小块 embedding 更准”和“大块上下文更完整”之间折中。
+- 写入时可以先用 `parent_splitter` 得到父文档，再用 `child_splitter` 得到子文档。
+- 子文档进入 vectorstore，父文档进入 docstore。
+- 检索时先召回小子块，再通过子块 metadata 里的 parent id 找回父文档。
+
+对 QA Flow 的启示：
 
 ```text
-point unit
-  单个 chunk 就能回答一个清晰事实问题
-
-section summary unit
-  同一章节下多个兄弟 chunk 合起来才完整
-
-long-chunk summary unit
-  单个 chunk 很长，内部包含多个小段、条款、列表或流程
+embedding / retrieval 用小块。
+最终构建提示词时可以返回更大的父级上下文。
+这和 QA Flow 当前“候选问题生成后再检索同文档证据”的流程不冲突。
 ```
 
-这样可以解决两个问题：
+## QA Flow 当前基础
 
-- 多个短 chunk 组成一个章节时，可以合成 summary unit。
-- 单个长 chunk 适合 summary 时，也不会被误判成 point。
+当前 chunk 生成阶段已经提供了足够的结构字段。
 
-插入位置：
+来源代码：
 
-```text
-chunk 质量门控
--> 新增：构建 generation units
--> 候选问题生成不再只看单个 chunk，而是看 unit
-```
+- `qa/chunking/easy_dataset.py`
+- `qa/generation/evidence_units.py::build_document_chunks`
 
-generation unit 的划分流程建议拆成 7 步。
-
-第 1 步：准备输入
-
-每个 chunk 进入规划器前，应先带上这些基础信息：
+当前每个 chunk 已有字段：
 
 ```text
-chunk 原文
+chunk_id
 chunk_index
+index_path
 title_path
 parent_index_path
+root_index_path
 level
-prev / next
-质量门控结果
-是否有明显事实信号
-是否有列表、条款、小标题、分段
+text
+text_for_embedding
+retrieval_text
+path_summary
+split_type
 ```
 
-这里不要急着决定 point 或 summary。第一步只是把每个 chunk 的“位置、质量、形态”标出来。
+这些字段足够支撑第一版轻量结构图，不需要新增数据库，也不需要先做完整知识图谱。
 
-第 2 步：先生成候选 unit，不急着选
+当前答案证据检索也已经有结构意识：
 
-规划器先生成三类候选：
+- `qa/generation/evidence_units.py::QADocumentEvidenceIndex._rank_with_query_embedding`
+
+已有结构分信号：
 
 ```text
-point unit 候选
-  每个质量合格、内容自包含的 chunk 都可以先成为候选
-
-section summary unit 候选
-  同一个 parent_index_path 下，多个质量合格或可合并的 chunk 可以组成候选
-
-long-chunk summary unit 候选
-  单个 chunk 如果内部有多个段落、条款、列表项或小标题，也可以组成候选
+same_parent
+adjacent
+title_overlap
 ```
 
-这一步允许重叠。比如一个 chunk 可以同时属于 section summary 候选，也可以自己是 point 候选。先保留候选，后面再解决冲突。
+所以第一版改造不是从零开始，而是把已有结构信息正式前置到“出题单位规划”和“证据合并”里。
 
-第 3 步：给候选 unit 打分
+## 为什么不是继续按 chunk 出题
 
-打分不是为了追求很复杂，而是为了避免硬规则冲突。
-
-point unit 主要看：
+现在的一步式流程可以简化理解为：
 
 ```text
-内容是否自包含
-是否有明确事实点
-是否不依赖前后 chunk
-是否不是标题、目录、页眉页脚
+document_chunks
+-> 每个 chunk 调一次候选问题 LLM
+-> 根据候选问题检索证据 chunk
+-> 构建答案 generation unit
+-> 生成最终 QA
 ```
 
-section summary unit 主要看：
+问题在于，chunk 只是切分结果，不一定等于合理出题单位：
+
+- 一个短 chunk 可能只是某个章节的一部分，单独看不完整。
+- 多个兄弟 chunk 合起来才是完整流程、条件、分类或清单。
+- 一个长 chunk 内部可能已经包含多个自然段、条款或列表，适合总结题。
+- 有些 chunk 只是标题、目录、页眉页脚、表格残片，不值得单独出题。
+
+因此要从：
 
 ```text
-同父 chunk 数量是否足够
-这些 chunk 是否围绕同一个章节主题
-它们之间是否互补，而不是重复
-是否形成条件、材料、流程、分类、组成、清单等成组内容
-合并后的上下文是否不会过长
+QA per chunk
 ```
 
-long-chunk summary unit 主要看：
+改成：
 
 ```text
-单个 chunk 是否明显偏长
-内部是否有多个自然段、小标题、编号、列表项
-内部子项是否围绕同一主题
-是否适合问“包括哪些、流程是什么、条件有哪些”这类问题
+QA per generation unit
 ```
 
-第 4 步：先选 summary unit，再补 point unit
-
-推荐选择顺序：
+外部 API 第一版可以继续保留 `qa_per_chunk` 这个字段，避免前端和调用方大改。内部解释为“按原 chunk 数估算整篇文档目标题量”，再把题量分配给 generation units。
 
 ```text
-先选 section summary unit
-再选 long-chunk summary unit
-最后选 point unit
+target_total_qa = qa_per_chunk * 原有效 leaf chunk 数
+generation_units = planner(document_chunks)
+qa_budget 按 unit 分配
 ```
 
-原因是 summary unit 通常覆盖多个 chunk。如果先把每个 chunk 都选成 point unit，后面再合 summary 容易重复。
+这样第一版不需要马上把接口字段改成 `qa_per_generation_unit`，但真实执行单位已经从 chunk 迁移到 generation unit。
 
-但这不是说 summary 永远优先。只有 summary 候选分数足够高时才选；分数不够就回到 point。
+## Generation Unit 是什么
 
-第 5 步：处理覆盖和重复
+generation unit 是 QA Flow 交给候选问题生成器的最小工作单元。它不是新的文档切分产物，而是从现有 chunk 运行时组织出来的出题上下文。
 
-选中一个 summary unit 后，它覆盖的 chunk 要打上标记：
+建议数据形态：
 
-```text
-covered_by_summary_unit = true
+```python
+{
+    "unit_id": "section:1.2",
+    "unit_type": "leaf | section | virtual_parent",
+    "qa_mode": "point | summary",
+    "anchor_chunk_index": 3,
+    "source_chunk_indexes": [3, 4, 5],
+    "parent_index_path": "1.2",
+    "title_path": "文档标题 > 章节标题",
+    "unit_text": "...",
+    "child_count": 3,
+    "usable_child_count": 3,
+    "quality_child_coverage": 1.0,
+    "qa_budget": 2,
+    "debug": {
+        "selection_reason": "parent_group_covered",
+        "skipped_chunk_indexes": []
+    }
+}
 ```
 
-被覆盖的 chunk 默认不再单独出 point 题，除非它有特别强的单点事实，例如：
+第一版只需要三类 unit。
+
+### leaf unit
+
+来源是单个质量合格 chunk。
+
+适用场景：
+
+- chunk 内容自包含。
+- 不需要兄弟 chunk 才能问清楚。
+- 用于生成单点事实题。
+
+对应模式：
 
 ```text
-电话
-金额
-日期
-地址
-明确定义
-办理时限
+qa_mode = point
 ```
 
-这样可以避免两个问题：
+### section unit
 
-- 同一段内容重复出题。
-- summary 已经覆盖整个章节，但下面每个小 chunk 又重复生成类似问题。
+来源是同一个 `parent_index_path` 下的多个兄弟 chunk。
 
-第 6 步：分配题量预算
+适用场景：
 
-原来的 `qa_per_chunk` 不能再机械理解为“每个物理 chunk 都出几题”。在新方案里，它更适合被理解为“题量密度”。
+- 同父节点下有多个质量合格子 chunk。
+- 合并后长度没有超过答案生成上下文预算。
+- 这些子 chunk 是同一章节下的连续内容。
 
-第一版可以这样处理：
+对应模式：
 
 ```text
-总题量预算 ≈ qa_per_chunk × 有效 chunk 数
+qa_mode = summary
 ```
 
-然后分配给 generation units：
+这里不需要判断“是不是流程、条件、清单”等标签。只要结构上是同一父章节下的多子块，并且质量覆盖率足够，就先把它当作 section unit。具体问题类型仍由候选问题 LLM 根据 unit 内容生成。
+
+### virtual_parent unit
+
+来源是单个很长 chunk 内部再轻量切出的虚拟子段。
+
+适用场景：
+
+- 当前 chunk 已经很长。
+- chunk 内部包含多个自然段、编号项、列表项、条款或小标题。
+- 由于上游切分没有把它拆成多个兄弟 chunk，所以需要在运行时模拟 parent/child。
+
+对应模式：
 
 ```text
-point unit
-  通常 1 题
-
-section summary unit
-  至少 1 题
-  覆盖内容多、信息点多时可以更多
-
-long-chunk summary unit
-  至少 1 题
-  内部子项多时可以更多
+qa_mode = summary
 ```
 
-重点是总题量不要因为多个 chunk 合并成一个 unit 后突然大幅下降，也不要因为一个 summary unit 覆盖很多 chunk 就机械生成太多重复题。
+这个设计来自 LlamaIndex / LangChain 的多粒度切分思想：父块负责上下文，子块负责定位。QA Flow 第一版不必真的把虚拟子段写回 chunk list，只在 planner 内部用于判断这个长 chunk 是否应该作为 summary unit。
 
-第 7 步：输出最终 generation unit 列表
+## 从 chunk 到 generation unit 的具体流程
 
-最终给候选问题 LLM 的不是 chunk list，而是 unit list：
+这是决定效果的核心步骤。
+
+### 第 1 步：规范化 chunk
+
+输入来自：
 
 ```text
-unit_id
-unit_type: point / section_summary / long_chunk_summary
-source_chunk_ids
-primary_chunk_id
-covered_chunk_ids
-recommended_qa_mode: point / summary
-target_qa_count
-route_reason
+build_document_chunks(pre_split_chunks, pre_split_chunk_meta)
 ```
 
-候选问题生成时，每个 unit 都带着自己的上下文和推荐模式进入 prompt。
-
-一个直观例子：
+每个 chunk 补齐这些运行时字段：
 
 ```text
-chunk 1：退费条件
-chunk 2：退费材料
-chunk 3：退费流程
-chunk 4：客服电话
-chunk 5：很长一段，里面包含申请条件、办理流程、注意事项
-chunk 6：页眉页脚
+prev_chunk_index
+next_chunk_index
+siblings_by_parent
+text_char_count
+line_count
+normalized_text
 ```
 
-规划结果可能是：
+其中：
+
+- `prev_chunk_index` / `next_chunk_index` 来自 `chunk_index` 顺序。
+- `siblings_by_parent` 来自 `parent_index_path` 分组。
+- `normalized_text` 只用于重复率、占位符、符号比例等轻量判断，不改变原文。
+
+### 第 2 步：构建轻量结构图
+
+建议新增模块：
 
 ```text
-unit A: section_summary
-  包含 chunk 1 + chunk 2 + chunk 3
-  生成退费规则类 summary 问题
-
-unit B: point
-  包含 chunk 4
-  生成客服电话类 point 问题
-
-unit C: long_chunk_summary
-  包含 chunk 5
-  生成长块内部流程/条件类 summary 问题
-
-chunk 6
-  不生成问题，只作为低质量 chunk 记录在 debug 中
+qa/generation/structure_units.py
 ```
 
-这样划分后，系统不是“每个 chunk 都出题”，而是“每次拿一个最小完整上下文出题”。
+核心函数：
 
-### 4. `auto` 不再是简单打标签
-
-`qa_detail_mode=auto` 不应该理解成“看到流程词就 summary，看到电话就 point”。这些词只能作为弱信号，不能作为最终标签。
-
-更合理的原则是：
-
-```text
-先看这个内容是否值得处理
-再看它是单点事实，还是需要成组理解
-最后再决定这个 generation unit 用 point prompt 还是 summary prompt
+```python
+def build_structure_graph(document_chunks: list[dict]) -> StructureGraph:
+    ...
 ```
 
-直观例子：
+图里只保留轻量边：
 
 ```text
-客服电话：400-xxx
+parent -> children
+child -> parent
+prev -> next
+same_section
 ```
 
-适合 point。
+embedding 相似边第一版不参与 generation unit 划分，只用于后面的证据检索和调试解释。原因是：出题单位应该主要由文档结构决定，embedding 相似更适合回答“这个问题还需要哪些补充证据”。
+
+### 第 3 步：chunk 质量门控
+
+质量门控不是为了判断 `point` 或 `summary`，而是为了避免明显低价值内容直接消耗 LLM 调用。
+
+它也不是纯字符匹配。第一版建议使用确定性特征组合：
 
 ```text
-退费规则：
-一、申请条件
-二、申请材料
-三、办理流程
-四、不予退费情形
+长度、行数、标题路径是否存在
+是否只有标题/目录/页眉/页脚
+是否只有表格列名或单位
+是否只有图片/附件/占位符
+标点、数字、符号比例是否异常
+是否和前后 chunk 高重复
+是否有至少一个可问答文本句或条款
 ```
 
-适合 summary，即使它在同一个长 chunk 里。
+输出不要做复杂分类，只给三种状态：
 
 ```text
-某公司内部资料 第 3 页
-某公司内部资料 第 4 页
+usable       可以作为 unit 的来源
+context_only 不单独出题，但可作为同章节上下文
+drop         不进入出题和证据上下文
 ```
 
-不适合出题，应该被质量门控压低。
+建议函数：
 
-插入位置：
-
-```text
-generation unit 构建完成
--> 新增：为每个 unit 决定 point / summary / skip
--> 再调用候选问题 LLM
+```python
+def evaluate_chunk_quality(chunk: dict, graph: StructureGraph) -> ChunkQuality:
+    ...
 ```
 
-### 5. 保留基于具体问题的检索，不和新方案冲突
+这里可以保留分数，但分数只用于排序和调试，不作为难以解释的黑盒标签。
 
-结构图和 generation unit 只决定“从哪里出题”。它们不替代后面的基于问题检索。
+### 第 4 步：生成候选 units
 
-后续仍然应该保持：
+先生成候选，不急着最终选择。
+
+候选 1：leaf unit
 
 ```text
-候选问题生成后
--> 用候选问题做同文档检索
--> 找到回答这个具体问题需要的证据
--> 构建答案提示词
+每个 usable chunk -> 一个 leaf unit 候选
 ```
 
-区别是：答案提示词要知道哪些 chunk 已经在 source unit 里，避免重复塞入。
-
-需要新增几个概念：
+候选 2：section unit
 
 ```text
-source_unit_chunk_ids
-  当前出题单元本身包含的 chunk
-
-retrieved_chunk_ids
-  基于问题检索回来的 chunk
-
-final_prompt_chunk_ids
-  去重和裁剪后真正放进答案提示词的 chunk
+按 parent_index_path 分组
+组内 usable + context_only children >= 2
+usable_child_count / total_child_count > 0.5
+合并后的 unit_text 不超过 summary_unit_max_chars
+-> 一个 section unit 候选
 ```
 
-这样就不会出现“summary unit 已经包含了某几个 chunk，问题检索又重复塞一遍”的情况。
-
-插入位置：
+这里的：
 
 ```text
-候选问题生成
--> 现有：基于问题检索
--> 新增：source unit 与 retrieved evidence 去重
+usable_child_count / total_child_count > 0.5
+```
+
+就是借鉴 LlamaIndex / Haystack 的同父子节点覆盖率。区别是：在出题规划阶段，它表示“这个父章节下有超过一半子块值得使用”；在答案检索阶段，它表示“某个问题命中了超过一半同父子块，应该返回父级上下文”。
+
+候选 3：virtual_parent unit
+
+```text
+单个 chunk 的长度 >= 2 * 当前 chunk_size
+且可以按自然段/编号/列表切成 >= 2 个虚拟子段
+且虚拟子段合并后不超过 summary_unit_max_chars
+-> 一个 virtual_parent unit 候选
+```
+
+如果运行时拿不到 `chunk_size`，第一版可以用后端默认 chunk_size 作为基准。这里的阈值来自多粒度切分比例，而不是为了给内容打语义标签。
+
+### 第 5 步：选择最终 units
+
+选择顺序：
+
+```text
+section unit
+-> virtual_parent unit
+-> leaf unit
+```
+
+原因是 section / virtual_parent 会覆盖多个子块或子段，如果先把所有 chunk 都变成 leaf unit，后续很容易重复出题。
+
+覆盖规则：
+
+```text
+被 section unit 覆盖的 chunk，不再默认生成 leaf unit。
+被 virtual_parent unit 覆盖的原 chunk，不再生成 leaf unit。
+未被覆盖的 usable chunk，生成 leaf unit。
+context_only 和 drop chunk 不生成 leaf unit。
+```
+
+第一版不要引入“例外重开”规则，否则很容易回到拍脑袋式判断。宁可让目标题量是软目标，也不要为了凑数生成重复问题。
+
+### 第 6 步：分配 qa_budget
+
+兼容现有 `qa_per_chunk`：
+
+```text
+target_total_qa = qa_per_chunk * usable_leaf_chunk_count
+```
+
+预算分配建议：
+
+```text
+leaf unit 默认 1 题
+section unit 默认 min(2, child_count) 题
+virtual_parent unit 默认 2 题
+如果总预算不足，优先保留 section / virtual_parent 的 1 题，再分配 leaf
+如果总预算有剩余，按 unit 文本长度和 child_count 追加，但不强行填满
+```
+
+这里的原则是：预算服务于覆盖，不服务于凑数。
+
+### 第 7 步：确定 qa_mode
+
+`qa_detail_mode` 第一版扩展为：
+
+```text
+point
+summary
+auto
+```
+
+当用户显式选择：
+
+```text
+point   -> 所有 unit 尽量按 point 生成，但 section/virtual_parent 会被压缩为更具体的问题
+summary -> 所有 unit 尽量按 summary 生成，leaf unit 也允许生成小总结
+auto    -> 由 unit_type 决定
+```
+
+`auto` 的规则必须简单、可解释：
+
+```text
+leaf unit           -> point
+section unit        -> summary
+virtual_parent unit -> summary
+```
+
+这比“标题里有某某词就 summary”稳定得多，也和成熟实现的层级节点思想一致。
+
+## 答案证据阶段怎么改
+
+用户后续是“基于问题进行检索”，这个方案不冲突。出题单位和答题检索是两层。
+
+```text
+generation unit 决定候选问题从哪里来
+question retrieval 决定答案还需要哪些证据
+```
+
+当前已有：
+
+- `QADocumentEvidenceIndex.retrieve_many`
+- `QADocumentEvidenceIndex.build_generation_unit`
+
+建议改成：
+
+```text
+source generation unit
+-> 候选问题
+-> 用候选问题检索同文档 leaf chunks
+-> 对召回 hits 做 parent auto-merge
+-> source unit chunks 与 retrieved evidence 去重
 -> 构建最终答案提示词
 ```
 
-### 6. 答案提示词要从“主来源块”升级为“主来源单元”
+### parent auto-merge
 
-当前答案生成主要围绕 source chunk。引入 generation unit 后，提示词里的主来源应该改成：
+新增方法：
 
-```text
-主来源单元
-  可能是一个 chunk
-  也可能是同章节多个 chunk
-  也可能是一个长 chunk 内部的多个片段
+```python
+def auto_merge_hits(
+    hits: list[EvidenceHit],
+    *,
+    threshold: float = 0.5,
+    max_context_chars: int,
+) -> list[EvidenceContext]:
+    ...
 ```
 
-然后再追加问题检索得到的补充证据。
-
-提示词结构可以理解为：
+计算方式：
 
 ```text
-【主来源单元】
-这里是本次出题/回答的核心上下文
+按 parent_index_path 分组 retrieved hits
+matched_child_count = 命中的同父 child 数
+parent_children_count = 该 parent 下可用 child 总数
+coverage = matched_child_count / parent_children_count
 
-【问题检索补充证据】
-这里是根据具体问题找回来的额外证据
-
-【证据范围说明】
-哪些 chunk 是主来源，哪些 chunk 是补充，哪些被去重或丢弃
+if coverage > threshold:
+    用 parent section context 替代这些 children
+else:
+    保留 children
 ```
 
-插入位置：
+这就是 LlamaIndex / Haystack 的核心机制在 QA Flow 里的对应实现。
+
+### source unit 和 evidence 去重
+
+如果 source unit 已经包含 chunk 3、4、5，检索结果里又命中了 chunk 4，就不要在提示词里重复放两遍。
+
+去重顺序：
 
 ```text
-build_generation_unit
--> 新增：主来源单元渲染
--> 新增：补充证据去重
--> 新增：证据范围说明
+source unit chunks 优先
+parent auto-merged context 其次
+其他 semantic hits 最后
 ```
 
-### 7. 前端不新增独立页面，只加少量可理解配置
+如果 parent context 覆盖了 source unit 已有 chunk，只渲染缺失部分，或者在 trace 里标记为已覆盖。
 
-前端不需要新建“结构图模式”页面。还是在现有生成配置里增加：
+### answer_scope_policy 的含义保持不变
 
-- `auto` 问答粒度
-- 是否启用轻量结构图
-- 是否启用 chunk 质量门控
-- 是否启用自动合并上下文
-
-调试展示里增加：
-
-- 哪些 chunk 被跳过
-- 哪些 chunk 被合并成一个 generation unit
-- 某个 unit 为什么走 point 或 summary
-- 最终答案提示词用了哪些 chunk
-
-插入位置：
+现有前端有：
 
 ```text
-现有生成配置面板
--> 增加少量开关和 auto 选项
-
-现有任务详情 / debug
--> 增加 route、quality、unit、prompt chunk 信息
+source_primary
+same_section
+cross_chunk
 ```
 
-## 插入到现有流程的完整位置
+接入 generation unit 后：
 
-推荐后的流程：
+- `source_primary` 表示答案提示词只使用 source generation unit，不再额外引入语义召回证据。
+- `same_section` 允许同章节 auto-merge context。
+- `cross_chunk` 允许跨章节 semantic hits，但仍要受 score、budget 和去重约束。
+
+这不会破坏现有检索逻辑，只是 source 从单个 chunk 变成一个 unit。
+
+## 后端改造点
+
+### 1. 新增结构规划模块
+
+新增：
 
 ```text
-1. 文档输入 / OCR
-   不变
-
-2. 文本整合
-   不变
-
-3. chunk 切分
-   不变，继续产出 pre_split_chunks 和 pre_split_chunk_meta
-
-4. 构建 document_chunks
-   现有 build_document_chunks
-
-5. 新增：轻量结构图
-   根据 chunk_index、title_path、parent_index_path、level 组织 prev/next 和 parent/children
-
-6. 新增：chunk 质量门控
-   判断 keep / skip / merge_with_neighbors
-
-7. 新增：generation unit planning
-   生成 point unit、section summary unit、long-chunk summary unit
-
-8. 候选问题生成
-   从“按 chunk 生成”改成“按 generation unit 生成”
-
-9. 基于问题检索证据
-   保留现有逻辑
-
-10. 构建答案提示词
-   主来源从 source chunk 升级为 source unit
-   检索证据继续追加，但要去重和控制长度
-
-11. 答案生成
-   基本不变，只是接收更清楚的上下文
-
-12. 评估 / 保存 / 入库
-   基本不变
+qa/generation/structure_units.py
 ```
 
-## 这个方案能提升什么
+建议公开函数：
 
-### 减少无效调用
+```python
+def build_structure_graph(document_chunks: list[dict]) -> StructureGraph:
+    ...
 
-标题、目录、页眉页脚、重复块不会再单独触发候选问题生成。
+def plan_generation_units(
+    document_chunks: list[dict],
+    *,
+    qa_per_chunk: int,
+    qa_detail_mode: str,
+    max_unit_chars: int,
+    chunk_size: int | None = None,
+) -> list[GenerationUnit]:
+    ...
+```
 
-### 提升 summary 质量
+这个模块只做轻量规划，不调用大模型，不访问 Milvus，不初始化重依赖。
 
-summary 不再靠单个 chunk 硬生成，而是先组织成 section unit 或 long-chunk unit，再生成问题。
+### 2. 修改一步式主流程
 
-### 降低证据不完整
-
-同一章节多个相关 chunk 会作为主来源单元一起进入提示词，减少 summary 答案找不到依据的问题。
-
-### 避免 prompt 重复和过长
-
-source unit 和 question retrieval 结果会去重，最终只把必要 chunk 放进答案提示词。
-
-### 保持现有检索能力
-
-候选问题生成之后仍然基于具体问题检索证据，结构图只提供更好的出题上下文，不替代检索。
-
-## 第一版不做什么
-
-第一版先不做：
-
-- 不做实体关系图谱。
-- 不引入 NER 模型。
-- 不新建用户可见 pipeline。
-- 不改变 OCR 和 chunking 主流程。
-- 不强行改 Milvus schema。
-- 不把所有阈值一次性定死。
-
-第一版重点是把流程位置放对：
+修改：
 
 ```text
-chunk 后先做结构和质量判断
-再构建 generation unit
-再出题
-再基于问题检索证据
-最后构建去重后的答案提示词
+qa/text_to_qa_pipeline.py::process_text_to_qa_one_step
 ```
 
-## 后续再写详细实现方案
+当前：
 
-这份文档只确定产品和流程层面的方案。后续详细实现方案再展开：
+```text
+raw_chunks
+-> document_chunks
+-> evidence_index
+-> ThreadPoolExecutor per chunk
+```
 
-- 具体新增哪些 dataclass。
-- `generation unit` 的字段结构。
-- `point unit / section summary unit / long-chunk summary unit` 的判定细节。
-- 质量门控的具体规则和阈值。
-- source unit 与 retrieval evidence 的去重算法。
-- 后端接口参数如何命名。
-- 前端如何展示 debug 信息。
-- Docker 内怎么验证。
+改为：
 
-在进入实现前，应该先用已有任务样本做一次人工审阅，确认这三个 unit 类型是否覆盖主要问题：
+```text
+raw_chunks
+-> document_chunks
+-> generation_units = plan_generation_units(document_chunks, runtime)
+-> evidence_index
+-> ThreadPoolExecutor per generation unit
+```
 
-- 普通单点事实
-- 同章节多 chunk 总结
-- 单个长 chunk 内部总结
+进度事件里保留 `total_chunks`，新增：
+
+```text
+total_generation_units
+completed_generation_units
+unit_type
+unit_source_chunk_indexes
+```
+
+这样前端仍能看到 chunk 维度，也能看到新 unit 维度。
+
+### 3. 新增或改造 worker
+
+当前 worker：
+
+```text
+qa/pipeline_runtime.py::run_one_step_chunk_worker
+```
+
+建议第一版新增：
+
+```text
+run_one_step_unit_worker
+```
+
+不要强行把旧函数改得过于复杂。新 worker 接收：
+
+```python
+unit: GenerationUnit
+evidence_index: QADocumentEvidenceIndex
+runtime: OneStepPipelineRuntime
+```
+
+调用候选问题 LLM 时：
+
+```text
+source_chunk_text -> unit.unit_text
+source_chunk_meta -> unit.to_source_meta()
+qa_detail_mode    -> unit.qa_mode when runtime.qa_detail_mode == "auto"
+candidate_count   -> unit.qa_budget * candidate_multiplier
+```
+
+返回 item 时追加：
+
+```text
+qa_generation_unit_id
+qa_generation_unit_type
+qa_generation_unit_mode
+unit_source_chunk_indexes
+unit_parent_index_path
+unit_quality_child_coverage
+```
+
+### 4. 扩展证据索引
+
+修改：
+
+```text
+qa/generation/evidence_units.py::QADocumentEvidenceIndex
+```
+
+新增内部索引：
+
+```text
+_children_by_parent_index_path
+_chunk_by_id
+_chunk_by_index
+```
+
+新增能力：
+
+```text
+get_parent_children(parent_index_path)
+render_source_unit(unit)
+auto_merge_hits(...)
+dedupe_contexts(...)
+```
+
+`build_generation_unit` 要支持 source 不再只是单个 chunk：
+
+```python
+def build_generation_unit(
+    *,
+    source_unit: GenerationUnit | None = None,
+    source_chunk_index: int | None = None,
+    ...
+) -> dict:
+    ...
+```
+
+为了降低改造风险，也可以第一版新增 `build_answer_unit_from_generation_unit`，旧函数先保留给兼容路径。
+
+### 5. 扩展运行时配置
+
+修改：
+
+```text
+qa/pipeline_runtime.py::parse_one_step_pipeline_runtime
+```
+
+新增或接受：
+
+```text
+qa_detail_mode = point | summary | auto
+structure_units_enabled = true
+structure_merge_threshold = 0.5
+summary_unit_max_chars = DEFAULT_MAX_UNIT_CHARS
+```
+
+`structure_units_enabled` 第一版可以只在 `qa_detail_mode=auto` 时开启。等效果稳定后，再考虑让 point/summary 也走 unit planner。
+
+### 6. 路由校验
+
+修改：
+
+```text
+app/routers/pipeline_batch_routes.py
+app/routers/pipeline_integrated_routes.py
+```
+
+当前只允许：
+
+```text
+point | summary
+```
+
+改为：
+
+```text
+point | summary | auto
+```
+
+如果请求没有传，默认仍保持当前行为：
+
+```text
+point
+```
+
+这样不会影响已有调用。
+
+## 前端改造点
+
+修改：
+
+```text
+static/index.html
+static/app.js
+```
+
+### 问答粒度下拉框
+
+当前：
+
+```text
+point
+summary
+```
+
+改为：
+
+```text
+auto（按文档结构自动）
+point（单点事实直答）
+summary（总结/对比/推理）
+```
+
+推荐把 `auto` 放在第一项，但默认值是否切到 `auto` 要看是否希望立即改变现有行为。第一版稳妥做法：
+
+```text
+默认仍是 point
+用户手动选 auto 后启用新 planner
+```
+
+### 调试展示
+
+在已有 chunk debug 区域增加 generation unit 信息：
+
+```text
+unit_id
+unit_type
+qa_mode
+source_chunk_indexes
+parent_index_path
+quality_child_coverage
+qa_budget
+selection_reason
+```
+
+这对后续分析 integrated task 很重要。否则用户只能看到最终 QA，看不到为什么某些 chunk 被合并或跳过。
+
+### 高级参数
+
+第一版不要暴露太多参数。建议只在高级区显示：
+
+```text
+结构化出题：启用/关闭
+父节点合并阈值：默认 0.5
+```
+
+其他参数先后端默认，避免前端复杂化。
+
+## 和现有评估规则的关系
+
+这次改造会减少对以下硬规则的依赖：
+
+```text
+summary_question_not_grouped
+summary_question_too_shallow_list
+summary_source_fact_segment_not_grounded_in_chunk
+summary_source_fact_not_grounded_in_chunk
+```
+
+原因是 summary 不再靠问题文字形态硬判，而是由 section / virtual_parent unit 提供真实多块上下文。评估时更应该检查：
+
+```text
+summary 问题是否来自 summary unit
+summary source_fact 是否覆盖 unit 内多个可定位 evidence span
+answer 是否只使用 source unit + approved evidence
+retrieval trace 是否解释了 parent merge
+```
+
+也就是说，评估规则要从“看起来像不像 summary”转向“它是否真的基于多证据 unit 生成”。
+
+## 推荐实施顺序
+
+### 阶段 1：只加 planner 和 debug，不改变默认行为
+
+实现：
+
+```text
+qa/generation/structure_units.py
+plan_generation_units(...)
+```
+
+在 `process_text_to_qa_one_step` 中生成 unit plan，但默认 `qa_detail_mode=point` 时仍走旧 per-chunk 流程。debug 文件里输出 unit plan。
+
+验收：
+
+```text
+同一批 integrated_document_task 能看到每个文档的 unit plan
+不会影响现有 QA 输出
+```
+
+### 阶段 2：auto 模式切到 per generation unit
+
+实现：
+
+```text
+qa_detail_mode=auto 时使用 run_one_step_unit_worker
+point/summary 暂时仍走旧逻辑
+```
+
+验收：
+
+```text
+auto 模式下 chunk_completed 事件可兼容显示
+新增 unit_completed 或 unit_debug 信息
+输出 QA 带 qa_generation_unit_id
+```
+
+### 阶段 3：答案证据 parent auto-merge
+
+实现：
+
+```text
+QADocumentEvidenceIndex.auto_merge_hits
+source unit 与 retrieved evidence 去重
+retrieval_trace 增加 auto_merge_trace
+```
+
+验收：
+
+```text
+同父多个命中 chunk 的问题，提示词里出现合并后的章节上下文
+重复 chunk 不会在 source 和 evidence 中出现两遍
+```
+
+### 阶段 4：前端 auto 和调试面板
+
+实现：
+
+```text
+qaDetailMode 增加 auto
+请求序列化允许 auto
+任务结果面板展示 generation unit debug
+```
+
+验收：
+
+```text
+前端可选择 auto
+任务详情能解释每个问题来自哪个 unit
+```
+
+### 阶段 5：评估规则更新
+
+实现：
+
+```text
+summary 相关规则改成基于 unit/evidence trace
+弱化或移除只看问题形态的历史规则
+```
+
+验收：
+
+```text
+summary 模式不再因为浅层文字形态被误伤
+证据不完整的问题仍能被定位
+```
+
+## 验证方案
+
+### 单元级验证
+
+用合成 chunks 测：
+
+```text
+同 parent 下 3 个 usable chunks -> 生成 1 个 section unit
+同 parent 下 3 个 chunks 只有 1 个 usable -> 不生成 section unit
+长 chunk 内有 3 个编号项 -> 生成 virtual_parent unit
+标题/目录/占位符 chunk -> context_only 或 drop
+被 section 覆盖的 leaf -> 不重复生成 leaf unit
+```
+
+### API 级验证
+
+在 Docker runtime 中跑：
+
+```bash
+docker exec -it qa-flow-runtime bash
+python -m compileall qa app
+curl http://localhost:12000/test-connection
+```
+
+### 任务级验证
+
+用之前的问题任务对比：
+
+```text
+integrated_document_task_1783416848
+integrated_document_task_1783417492
+```
+
+重点看：
+
+```text
+总 LLM 调用次数是否下降
+低价值 chunk 是否减少出题
+summary 问题是否真的来自 section/virtual_parent unit
+答案 source_fact 是否更容易定位到 unit 内证据
+retrieval_trace 是否能解释为什么合并父章节
+```
+
+## 第一版边界
+
+第一版不做：
+
+```text
+不做完整知识图谱数据库
+不做 NER 实体图谱
+不引入图数据库
+不把 embedding 相似边作为 unit 划分主依据
+不让关键词直接决定 point/summary
+不强行保证 target_total_qa 一定填满
+```
+
+第一版要做：
+
+```text
+用现有 flat chunk list 派生 parent/child/prev/next
+用轻量质量门控减少无效 chunk
+用 generation unit 替代 per-chunk 出题
+用 unit_type 决定 auto 下的 point/summary
+用同父子节点覆盖率实现 parent auto-merge
+保留问题级检索，并在提示词构建时去重
+```
+
+## 最终效果预期
+
+这套方案会让 QA Flow 从“每个切出来的 chunk 都尝试出题”，升级为“先理解文档结构，再选择合适的出题单位”。短碎片不会单独浪费模型调用，同章节的多个相关 chunk 可以合并成总结题，长 chunk 也能按内部结构走 summary；答案阶段仍然保留问题级检索，并在多个同父证据命中时自动合并为更完整的章节上下文。整体预期是减少无效题和重复题，提高 summary 题的证据完整性，同时让每个问题为什么这么出、用了哪些证据更容易追踪。
