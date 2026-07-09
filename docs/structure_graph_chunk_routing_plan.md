@@ -370,6 +370,8 @@ PATTERNS = {
 - “主体”第一版不用复杂模型，可以来自三类信号：`title_path` 最后一段、行首 `主体：内容`、条款/列表项开头的名词短语。
 - 短文本只要有日期、金额、电话、定义、强条件词，就不能直接按 `too_short_no_fact` 跳过。
 
+这里说“不用复杂模型”主要是指第一版不做 NER。NER 是 Named Entity Recognition，即命名实体识别，用模型或规则从文本里抽取人名、机构名、地点、产品名等实体。当前目标只是判断 chunk 是否有可问答主体，不需要先引入 NER 模型。
+
 伪代码：
 
 ```python
@@ -565,25 +567,55 @@ qa_detail_mode=summary 所有 keep chunk 走 summary
 qa_detail_mode=auto    执行自动路由
 ```
 
-`auto` 第一版建议规则：
+`auto` 第一版不要把“结构词”或“单点事实词”当成硬标签。它们只是弱信号，不能单独决定走 `summary` 或 `point`。真正的路由原则是先判断这个 chunk 是否值得单独生成，再判断它是否必须和同章节兄弟一起看。
 
-走 `summary`：
+决策顺序：
 
-- 同一 section 下有至少 2 个 keep 或 mergeable 子 chunk。
-- 标题或文本包含流程、步骤、条件、材料、范围、规则、标准、要求、对比、分类、组成、清单等结构词。
-- 当前 chunk 是列表/条款/流程中的一部分，单独看不完整。
-- section context 在 `max_unit_chars` 范围内能容纳主要兄弟 chunk。
+1. 先看质量门控。
+   - `quality.action == "skip"`：直接 `skip`。
+   - `quality.action == "merge_with_neighbors"`：不单独生成；如果同章节 summary plan 覆盖它，则 `skip`，否则交给相邻 chunk 或 parent context。
+2. 再看用户强制模式。
+   - `qa_detail_mode=point`：所有 keep chunk 走 `point`。
+   - `qa_detail_mode=summary`：所有 keep chunk 走 `summary`。
+3. 只有 `qa_detail_mode=auto` 时才自动判断。
 
-走 `point`：
+`auto` 下的强约束：
 
-- chunk 内有明确单点事实、定义、数值、时间、电话、地址、主体属性。
-- 当前 chunk 自包含，前后 chunk 不影响答案。
-- section 兄弟数量少，或 auto merge 覆盖率不足。
+- 默认走 `point`。除非 summary 置信度足够高，否则不升级到 summary。
+- 结构词、条件词、数值、日期、主体都只是加分项，不是最终标签。
+- chunk 同时有结构词和单点事实时，先按 `point` 处理，除非它明显属于一个同章节组合。
 
-走 `skip`：
+走 `summary` 必须同时满足：
 
-- quality action 是 `skip`。
-- quality action 是 `merge_with_neighbors` 且该 chunk 已被父 section 的 summary plan 覆盖。
+- 同一 `parent_index_path` 下至少有 `summary_route_min_children` 个有效子 chunk，默认 2。
+- 当前 chunk 与同父兄弟 chunk 共享章节主题，但内容不是高度重复。
+- 同父兄弟 chunk 至少覆盖两个不同子项，例如条件/材料/流程/时限，或定义/分类/适用范围。
+- 拼出的 section context 不超过 `max_unit_chars`，否则只选核心兄弟 chunk。
+- `section_bundle_score` 达到阈值，建议默认 `>= 0.65`。
+
+`section_bundle_score` 可以这样算：
+
+```text
+section_bundle_score =
+  0.30 * sibling_count_ok
+  + 0.25 * sibling_complementarity
+  + 0.20 * structure_pattern_score
+  + 0.15 * context_budget_ok
+  + 0.10 * non_duplicate_score
+```
+
+走 `point` 的原则：
+
+- 当前 chunk 自包含，有明确事实、定义、数值、日期、电话、地址、主体属性。
+- 或者同章节兄弟数量不足。
+- 或者同章节兄弟虽然存在，但互补性不够、重复度太高、section bundle score 不足。
+- 或者 summary context 过长，不能稳定塞进生成单元。
+
+直观理解：
+
+- `point` 像从一个句子或一小段里问“客服电话是多少”“办理时限是几天”“某概念定义是什么”。
+- `summary` 像把同一章节里的多个小段合起来问“退费规则包括哪些条件、材料和流程”。
+- 如果系统拿不准，就选 `point`，因为 point 对证据范围要求更小，更不容易漂移。
 
 ### route decision 示例
 
