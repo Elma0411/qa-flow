@@ -42,6 +42,12 @@
 - section 或 parent 节点作为合并上下文单位。
 - auto merge 的核心阈值可以直接采用“同父节点命中覆盖率”。
 
+对应实现方式：
+
+- 在 `qa/generation/structure_graph.py` 新增 `build_lightweight_structure_graph`，把 `build_document_chunks` 产出的 flat chunk list 转成带 parent/child 和 prev/next 的只读结构图。
+- 在 `qa/text_to_qa_pipeline.py::process_text_to_qa_one_step` 的 `build_document_chunks` 之后调用结构图构建函数，不改 OCR 或 chunking 主流程。
+- 在 `qa/generation/evidence_units.py::build_generation_unit` 内增加 `auto_merge_hits`，用同父节点命中覆盖率把多个 leaf evidence 提升成 section context。
+
 ### Haystack
 
 参考文件：
@@ -62,6 +68,12 @@
 - 结构图字段必须显式、可序列化、可调试。
 - 路由结果要进入 debug/progress，让我们知道一个 chunk 为什么走 `point`、`summary` 或 `skip`。
 - auto merge 不是“多取几个 chunk”，而是把多个命中 leaf 提升为 parent/section 级上下文。
+
+对应实现方式：
+
+- 在 enriched chunk meta 中写入 `structure_parent_id`、`structure_children_ids`、`prev_chunk_index`、`next_chunk_index`、`quality_score`、`quality_flags`。
+- 在 `generation_chunk_details` 中输出 `route.effective_mode`、`route.reason_code`、`quality.action`、`quality.score`、`quality.flags`。
+- 在 `retrieval_trace.auto_merge` 中输出 `merged_contexts`、`count_coverage`、`weighted_coverage`、`merged_chunk_indexes`，让前端和调试日志能解释每次合并。
 
 ## 当前 QA Flow 代码事实
 
@@ -307,6 +319,39 @@ base = 1.0
 + 0.10: 有明确标题路径
 + 0.10: 有条件词、步骤词、定义词、数值、日期、主体
 + 0.10: 和同章节兄弟 chunk 互补
+```
+
+这里不是单纯“字符匹配”。第一版质量门控应使用确定性特征，不调用 LLM；其中一部分是正则或词表匹配，一部分是结构字段、文本统计和邻接关系计算。
+
+建议实现成 `evaluate_chunk_quality`，每个维度都返回 flag 和 reason：
+
+| 评分维度 | 实现方式 | 说明 |
+| --- | --- | --- |
+| 字符数过短且没有标题或列表结构 | `len(text.strip())` + `title_path` 是否为空 + 列表/条款正则 | 不是短就跳过；短句有标题、编号、数值、定义词时仍可保留 |
+| 只有标题、页眉、页脚、目录项 | 标题/目录/页码正则 + 行数/标点密度 | 例如 `第.*章`、`目录`、`第 x 页`、连续点线目录项 |
+| 表格残片只有列名或单位 | 分隔符密度、短 token 比例、单位/列名词表、事实句数量 | 表格内容有数值和主体时不能直接跳过 |
+| 图片占位/附件占位 | 占位词正则 | 例如 `图片`、`图示`、`附件`、`image`、`figure`，但带说明文字时降级为 merge 而非 skip |
+| 与前后 chunk 高重复 | 和 prev/next 做字符 n-gram 或 token Jaccard | 用于识别 OCR 页眉页脚、重复标题、跨页重复 |
+| 标点/数字/符号占比异常 | 统计中文/英文/数字/标点/空白比例 | 只含符号、编号、单位时扣分；有完整句时保留 |
+| 有明确标题路径 | 读取 `title_path`、`parent_index_path`、`level` | 结构字段加分，不靠正文匹配 |
+| 有条件词、步骤词、定义词、数值、日期、主体 | 小词表/正则 + 实体样式正则 | 例如 `条件/流程/步骤/要求/定义/包括/应当`、日期、金额、电话、百分比 |
+| 和同章节兄弟 chunk 互补 | 同 parent 下兄弟 chunk 的关键词差异和顺序关系 | 用 section sibling 信息判断是否适合并入 summary |
+
+第一版可先用轻量函数实现，不引入模型：
+
+```python
+def evaluate_chunk_quality(
+    *,
+    chunk: Dict[str, Any],
+    prev_chunk: Optional[Dict[str, Any]],
+    next_chunk: Optional[Dict[str, Any]],
+    section_siblings: Sequence[Dict[str, Any]],
+) -> ChunkQuality:
+    score = 1.0
+    flags = []
+    reasons = []
+    # regex/statistics/structure checks here
+    return ChunkQuality(action=action, score=score, flags=flags, reasons=reasons)
 ```
 
 建议 action：
