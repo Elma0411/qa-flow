@@ -79,7 +79,10 @@ compose 环境变量。
 
 一体流程继续复用完整问答流水线字段，例如：
 
-- `qa_per_chunk`
+- `qa_total_limit`
+- `qa_total_limit_scope`
+- `qa_detail_mode`
+- `qa_per_chunk`（兼容旧调用方；未传 `qa_total_limit` 时才用于估算题量）
 - `augment_per_qa`
 - `chunk_size`
 - `chunking_split_type`
@@ -94,7 +97,9 @@ compose 环境变量。
 - `sync_mode`
 - `save_mode`
 
-这些字段的后续问答语义没有在本次并发改造中改变。
+`qa_total_limit_scope=per_file` 表示每个文件各自不超过该题数；
+`qa_total_limit_scope=batch` 表示整个批次合计不超过该题数，后端会在成功文件
+之间预分配额度。
 
 ### 请求示例
 
@@ -107,7 +112,9 @@ curl -X POST "http://localhost:12000/batch-upload-integrated-document-pipeline" 
   -F "ocr_max_concurrency=1" \
   -F "image_analysis_max_concurrency=4" \
   -F "image_fit_max_concurrency=4" \
-  -F "qa_per_chunk=1" \
+  -F "qa_total_limit=20" \
+  -F "qa_total_limit_scope=per_file" \
+  -F "qa_detail_mode=auto" \
   -F "sync_mode=false"
 ```
 

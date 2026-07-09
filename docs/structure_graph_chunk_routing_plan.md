@@ -166,15 +166,19 @@ QA per chunk
 QA per generation unit
 ```
 
-外部 API 第一版可以继续保留 `qa_per_chunk` 这个字段，避免前端和调用方大改。内部解释为“按原 chunk 数估算整篇文档目标题量”，再把题量分配给 generation units。
+外部 API 已经从前端主控件废除 `qa_per_chunk`，改为 `qa_total_limit` 和
+`qa_total_limit_scope`。`qa_per_chunk` 只作为旧调用方兼容字段保留：当调用方
+没有传 `qa_total_limit` 时，后端才会用它按有效 leaf chunk 数估算一个软目标。
 
 ```text
-target_total_qa = qa_per_chunk * 原有效 leaf chunk 数
+target_total_qa = qa_total_limit
+fallback_target_total_qa = qa_per_chunk * 原有效 leaf chunk 数
 generation_units = planner(document_chunks)
 qa_budget 按 unit 分配
 ```
 
-这样第一版不需要马上把接口字段改成 `qa_per_generation_unit`，但真实执行单位已经从 chunk 迁移到 generation unit。
+真实执行单位已经从 chunk 迁移到 generation unit，前端也不再展示
+`qa_per_chunk`。
 
 ## Generation Unit 是什么
 
@@ -409,9 +413,17 @@ context_only 和 drop chunk 不生成 leaf unit。
 
 ### 第 6 步：分配 qa_budget
 
-兼容现有 `qa_per_chunk`：
+当前主控参数：
 
 ```text
+qa_total_limit = 主问答总数上限
+qa_total_limit_scope = per_file | batch
+```
+
+兼容旧参数：
+
+```text
+未传 qa_total_limit 时：
 target_total_qa = qa_per_chunk * usable_leaf_chunk_count
 ```
 
@@ -832,29 +844,41 @@ qa/generation/structure_units.py
 plan_generation_units(...)
 ```
 
-在 `process_text_to_qa_one_step` 中生成 unit plan，但默认 `qa_detail_mode=point` 时仍走旧 per-chunk 流程。debug 文件里输出 unit plan。
+`process_text_to_qa_one_step` 始终先生成 unit plan，再按 generation unit
+提交 worker。`qa_detail_mode=auto` 时按 unit 类型决定实际模式：
+
+```text
+leaf -> point
+section -> summary
+virtual_parent -> summary
+```
+
+如果用户显式选择 `point` 或 `summary`，所有 unit 使用该模式。
+debug/status 中输出 unit plan、chunk_quality_details 和 generation_unit_details。
 
 验收：
 
 ```text
 同一批 integrated_document_task 能看到每个文档的 unit plan
-不会影响现有 QA 输出
+输出 QA 带 qa_generation_unit_id / qa_generation_unit_type / source_chunk_indexes
 ```
 
-### 阶段 2：auto 模式切到 per generation unit
+### 阶段 2：per generation unit 执行
 
 实现：
 
 ```text
-qa_detail_mode=auto 时使用 run_one_step_unit_worker
-point/summary 暂时仍走旧逻辑
+run_one_step_unit_worker 复用旧 worker 的候选题、检索、答案生成逻辑
+但传入 unit_text、unit qa_budget 和 unit qa_mode
+source unit 与 retrieved evidence 去重
 ```
 
 验收：
 
 ```text
-auto 模式下 chunk_completed 事件可兼容显示
-新增 unit_completed 或 unit_debug 信息
+新增 generation_unit_completed 事件
+保留 generation_chunk_details 兼容旧前端/旧任务
+前端展示 generation unit 明细
 输出 QA 带 qa_generation_unit_id
 ```
 

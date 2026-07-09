@@ -85,12 +85,26 @@ def _extract_generation_timing_views(timing: Any) -> tuple[Dict[str, Any], Dict[
 async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None:
     """
     核心异步流水线：针对一个或多个文件执行
-    文本 -> (按 chunk) 直接生成问答对+来源事实 -> (可选) 评估 -> (可选) 向量存储。
+    文本 -> generation unit 规划与问答生成 -> (可选) 评估 -> (可选) 向量存储。
     """
     task_id: str = job_context["task_id"]
     file_contents: List[Dict[str, Any]] = job_context["file_contents"]
     chunk_size: int = job_context["chunk_size"]
-    qa_per_chunk: int = job_context["qa_per_chunk"]
+    try:
+        qa_per_chunk = max(1, int(job_context.get("qa_per_chunk") or 1))
+    except Exception:
+        qa_per_chunk = 1
+    raw_qa_total_limit = job_context.get("qa_total_limit")
+    if raw_qa_total_limit is None or str(raw_qa_total_limit).strip() == "":
+        qa_total_limit: Optional[int] = None
+    else:
+        try:
+            qa_total_limit = max(0, int(raw_qa_total_limit))
+        except Exception:
+            qa_total_limit = None
+    qa_total_limit_scope = str(job_context.get("qa_total_limit_scope") or "per_file").strip().lower()
+    if qa_total_limit_scope not in {"per_file", "batch"}:
+        qa_total_limit_scope = "per_file"
     qa_detail_mode: str = job_context.get("qa_detail_mode") or "point"
     prompt_language: str = job_context.get("prompt_language") or "auto"
     enable_chunk_storage: bool = bool(job_context.get("enable_chunk_storage", True))
@@ -216,6 +230,25 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
         except Exception:
             parsed_qt_weights = None
     augment_per_qa: int = job_context.get("augment_per_qa", 0)
+    successful_file_names = [
+        str(file_info.get("filename") or "")
+        for file_info in file_contents
+        if file_info.get("status") == "success" and str(file_info.get("filename") or "").strip()
+    ]
+    qa_limit_by_filename: Dict[str, Optional[int]] = {}
+    if qa_total_limit is not None and qa_total_limit_scope == "batch" and successful_file_names:
+        base_limit = qa_total_limit // len(successful_file_names)
+        remainder = qa_total_limit % len(successful_file_names)
+        for index, filename in enumerate(successful_file_names):
+            qa_limit_by_filename[filename] = base_limit + (1 if index < remainder else 0)
+    elif qa_total_limit is not None:
+        for filename in successful_file_names:
+            qa_limit_by_filename[filename] = qa_total_limit
+
+    status_data["qa_total_limit"] = qa_total_limit
+    status_data["qa_total_limit_scope"] = qa_total_limit_scope
+    if qa_limit_by_filename:
+        status_data["qa_total_limit_allocations"] = dict(qa_limit_by_filename)
 
     def build_categorized_facts_from_qa(qa_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -324,6 +357,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
 
     async def process_single_file(file_info: Dict[str, Any]) -> Dict[str, Any]:
         filename = file_info["filename"]
+        file_qa_total_limit = qa_limit_by_filename.get(filename, qa_total_limit)
         await update_file_progress(filename, "queued", "waiting", "等待进入流水线")
 
         if file_info["status"] != "success":
@@ -425,6 +459,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                 )
                 loop = asyncio.get_running_loop()
                 gen_last_update = 0.0
+                generation_unit_details: List[Dict[str, Any]] = []
                 generation_chunk_details: List[Dict[str, Any]] = []
                 generation_timing_summary: Dict[str, Any] = {}
 
@@ -435,7 +470,8 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                         now = time.time()
                         if event == "start":
                             total_chunks = int((info or {}).get("total_chunks") or 0)
-                            msg = f"一步式生成问答对中：共 {total_chunks} 个 chunk"
+                            total_units = int((info or {}).get("total_generation_units") or 0)
+                            msg = f"一步式生成问答对中：共 {total_units} 个 generation unit"
                             asyncio.run_coroutine_threadsafe(
                                 update_file_progress(
                                     filename,
@@ -445,6 +481,12 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                                     extra={
                                         "chunks_total": total_chunks,
                                         "chunks_done": 0,
+                                        "generation_units_total": total_units,
+                                        "generation_units_done": 0,
+                                        "qa_total_limit": (info or {}).get("qa_total_limit"),
+                                        "qa_total_limit_scope": (info or {}).get("qa_total_limit_scope"),
+                                        "unit_plan_summary": (info or {}).get("unit_plan_summary") or {},
+                                        "chunk_quality_details": (info or {}).get("chunk_quality_details") or [],
                                         "generation_timing": (info or {}).get("timing") or {},
                                         "debug_file": debug_file,
                                         "llm_max_concurrent_requests": llm_max_concurrent_requests,
@@ -464,6 +506,13 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                                 generation_chunk_details[:] = [
                                     dict(item) for item in raw_chunk_details if isinstance(item, dict)
                                 ]
+                            raw_unit_details = (info or {}).get("generation_unit_details")
+                            if isinstance(raw_unit_details, list):
+                                generation_unit_details[:] = [
+                                    dict(item) for item in raw_unit_details if isinstance(item, dict)
+                                ]
+                            elif generation_chunk_details:
+                                generation_unit_details[:] = [dict(item) for item in generation_chunk_details]
                             asyncio.run_coroutine_threadsafe(
                                 update_file_progress(
                                     filename,
@@ -473,10 +522,17 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                                     extra={
                                         "chunks_total": int((info or {}).get("total_chunks") or 0),
                                         "chunks_done": int((info or {}).get("total_chunks") or 0),
+                                        "generation_units_total": int((info or {}).get("total_generation_units") or 0),
+                                        "generation_units_done": int((info or {}).get("total_generation_units") or 0),
                                         "total_items": int((info or {}).get("total_items") or 0),
+                                        "qa_total_limit": (info or {}).get("qa_total_limit"),
+                                        "qa_total_limit_scope": (info or {}).get("qa_total_limit_scope"),
+                                        "unit_plan_summary": (info or {}).get("unit_plan_summary") or {},
+                                        "chunk_quality_details": (info or {}).get("chunk_quality_details") or [],
                                         "generation_timing": generation_timing_summary,
                                         "generation_wall_detail": wall_detail,
                                         "generation_cumulative_detail": cumulative_detail,
+                                        "generation_unit_details": generation_unit_details,
                                         "generation_chunk_details": generation_chunk_details,
                                     },
                                 ),
@@ -484,17 +540,25 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                             )
                             return
 
-                        if event != "chunk_completed":
+                        if event not in {"generation_unit_completed", "chunk_completed"}:
                             return
 
                         total_chunks = int((info or {}).get("total_chunks") or 0)
-                        completed_chunks = int((info or {}).get("completed_chunks") or 0)
+                        total_units = int((info or {}).get("total_generation_units") or total_chunks or 0)
+                        completed_units = int((info or {}).get("completed_units") or (info or {}).get("completed_chunks") or 0)
                         valid_items = int((info or {}).get("valid_items") or 0)
                         attempt_used = (info or {}).get("attempt_used")
                         chunk_index = (info or {}).get("chunk_index")
+                        unit_index = (info or {}).get("unit_index")
                         last_error = (info or {}).get("error")
                         chunk_timing = (info or {}).get("timing") or {}
-                        chunk_detail = {
+                        unit_detail = {
+                            "unit_index": unit_index,
+                            "unit_id": (info or {}).get("unit_id"),
+                            "unit_type": (info or {}).get("unit_type"),
+                            "qa_mode": (info or {}).get("qa_mode"),
+                            "anchor_chunk_index": (info or {}).get("anchor_chunk_index") or chunk_index,
+                            "source_chunk_indexes": (info or {}).get("source_chunk_indexes") or [],
                             "chunk_index": chunk_index,
                             "attempt_used": attempt_used,
                             "candidate_questions": (info or {}).get("candidate_questions"),
@@ -505,31 +569,43 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                             or {},
                             "timing": chunk_timing if isinstance(chunk_timing, dict) else {},
                         }
+                        if isinstance((info or {}).get("unit_debug"), dict):
+                            unit_detail["unit_debug"] = (info or {}).get("unit_debug")
                         if last_error:
-                            chunk_detail["error"] = str(last_error)[:800]
-                        generation_chunk_details.append(chunk_detail)
+                            unit_detail["error"] = str(last_error)[:800]
+                        generation_unit_details.append(unit_detail)
+                        generation_unit_details.sort(
+                            key=lambda item: int(item.get("unit_index") or 0)
+                        )
+                        generation_chunk_details[:] = [dict(item) for item in generation_unit_details]
                         generation_chunk_details.sort(
-                            key=lambda item: int(item.get("chunk_index") or 0)
+                            key=lambda item: int(item.get("anchor_chunk_index") or item.get("chunk_index") or 0)
                         )
 
-                        if total_chunks <= 0:
+                        if total_units <= 0:
                             return
                         # throttle: avoid excessive status writes
-                        if completed_chunks != total_chunks and (now - gen_last_update) < 0.8:
+                        if completed_units != total_units and (now - gen_last_update) < 0.8:
                             return
                         gen_last_update = now
 
-                        suffix = f"（本 chunk 有效 {valid_items} 条"
+                        suffix = f"（本 unit 有效 {valid_items} 条"
                         if attempt_used:
                             suffix += f"，尝试 {attempt_used}"
                         suffix += "）"
-                        msg = f"一步式生成中：chunk {completed_chunks}/{total_chunks}{suffix}"
+                        msg = f"一步式生成中：unit {completed_units}/{total_units}{suffix}"
                         extra_payload = {
                             "chunks_total": total_chunks,
-                            "chunks_done": completed_chunks,
+                            "chunks_done": completed_units,
+                            "generation_units_total": total_units,
+                            "generation_units_done": completed_units,
+                            "last_unit_index": unit_index,
+                            "last_unit_type": (info or {}).get("unit_type"),
+                            "last_unit_mode": (info or {}).get("qa_mode"),
                             "last_chunk_index": chunk_index,
                             "last_chunk_items": valid_items,
                             "last_chunk_timing": chunk_timing if isinstance(chunk_timing, dict) else {},
+                            "generation_unit_details": generation_unit_details,
                             "generation_chunk_details": generation_chunk_details,
                         }
                         if last_error:
@@ -719,6 +795,8 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                     {
                         "chunk_size": chunk_size,
                         "qa_per_chunk": qa_per_chunk,
+                        "qa_total_limit": file_qa_total_limit,
+                        "qa_total_limit_scope": qa_total_limit_scope,
                         "qa_detail_mode": qa_detail_mode,
                         "prompt_language": prompt_language,
                         "chunk_max_concurrency": chunk_max_concurrency,
@@ -768,7 +846,10 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                 generation_wall_detail, generation_cumulative_detail = _extract_generation_timing_views(
                     generation_timing_summary
                 )
-                if not qa_data:
+                qa_generation_skipped_by_budget = (
+                    file_qa_total_limit is not None and int(file_qa_total_limit) <= 0
+                )
+                if not qa_data and not qa_generation_skipped_by_budget:
                     raise ValueError(
                         f"一步式问答生成失败：未生成任何有效 items（请下载调试日志查看 LLM 原始响应：{os.path.basename(debug_file)}）"
                     )
@@ -894,7 +975,10 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                         "generation_timing": generation_timing_summary,
                         "generation_wall_detail": generation_wall_detail,
                         "generation_cumulative_detail": generation_cumulative_detail,
+                        "generation_unit_details": generation_unit_details,
                         "generation_chunk_details": generation_chunk_details,
+                        "qa_total_limit": file_qa_total_limit,
+                        "qa_total_limit_scope": qa_total_limit_scope,
                         "qa_generated": len(qa_data),
                     },
                 )
@@ -1180,7 +1264,10 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                         "generation_detail": generation_wall_detail,
                         "generation_wall_detail": generation_wall_detail,
                         "generation_cumulative_detail": generation_cumulative_detail,
+                        "generation_unit_details": generation_unit_details,
                         "generation_chunk_details": generation_chunk_details,
+                        "qa_total_limit": file_qa_total_limit,
+                        "qa_total_limit_scope": qa_total_limit_scope,
                         "qa_generated": len(qa_data),
                         "unsupervised_seconds": unsupervised_duration,
                         "unsupervised_qa_scored": (unsupervised_summary or {}).get("computed", 0)
@@ -1249,6 +1336,8 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                     score_threshold=score_threshold,
                     chunk_size=chunk_size,
                     qa_per_chunk=qa_per_chunk,
+                    qa_total_limit=timing.get("qa_total_limit"),
+                    qa_total_limit_scope=timing.get("qa_total_limit_scope") or qa_total_limit_scope,
                     qa_detail_mode=qa_detail_mode,
                     prompt_language=prompt_language,
                     llm_model=llm_config["model"],
@@ -1264,6 +1353,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                             "generation_detail",
                             "generation_wall_detail",
                             "generation_cumulative_detail",
+                            "generation_unit_details",
                             "generation_chunk_details",
                         ):
                             if detail_key in timing:
@@ -1393,6 +1483,8 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                 entries=consolidated_entries,
                 chunk_size=chunk_size,
                 qa_per_chunk=qa_per_chunk,
+                qa_total_limit=qa_total_limit,
+                qa_total_limit_scope=qa_total_limit_scope,
                 qa_detail_mode=qa_detail_mode,
                 prompt_language=prompt_language,
                 include_evaluation=include_evaluation,

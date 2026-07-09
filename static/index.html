@@ -502,13 +502,22 @@
             </details>
           </details>
           <label>
-            qa_per_chunk
+            总题数上限（qa_total_limit）
             <input
               type="number"
-              id="qaPerChunk"
-              value="1"
+              id="qaTotalLimit"
+              value="20"
+              min="0"
             />
-            <small>每个 chunk 期望生成的主问答对数量。实际总量约等于 chunk 数 × 该值。</small>
+            <small>限制主问答总量；设 0 时只保留解析和溯源结果，不生成主问答。</small>
+          </label>
+          <label>
+            上限范围（qa_total_limit_scope）
+            <select id="qaTotalLimitScope">
+              <option value="per_file">per_file（每个文件）</option>
+              <option value="batch">batch（整个批次）</option>
+            </select>
+            <small>按文件适合批量独立评估；按批次会把额度预分配到各成功文件。</small>
           </label>
           <label>
             增广条数（augment_per_qa）
@@ -679,10 +688,11 @@
           <label>
             问答粒度（qa_detail_mode）
             <select id="qaDetailMode">
+              <option value="auto" selected>auto（按 generation unit 自动选择）</option>
               <option value="point">point（单点事实直答）</option>
               <option value="summary">summary（总结/对比/推理）</option>
             </select>
-            <small>point 更适合高精度事实问答；summary 更适合跨句总结和对比。</small>
+            <small>auto 会让 leaf unit 走 point，让 section/long unit 走 summary。</small>
           </label>
           <label>
             知识分类器（knowledge_classifier）
@@ -839,14 +849,14 @@
             <small>问答评估阶段的并发，主要影响 LLM/local 评估速度和资源占用。</small>
           </label>
           <label>
-            chunk 生成并发（chunk_max_concurrency，可选）
+            generation unit 生成并发（chunk_max_concurrency，可选）
             <input
               type="number"
               id="chunkMaxConcurrency"
               min="1"
               placeholder="留空默认 8…"
             />
-            <small>同一文件内同时跑多少个 chunk worker；实际外发 API 还会受 LLM/VLM API 请求并发限制。</small>
+            <small>同一文件内同时跑多少个 generation unit worker；实际外发 API 还会受 LLM/VLM API 请求并发限制。</small>
           </label>
           <label>
             LLM/VLM API 请求并发（llm_max_concurrent_requests，可选）
@@ -859,7 +869,7 @@
             <small>控制当前任务内同一 LLM/VLM client 同时外发 API 请求数；只影响本次任务，不修改容器全局环境。</small>
           </label>
           <label>
-            chunk 生成最大尝试次数（chunk_max_attempts）
+            generation unit 最大尝试次数（chunk_max_attempts）
             <input
               type="number"
               id="chunkMaxAttempts"
@@ -868,7 +878,7 @@
               max="10"
               step="1"
             />
-            <small>每个 chunk 生成不足目标 QA 时最多尝试几轮；追求速度可设 1，追求覆盖率可设 2 或更高。</small>
+            <small>每个 generation unit 生成不足目标 QA 时最多尝试几轮；追求速度可设 1，追求覆盖率可设 2 或更高。</small>
           </label>
           <label>
             检索排序模式（retrieval_mode）

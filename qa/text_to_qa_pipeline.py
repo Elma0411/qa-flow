@@ -21,9 +21,9 @@ from qa.validation import (
 from qa.pipeline_runtime import (
     parse_one_step_pipeline_runtime,
     resolve_one_step_chunks,
-    run_one_step_chunk_worker,
+    run_one_step_unit_worker,
 )
-from qa.generation import QADocumentEvidenceIndex, build_document_chunks
+from qa.generation import QADocumentEvidenceIndex, build_document_chunks, plan_generation_units
 from qa.chunking import split_text
 
 DEFAULT_SOURCE_BY_LANGUAGE = {"zh": "文本内容", "en": "text content"}
@@ -243,14 +243,22 @@ def _generation_timing_with_metadata(
     index_seconds: float,
     total_chunks: int,
     chunks_completed: int,
+    total_generation_units: int,
+    generation_units_completed: int,
     qa_generated: int,
+    qa_total_limit: Optional[int],
+    qa_total_limit_scope: str,
 ) -> Dict[str, Any]:
     return {
         **base,
         "index_build_seconds": index_seconds,
         "chunks_total": total_chunks,
         "chunks_completed": chunks_completed,
+        "generation_units_total": total_generation_units,
+        "generation_units_completed": generation_units_completed,
         "qa_generated": qa_generated,
+        "qa_total_limit": qa_total_limit,
+        "qa_total_limit_scope": qa_total_limit_scope,
     }
 
 
@@ -264,9 +272,10 @@ def process_text_to_qa_one_step(
     """
     Retrieval-augmented QA generation for Pipeline 8/8B:
     - Split the input text into source chunks.
-    - Generate candidate questions from each source chunk.
+    - Plan generation units from source chunks and lightweight structure.
+    - Generate candidate questions from each generation unit.
     - Retrieve same-document evidence chunks by candidate-question semantics.
-    - Generate final QA from the source chunk plus organized evidence context.
+    - Generate final QA from the source unit plus organized evidence context.
     """
     document_started_at = time.perf_counter()
     runtime = parse_one_step_pipeline_runtime(config)
@@ -284,12 +293,72 @@ def process_text_to_qa_one_step(
     )
     if not document_chunks:
         return []
+    unit_plan = plan_generation_units(
+        document_chunks,
+        qa_total_limit=runtime.qa_total_limit,
+        qa_per_chunk=runtime.qa_per_chunk,
+        qa_detail_mode=runtime.qa_detail_mode,
+        chunk_size=runtime.chunk_size,
+        max_unit_chars=runtime.max_unit_chars,
+    )
+    generation_units = list(unit_plan.units)
+    total_chunks = len(document_chunks)
+    total_generation_units = len(generation_units)
+    if not generation_units:
+        if progress_callback:
+            try:
+                progress_callback(
+                    {
+                        "event": "start",
+                        "generation_mode": "same_document_semantic_evidence",
+                        "original_filename": original_filename,
+                        "total_chunks": total_chunks,
+                        "total_generation_units": 0,
+                        "qa_total_limit": runtime.qa_total_limit,
+                        "qa_total_limit_scope": runtime.qa_total_limit_scope,
+                        "unit_plan_summary": unit_plan.summary(),
+                        "chunk_quality_details": [
+                            quality.to_dict()
+                            for _, quality in sorted(unit_plan.chunk_quality.items())
+                        ],
+                        "timing": {"index_build_seconds": 0.0},
+                    }
+                )
+                progress_callback(
+                    {
+                        "event": "done",
+                        "generation_mode": "same_document_semantic_evidence",
+                        "original_filename": original_filename,
+                        "total_chunks": total_chunks,
+                        "total_generation_units": 0,
+                        "total_items": 0,
+                        "unit_plan_summary": unit_plan.summary(),
+                        "chunk_quality_details": [
+                            quality.to_dict()
+                            for _, quality in sorted(unit_plan.chunk_quality.items())
+                        ],
+                        "generation_unit_details": [],
+                        "chunk_details": [],
+                        "timing": _generation_timing_with_metadata(
+                            {"document_total_seconds": time.perf_counter() - document_started_at},
+                            index_seconds=0.0,
+                            total_chunks=total_chunks,
+                            chunks_completed=0,
+                            total_generation_units=0,
+                            generation_units_completed=0,
+                            qa_generated=0,
+                            qa_total_limit=runtime.qa_total_limit,
+                            qa_total_limit_scope=runtime.qa_total_limit_scope,
+                        ),
+                    }
+                )
+            except Exception:
+                pass
+        return []
+
     index_started_at = time.perf_counter()
     evidence_index = QADocumentEvidenceIndex.build(document_chunks)
     index_seconds = time.perf_counter() - index_started_at
-    chunks = [str(chunk.get("text") or "").strip() for chunk in document_chunks]
-
-    total_chunks = len(chunks)
     if progress_callback:
         try:
             progress_callback(
@@ -298,6 +367,17 @@ def process_text_to_qa_one_step(
                     "generation_mode": "same_document_semantic_evidence",
                     "original_filename": original_filename,
                     "total_chunks": total_chunks,
+                    "total_generation_units": total_generation_units,
+                    "qa_total_limit": runtime.qa_total_limit,
+                    "qa_total_limit_scope": runtime.qa_total_limit_scope,
+                    "unit_plan_summary": unit_plan.summary(),
+                    "chunk_quality_details": [
+                        quality.to_dict()
+                        for _, quality in sorted(unit_plan.chunk_quality.items())
+                    ],
+                    "generation_unit_plan": [
+                        unit.to_debug_dict() for unit in generation_units
+                    ],
                     "timing": {
                         "index_build_seconds": index_seconds,
                     },
@@ -306,12 +386,12 @@ def process_text_to_qa_one_step(
         except Exception:
             pass
 
-    max_workers = max(1, min(int(runtime.chunk_max_concurrency), len(chunks)))
+    max_workers = max(1, min(int(runtime.chunk_max_concurrency), len(generation_units)))
 
     results: List[Dict[str, Any]] = []
-    chunk_items_by_index: Dict[int, List[Dict[str, Any]]] = {}
-    chunk_errors: List[str] = []
-    chunk_debug_details: List[Dict[str, Any]] = []
+    unit_items_by_index: Dict[int, List[Dict[str, Any]]] = {}
+    unit_errors: List[str] = []
+    generation_unit_debug_details: List[Dict[str, Any]] = []
     generation_wall_intervals: List[Dict[str, Any]] = []
     generation_accumulator: Dict[str, float] = {
         "candidate_question_seconds": 0.0,
@@ -326,10 +406,8 @@ def process_text_to_qa_one_step(
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_map = {
             executor.submit(
-                run_one_step_chunk_worker,
-                chunk_index=idx,
-                chunk_text=chunk_text,
-                source_chunk_meta=document_chunks[idx - 1],
+                run_one_step_unit_worker,
+                unit=unit,
                 evidence_index=evidence_index,
                 runtime=runtime,
                 client=client,
@@ -338,19 +416,26 @@ def process_text_to_qa_one_step(
                 source_fact_detail_validator=_validate_source_fact_text_detail_mode,
                 source_fact_grounding_validator=_validate_source_fact_grounding,
                 source_override_handler=_maybe_override_source,
-            ): idx
-            for idx, chunk_text in enumerate(chunks, start=1)
+            ): unit
+            for unit in generation_units
         }
-        completed_chunks = 0
+        completed_units = 0
         for future in as_completed(future_map):
-            completed_chunks += 1
+            completed_units += 1
+            unit = future_map.get(future)
             payload: Dict[str, Any]
             try:
                 payload = future.result()
             except Exception as exc:
-                chunk_errors.append(f"chunk {future_map.get(future)}: {exc}")
+                unit_errors.append(f"unit {getattr(unit, 'unit_index', '?')}: {exc}")
                 payload = {
-                    "chunk_index": future_map.get(future),
+                    "unit_index": getattr(unit, "unit_index", None),
+                    "unit_id": getattr(unit, "unit_id", None),
+                    "unit_type": getattr(unit, "unit_type", None),
+                    "qa_mode": getattr(unit, "qa_mode", None),
+                    "chunk_index": getattr(unit, "anchor_chunk_index", None),
+                    "anchor_chunk_index": getattr(unit, "anchor_chunk_index", None),
+                    "source_chunk_indexes": getattr(unit, "source_chunk_indexes", []),
                     "attempt_used": 0,
                     "items": [],
                     "error": str(exc),
@@ -359,13 +444,13 @@ def process_text_to_qa_one_step(
 
             items = payload.get("items") if isinstance(payload, dict) else None
             items_list = items if isinstance(items, list) else []
-            chunk_index = payload.get("chunk_index") if isinstance(payload, dict) else None
+            unit_index = payload.get("unit_index") if isinstance(payload, dict) else None
             try:
-                chunk_index_int = int(chunk_index)
+                unit_index_int = int(unit_index)
             except Exception:
-                chunk_index_int = None
-            if chunk_index_int and chunk_index_int > 0:
-                chunk_items_by_index[chunk_index_int] = [
+                unit_index_int = None
+            if unit_index_int and unit_index_int > 0:
+                unit_items_by_index[unit_index_int] = [
                     it for it in items_list if isinstance(it, dict)
                 ]
                 timing = payload.get("timing") if isinstance(payload, dict) else {}
@@ -383,8 +468,15 @@ def process_text_to_qa_one_step(
                         for interval in raw_wall_intervals
                         if isinstance(interval, dict)
                     )
-                chunk_detail = {
-                    "chunk_index": chunk_index_int,
+                unit_detail = {
+                    "unit_index": unit_index_int,
+                    "unit_id": payload.get("unit_id"),
+                    "unit_type": payload.get("unit_type"),
+                    "qa_mode": payload.get("qa_mode"),
+                    "anchor_chunk_index": payload.get("anchor_chunk_index") or payload.get("chunk_index"),
+                    "source_chunk_indexes": payload.get("source_chunk_indexes") or [],
+                    "parent_index_path": payload.get("parent_index_path"),
+                    "quality_child_coverage": payload.get("quality_child_coverage"),
                     "attempt_used": payload.get("attempt_used"),
                     "candidate_questions": payload.get("candidate_questions", 0),
                     "candidates_considered": payload.get("candidates_considered", 0),
@@ -394,19 +486,29 @@ def process_text_to_qa_one_step(
                     or {},
                     "timing": timing,
                 }
+                if isinstance(payload.get("unit_debug"), dict):
+                    unit_detail["unit_debug"] = payload.get("unit_debug")
                 if payload.get("error"):
-                    chunk_detail["error"] = payload.get("error")
-                chunk_debug_details.append(chunk_detail)
+                    unit_detail["error"] = payload.get("error")
+                generation_unit_debug_details.append(unit_detail)
 
             if progress_callback and isinstance(payload, dict):
                 try:
                     progress_callback(
                         {
-                            "event": "chunk_completed",
+                            "event": "generation_unit_completed",
                             "generation_mode": "same_document_semantic_evidence",
                             "original_filename": original_filename,
+                            "unit_index": payload.get("unit_index"),
+                            "unit_id": payload.get("unit_id"),
+                            "unit_type": payload.get("unit_type"),
+                            "qa_mode": payload.get("qa_mode"),
                             "chunk_index": payload.get("chunk_index"),
-                            "completed_chunks": completed_chunks,
+                            "anchor_chunk_index": payload.get("anchor_chunk_index") or payload.get("chunk_index"),
+                            "source_chunk_indexes": payload.get("source_chunk_indexes") or [],
+                            "completed_units": completed_units,
+                            "total_generation_units": total_generation_units,
+                            "completed_chunks": completed_units,
                             "total_chunks": total_chunks,
                             "valid_items": len(items_list),
                             "attempt_used": payload.get("attempt_used"),
@@ -417,6 +519,7 @@ def process_text_to_qa_one_step(
                             "candidate_questions": payload.get("candidate_questions"),
                             "candidates_considered": payload.get("candidates_considered"),
                             "timing": payload.get("timing"),
+                            "unit_debug": payload.get("unit_debug"),
                         }
                     )
                 except Exception:
@@ -426,11 +529,13 @@ def process_text_to_qa_one_step(
     # Keep chunk_errors for debugging only.
 
     _ = original_filename  # reserved for future logging/telemetry
-    for idx in range(1, total_chunks + 1):
-        items_list = chunk_items_by_index.get(idx) or []
+    for idx in range(1, total_generation_units + 1):
+        items_list = unit_items_by_index.get(idx) or []
         for item in items_list:
             if isinstance(item, dict):
                 results.append(item)
+    if runtime.qa_total_limit is not None:
+        results = results[: max(0, int(runtime.qa_total_limit))]
     if progress_callback:
         try:
             document_finished_at = time.perf_counter()
@@ -442,8 +547,12 @@ def process_text_to_qa_one_step(
                 },
                 index_seconds=index_seconds,
                 total_chunks=total_chunks,
-                chunks_completed=len(chunk_debug_details),
+                chunks_completed=len(generation_unit_debug_details),
+                total_generation_units=total_generation_units,
+                generation_units_completed=len(generation_unit_debug_details),
                 qa_generated=len(results),
+                qa_total_limit=runtime.qa_total_limit,
+                qa_total_limit_scope=runtime.qa_total_limit_scope,
             )
             generation_wall_detail = _generation_timing_with_metadata(
                 _attribute_generation_wall_detail(
@@ -453,13 +562,22 @@ def process_text_to_qa_one_step(
                 ),
                 index_seconds=index_seconds,
                 total_chunks=total_chunks,
-                chunks_completed=len(chunk_debug_details),
+                chunks_completed=len(generation_unit_debug_details),
+                total_generation_units=total_generation_units,
+                generation_units_completed=len(generation_unit_debug_details),
                 qa_generated=len(results),
+                qa_total_limit=runtime.qa_total_limit,
+                qa_total_limit_scope=runtime.qa_total_limit_scope,
             )
             generation_summary = {
                 **generation_wall_detail,
                 "generation_wall_detail": generation_wall_detail,
                 "generation_cumulative_detail": generation_cumulative_detail,
+                "unit_plan_summary": unit_plan.summary(),
+                "chunk_quality_details": [
+                    quality.to_dict()
+                    for _, quality in sorted(unit_plan.chunk_quality.items())
+                ],
             }
             progress_callback(
                 {
@@ -467,11 +585,23 @@ def process_text_to_qa_one_step(
                     "generation_mode": "same_document_semantic_evidence",
                     "original_filename": original_filename,
                     "total_chunks": total_chunks,
+                    "total_generation_units": total_generation_units,
                     "total_items": len(results),
+                    "qa_total_limit": runtime.qa_total_limit,
+                    "qa_total_limit_scope": runtime.qa_total_limit_scope,
+                    "unit_plan_summary": unit_plan.summary(),
+                    "chunk_quality_details": [
+                        quality.to_dict()
+                        for _, quality in sorted(unit_plan.chunk_quality.items())
+                    ],
                     "timing": generation_summary,
+                    "generation_unit_details": sorted(
+                        generation_unit_debug_details,
+                        key=lambda item: int(item.get("unit_index") or 0),
+                    ),
                     "chunk_details": sorted(
-                        chunk_debug_details,
-                        key=lambda item: int(item.get("chunk_index") or 0),
+                        generation_unit_debug_details,
+                        key=lambda item: int(item.get("anchor_chunk_index") or 0),
                     ),
                 }
             )

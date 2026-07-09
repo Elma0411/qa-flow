@@ -12,6 +12,8 @@ def merge_consolidated_entries(
     entries: List[Dict[str, Any]],
     chunk_size: int,
     qa_per_chunk: int,
+    qa_total_limit: int | None,
+    qa_total_limit_scope: str,
     qa_detail_mode: str,
     prompt_language: str,
     include_evaluation: bool,
@@ -105,6 +107,8 @@ def merge_consolidated_entries(
     params: Dict[str, Any] = {
         "chunk_size": chunk_size,
         "qa_per_chunk": qa_per_chunk,
+        "qa_total_limit": qa_total_limit,
+        "qa_total_limit_scope": qa_total_limit_scope,
         "qa_detail_mode": qa_detail_mode,
         "prompt_language": prompt_language,
         "include_evaluation": include_evaluation,

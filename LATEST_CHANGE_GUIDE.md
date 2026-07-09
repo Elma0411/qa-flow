@@ -1,49 +1,45 @@
 # Latest Change Guide
 
-更新时间：2026-07-07（Asia/Shanghai）
+更新时间：2026-07-10（Asia/Shanghai）
 
 ## Objective
 
-让 Docker 正式运行容器默认启用 QA Flow 主 API 热重载，避免 bind mount 代码更新后运行中的 API 进程继续使用旧 Python 模块。
+把一步式 QA 生成从“按 chunk 出题”升级为“按 generation unit 出题”，并用总题数上限替代前端 `qa_per_chunk` 控制。
 
 ## What Changed
 
-- `docker/start-qa-flow-services.sh`
-  - QA Flow API 启动不再写死 `reload=False`。
-  - 新增 `QA_FLOW_API_RELOAD` 开关，启动时打印实际 reload 状态。
-- `docker/runtime-common.sh`
-  - 设置 `QA_FLOW_API_RELOAD=true` 作为运行默认值。
-- `docker/docker-compose.yml`
-  - 正式 runtime 环境新增 `QA_FLOW_API_RELOAD`，默认 `true`。
-- `docker/docker-compose.debug.yml`
-  - debug runtime 环境同步新增 `QA_FLOW_API_RELOAD`，默认 `true`。
-- `docker/start-debug-shell.sh`
-  - 手动启动 API 的提示命令改为 `run_api(reload=True)`。
-- `docs/docker_compose_parameters.md`
-  - 记录 `QA_FLOW_API_RELOAD` 的默认值和作用范围。
-- `INTEGRATION_CONTRACT.md`
-  - 记录 Docker runtime 的热重载行为为共享运行配置。
+- `qa/generation/structure_units.py`
+  - 新增轻量结构图、chunk 质量门控、generation unit planner。
+  - 支持 `leaf`、`section`、`virtual_parent` 三类 unit。
+- `qa/text_to_qa_pipeline.py`、`qa/pipeline_runtime.py`
+  - 一步式生成先规划 unit，再按 unit 并发生成。
+  - `qa_detail_mode=auto` 时，leaf 走 point，section/virtual_parent 走 summary。
+  - 结果和调试信息增加 `qa_generation_unit_*`、`generation_unit_details`、`chunk_quality_details`。
+- `qa/generation/evidence_units.py`
+  - `build_generation_unit` 支持多 chunk source unit。
+  - source chunk 与 evidence 去重；同父级命中覆盖率达到阈值时记录 `auto_merge_trace`。
+- `app/routers/*`、`app/services/pipeline_execution/service.py`
+  - 新增 `qa_total_limit` 和 `qa_total_limit_scope=per_file|batch`。
+  - `qa_per_chunk` 仅保留为兼容旧调用方的 fallback。
+  - batch 范围题数上限会预分配到成功文件，避免并发生成超出批次总量。
+- `static/index.html`、`static/app.js`
+  - 前端移除 `qa_per_chunk` 控件，新增总题数上限和上限范围。
+  - 调试面板展示 generation unit 明细。
 
 ## Expected Behavior
 
-- `docker compose -f docker/docker-compose.yml up -d` 启动的 `qa-flow-runtime` 默认会以 Uvicorn reload 模式运行主 API。
-- 修改挂载进容器的 `app/`、`qa/`、`scripts/` 下 Python 文件后，QA Flow API 会自动重启并加载新代码。
-- 如需关闭热重载，可用 `QA_FLOW_API_RELOAD=false docker compose -f docker/docker-compose.yml up -d`。
-- OCR API、图片分类服务、Milvus、MinIO、etcd 的启动行为不变。
+- 默认前端按 `qa_total_limit=20`、`qa_total_limit_scope=per_file` 提交。
+- 标题、目录、图片占位、表格残片、重复页眉页脚等低质量 chunk 不会单独出题。
+- 同一父章节下多个可用 chunk 会优先合并为 section unit。
+- 长且有内部段落/条款结构的 chunk 会走 virtual_parent summary。
+- 最终主问答数量不会超过配置的总题数上限。
 
 ## Validation
 
 ```bash
 cd /data2/hjk/qa-flow
 
-bash -n docker/runtime-common.sh \
-  docker/start-qa-flow-services.sh \
-  docker/start-debug-shell.sh
-
-docker compose -f docker/docker-compose.yml config >/tmp/qa-flow-compose.yml
-docker compose -f docker/docker-compose.debug.yml config >/tmp/qa-flow-compose-debug.yml
-
-docker compose -f docker/docker-compose.yml restart qa-flow-runtime
+python -m compileall qa app
+bash -ic 'node --check static/app.js'
 curl http://localhost:12000/test-connection
-docker exec qa-flow-runtime sh -lc 'ps -eo pid,lstart,cmd | grep -E "uvicorn|run_api" | grep -v grep'
 ```

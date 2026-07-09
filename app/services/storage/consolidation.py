@@ -141,6 +141,8 @@ def build_consolidated_entry(
     qa_detail_mode: str,
     prompt_language: str,
     llm_model: str,
+    qa_total_limit: Optional[int] = None,
+    qa_total_limit_scope: str = "per_file",
     include_unsupervised_evaluation: bool = False,
     ocr_seconds: Optional[float] = None,
     generation_seconds: Optional[float] = None,
@@ -413,6 +415,8 @@ def build_consolidated_entry(
     params: Dict[str, Any] = {
         "chunk_size": chunk_size,
         "qa_per_chunk": qa_per_chunk,
+        "qa_total_limit": qa_total_limit,
+        "qa_total_limit_scope": qa_total_limit_scope,
         "qa_detail_mode": qa_detail_mode,
         "prompt_language": prompt_language,
         "include_evaluation": include_evaluation,

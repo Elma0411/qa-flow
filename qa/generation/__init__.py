@@ -10,8 +10,10 @@ _EXPORTS = {
     "apply_question_type_plan": ".qa_generation_flow",
     "build_document_chunks": ".evidence_units",
     "build_question_type_plan": ".qa_generation_flow",
+    "build_structure_graph": ".structure_units",
     "call_candidate_question_llm": ".qa_generation_flow",
     "call_evidence_answer_llm": ".qa_generation_flow",
+    "ChunkQuality": ".structure_units",
     "contains_ambiguous_reference": ".text_quality_filters",
     "DEFAULT_MAX_UNIT_CHARS": ".evidence_units",
     "DEFAULT_HYBRID_WEIGHT_DENSE": ".evidence_units",
@@ -23,7 +25,11 @@ _EXPORTS = {
     "normalize_question_type_mode": ".qa_generation_flow",
     "normalize_question_type_weights": ".qa_generation_flow",
     "normalize_question_types": ".qa_generation_flow",
+    "GenerationUnit": ".structure_units",
+    "GenerationUnitPlan": ".structure_units",
+    "plan_generation_units": ".structure_units",
     "QADocumentEvidenceIndex": ".evidence_units",
+    "StructureGraph": ".structure_units",
 }
 
 __all__ = sorted(_EXPORTS)

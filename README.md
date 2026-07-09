@@ -97,8 +97,11 @@ POST /batch-upload-complete-pipeline-with-evaluation
 
 - `files`：上传文件，支持多个。
 - `chunk_size`：目标块大小，默认 `600`。
-- `qa_per_chunk`：每个块期望生成的主问答数量，默认 `1`。
-- `qa_detail_mode`：问答粒度，支持 `point` 和 `summary`。
+- `qa_total_limit`：主问答总数上限，前端默认 `20`。
+- `qa_total_limit_scope`：题数上限范围，支持 `per_file` 和 `batch`。
+- `qa_detail_mode`：问答粒度，支持 `auto`、`point` 和 `summary`。
+  `auto` 会按 generation unit 类型自动选择 point/summary。
+- `qa_per_chunk`：兼容旧调用方；未传 `qa_total_limit` 时才用于估算题量。
 - `prompt_language`：提示词语言，支持 `auto`、`zh`、`en`。
 - `question_type_mode`：题型模式，支持 `fixed` 和 `mixed`。
 - `question_types`：题型列表，例如 `简答题,判断题`。
@@ -122,7 +125,9 @@ POST /batch-upload-complete-pipeline-with-evaluation
 curl -X POST "http://localhost:12000/batch-upload-complete-pipeline-with-evaluation" \
   -F "files=@qa/chunking/testdata/input/01_关于加强考勤与请休假管理的通知.md" \
   -F "chunk_size=600" \
-  -F "qa_per_chunk=1" \
+  -F "qa_total_limit=20" \
+  -F "qa_total_limit_scope=per_file" \
+  -F "qa_detail_mode=auto" \
   -F "include_unsupervised_evaluation=true" \
   -F "evaluation_method=unsupervised_f1" \
   -F "enable_vector_storage=true" \

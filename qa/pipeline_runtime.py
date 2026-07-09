@@ -1,10 +1,10 @@
-# 文件作用：解析完整 QA pipeline 的运行配置并执行 chunk 级 worker。
-# 关联说明：被 text_to_qa_pipeline 调用，负责运行配置和单 chunk worker。
+# 文件作用：解析完整 QA pipeline 的运行配置并执行 generation unit worker。
+# 关联说明：被 text_to_qa_pipeline 调用，负责运行配置和 unit/chunk worker 兼容层。
 
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from qa.generation import (
@@ -15,6 +15,7 @@ from qa.generation import (
     DEFAULT_RERANK_TOP_N,
     DEFAULT_SEMANTIC_TOP_K,
     DEFAULT_STRUCTURE_WEIGHT,
+    GenerationUnit,
     QADocumentEvidenceIndex,
     build_question_type_plan,
     call_candidate_question_llm,
@@ -30,6 +31,8 @@ from qa.chunking import split_text
 class OneStepPipelineRuntime:
     chunk_size: int
     qa_per_chunk: int
+    qa_total_limit: Optional[int]
+    qa_total_limit_scope: str
     qa_detail_mode: str
     prompt_language: str
     chunk_max_concurrency: int
@@ -62,7 +65,21 @@ class OneStepPipelineRuntime:
 def parse_one_step_pipeline_runtime(config: Dict[str, Any]) -> OneStepPipelineRuntime:
     chunk_size = int(config.get("chunk_size") or 600)
     qa_per_chunk = int(config.get("qa_per_chunk") or 1)
-    qa_detail_mode = str(config.get("qa_detail_mode") or "point")
+    raw_qa_total_limit = config.get("qa_total_limit")
+    qa_total_limit: Optional[int]
+    if raw_qa_total_limit is None or str(raw_qa_total_limit).strip() == "":
+        qa_total_limit = None
+    else:
+        try:
+            qa_total_limit = max(0, int(raw_qa_total_limit))
+        except Exception:
+            qa_total_limit = None
+    qa_total_limit_scope = str(config.get("qa_total_limit_scope") or "per_file").strip().lower()
+    if qa_total_limit_scope not in {"per_file", "batch"}:
+        qa_total_limit_scope = "per_file"
+    qa_detail_mode = str(config.get("qa_detail_mode") or "point").strip().lower()
+    if qa_detail_mode not in {"point", "summary", "auto"}:
+        qa_detail_mode = "point"
     prompt_language = str(config.get("prompt_language") or "auto")
     chunk_max_concurrency = int(config.get("chunk_max_concurrency") or 8)
     question_type_mode = normalize_question_type_mode(config.get("question_type_mode"))
@@ -163,6 +180,8 @@ def parse_one_step_pipeline_runtime(config: Dict[str, Any]) -> OneStepPipelineRu
     return OneStepPipelineRuntime(
         chunk_size=chunk_size,
         qa_per_chunk=qa_per_chunk,
+        qa_total_limit=qa_total_limit,
+        qa_total_limit_scope=qa_total_limit_scope,
         qa_detail_mode=qa_detail_mode,
         prompt_language=prompt_language,
         chunk_max_concurrency=chunk_max_concurrency,
@@ -427,6 +446,11 @@ def _candidate_retrieval_query(candidate: Dict[str, Any], source_chunk_meta: Dic
     return "\n".join(part for part in parts if part)
 
 
+def _effective_qa_detail_mode(mode: str) -> str:
+    normalized = str(mode or "point").strip().lower()
+    return normalized if normalized in {"point", "summary"} else "point"
+
+
 def run_one_step_chunk_worker(
     *,
     chunk_index: int,
@@ -442,6 +466,7 @@ def run_one_step_chunk_worker(
     source_override_handler: Callable[..., None],
 ) -> Dict[str, Any]:
     target = max(1, int(runtime.qa_per_chunk))
+    effective_qa_detail_mode = _effective_qa_detail_mode(runtime.qa_detail_mode)
     max_attempts = max(1, int(runtime.strict_max_attempts))
     candidate_count = max(target, target * max(1, int(runtime.candidate_multiplier)))
     plan_full = build_question_type_plan(
@@ -479,7 +504,7 @@ def run_one_step_chunk_worker(
             question_type_plan=plan_full,
             few_shot_examples=runtime.few_shot_examples,
             request_timeout=runtime.request_timeout,
-            qa_detail_mode=runtime.qa_detail_mode,
+            qa_detail_mode=effective_qa_detail_mode,
             knowledge_category=(
                 runtime.fixed_knowledge_category
                 if runtime.use_category_prompt_templates
@@ -571,6 +596,9 @@ def run_one_step_chunk_worker(
             unit_started_at = time.perf_counter()
             generation_unit = evidence_index.build_generation_unit(
                 source_chunk_index=chunk_index,
+                source_unit=source_chunk_meta.get("_qa_source_unit")
+                if isinstance(source_chunk_meta.get("_qa_source_unit"), dict)
+                else None,
                 question=question_key,
                 source_anchor_text=str(candidate_for_answer.get("source_anchor_text") or ""),
                 retrieval_query=retrieval_query,
@@ -603,7 +631,7 @@ def run_one_step_chunk_worker(
                 model=runtime.model,
                 candidate=candidate_for_answer,
                 generation_unit=generation_unit,
-                qa_detail_mode=runtime.qa_detail_mode,
+                qa_detail_mode=effective_qa_detail_mode,
                 prompt_language=runtime.prompt_language,
                 request_timeout=runtime.request_timeout,
                 item_normalizer_with_reason=item_normalizer_with_reason,
@@ -694,9 +722,86 @@ def run_one_step_chunk_worker(
     }
 
 
+def run_one_step_unit_worker(
+    *,
+    unit: GenerationUnit,
+    evidence_index: QADocumentEvidenceIndex,
+    runtime: OneStepPipelineRuntime,
+    client: Any,
+    debug_writer: Optional[Callable[[Dict[str, Any]], None]],
+    item_normalizer_with_reason: Callable[..., Tuple[Optional[Dict[str, Any]], str]],
+    source_fact_detail_validator: Callable[..., Tuple[bool, str]],
+    source_fact_grounding_validator: Callable[..., Tuple[bool, str]],
+    source_override_handler: Callable[..., None],
+) -> Dict[str, Any]:
+    if int(unit.qa_budget or 0) <= 0:
+        return {
+            "unit_index": unit.unit_index,
+            "unit_id": unit.unit_id,
+            "unit_type": unit.unit_type,
+            "qa_mode": unit.qa_mode,
+            "chunk_index": unit.anchor_chunk_index,
+            "anchor_chunk_index": unit.anchor_chunk_index,
+            "source_chunk_indexes": list(unit.source_chunk_indexes),
+            "attempt_used": 0,
+            "items": [],
+            "valid_items": 0,
+            "skip_reason": "zero_unit_budget",
+            "timing": {},
+        }
+
+    unit_runtime = replace(
+        runtime,
+        qa_per_chunk=max(1, int(unit.qa_budget)),
+        qa_detail_mode=_effective_qa_detail_mode(unit.qa_mode),
+    )
+    source_chunk_meta = dict(unit.source_chunk_meta)
+    source_chunk_meta["_qa_source_unit"] = unit.to_source_unit()
+    payload = run_one_step_chunk_worker(
+        chunk_index=int(unit.anchor_chunk_index),
+        chunk_text=unit.unit_text,
+        source_chunk_meta=source_chunk_meta,
+        evidence_index=evidence_index,
+        runtime=unit_runtime,
+        client=client,
+        debug_writer=debug_writer,
+        item_normalizer_with_reason=item_normalizer_with_reason,
+        source_fact_detail_validator=source_fact_detail_validator,
+        source_fact_grounding_validator=source_fact_grounding_validator,
+        source_override_handler=source_override_handler,
+    )
+    payload.update(
+        {
+            "unit_index": unit.unit_index,
+            "unit_id": unit.unit_id,
+            "unit_type": unit.unit_type,
+            "qa_mode": unit.qa_mode,
+            "anchor_chunk_index": unit.anchor_chunk_index,
+            "source_chunk_indexes": list(unit.source_chunk_indexes),
+            "parent_index_path": unit.parent_index_path,
+            "quality_child_coverage": unit.quality_child_coverage,
+            "unit_debug": unit.to_debug_dict(),
+        }
+    )
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            item["qa_generation_unit_id"] = unit.unit_id
+            item["qa_generation_unit_index"] = unit.unit_index
+            item["qa_generation_unit_type"] = unit.unit_type
+            item["qa_generation_unit_mode"] = unit.qa_mode
+            item["qa_generation_unit_source_chunk_indexes"] = list(unit.source_chunk_indexes)
+            item["qa_generation_unit_parent_index_path"] = unit.parent_index_path
+            item["qa_generation_unit_quality_child_coverage"] = unit.quality_child_coverage
+    return payload
+
+
 __all__ = [
     "OneStepPipelineRuntime",
     "parse_one_step_pipeline_runtime",
     "resolve_one_step_chunks",
     "run_one_step_chunk_worker",
+    "run_one_step_unit_worker",
 ]

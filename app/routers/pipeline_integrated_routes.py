@@ -300,10 +300,12 @@ def _parse_manual_split_points(value: Optional[str]) -> Optional[List[Dict[str, 
 async def batch_upload_integrated_document_pipeline(
     files: List[UploadFile] = File(...),
     chunk_size: int = Form(600),
-    qa_per_chunk: int = Form(1, description="每个 chunk 期望生成的主问答条数"),
+    qa_per_chunk: Optional[int] = Form(None, description="兼容旧参数：未设置 qa_total_limit 时按 chunk 数估算题量"),
+    qa_total_limit: Optional[int] = Form(None, description="主问答总数上限；可按文件或按批次生效"),
+    qa_total_limit_scope: str = Form("per_file", description="题数上限范围：per_file / batch"),
     qa_detail_mode: str = Form(
-        "point",
-        description="问答粒度: 'point'=单点事实直答, 'summary'=同一主体多点合并用于总结/对比/推理",
+        "auto",
+        description="问答粒度: 'auto'=按 generation unit 自动选择, 'point'=单点事实直答, 'summary'=总结/对比/推理",
     ),
     prompt_language: str = Form(
         "auto",
@@ -504,9 +506,18 @@ async def batch_upload_integrated_document_pipeline(
         if not files:
             raise HTTPException(status_code=400, detail="No files uploaded")
 
-        qa_detail_mode = (qa_detail_mode or "point").strip().lower()
-        if qa_detail_mode not in ("point", "summary"):
-            qa_detail_mode = "point"
+        qa_detail_mode = (qa_detail_mode or "auto").strip().lower()
+        if qa_detail_mode not in ("point", "summary", "auto"):
+            qa_detail_mode = "auto"
+        try:
+            qa_per_chunk = max(1, int(qa_per_chunk or 1))
+        except Exception:
+            qa_per_chunk = 1
+        if qa_total_limit is not None:
+            qa_total_limit = max(0, int(qa_total_limit))
+        qa_total_limit_scope = str(qa_total_limit_scope or "per_file").strip().lower()
+        if qa_total_limit_scope not in {"per_file", "batch"}:
+            qa_total_limit_scope = "per_file"
         prompt_language = (prompt_language or "auto").strip().lower()
         if prompt_language not in ("auto", "zh", "en"):
             prompt_language = "auto"
@@ -731,6 +742,8 @@ async def batch_upload_integrated_document_pipeline(
             "created_at": now,
             "updated_at": now,
             "qa_per_chunk": qa_per_chunk,
+            "qa_total_limit": qa_total_limit,
+            "qa_total_limit_scope": qa_total_limit_scope,
             "qa_detail_mode": qa_detail_mode,
             "prompt_language": prompt_language,
             "question_type_mode": question_type_mode,
@@ -744,6 +757,8 @@ async def batch_upload_integrated_document_pipeline(
             "task_id": batch_task_id,
             "chunk_size": chunk_size,
             "qa_per_chunk": qa_per_chunk,
+            "qa_total_limit": qa_total_limit,
+            "qa_total_limit_scope": qa_total_limit_scope,
             "qa_detail_mode": qa_detail_mode,
             "prompt_language": prompt_language,
             "include_evaluation": include_evaluation,

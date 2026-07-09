@@ -335,9 +335,11 @@ Consumer:
 Required groups:
 
 - Identity and input: `task_id`, `file_contents`, `status_data`.
-- Generation: `chunk_size`, `qa_per_chunk`, `qa_detail_mode`,
-  `prompt_language`, `question_type_mode`, `question_types`,
-  `question_type_weights`, `few_shot_examples`.
+- Generation: `chunk_size`, `qa_total_limit`, `qa_total_limit_scope`,
+  `qa_detail_mode`, `prompt_language`, `question_type_mode`,
+  `question_types`, `question_type_weights`, `few_shot_examples`.
+  `qa_per_chunk` is retained only as a compatibility input when
+  `qa_total_limit` is not supplied.
 - Chunking: `chunking_prefix_max_depth`, `chunking_split_type`,
   `chunking_markdown_heading_correction_enabled`,
   `chunking_text_split_min_length`, `chunking_text_split_max_length`,
@@ -400,8 +402,21 @@ Rules:
   - `generation_detail`: retained for compatibility. New tasks write the
     wall-clock view here; consumers that need an explicit contract should read
     `generation_wall_detail`.
-  `generation_chunk_details` remains the compact per-chunk diagnostic list and
-  does not carry raw timing intervals.
+  `generation_unit_details` is the compact per-generation-unit diagnostic list.
+  Each entry includes the unit index, unit type, selected QA mode, anchor chunk,
+  source chunk indexes, target budget, generated item count, drop reasons, and
+  per-worker timing. `generation_chunk_details` is retained as a compatibility
+  alias for older frontend/status consumers and does not carry raw timing
+  intervals.
+- QA generation now plans `generation units` before LLM calls. The planner
+  first evaluates chunk quality, then groups usable same-parent chunks into
+  section units, routes long structured chunks to virtual-parent units, and
+  keeps remaining usable chunks as leaf units. `qa_detail_mode=auto` resolves
+  to `summary` for section/virtual-parent units and `point` for leaf units.
+- `qa_total_limit_scope=per_file` applies the total main-QA cap to each file.
+  `qa_total_limit_scope=batch` pre-allocates the cap across successful files
+  before concurrent generation so the final batch output does not exceed the
+  requested main-QA total.
 - `doc_handoff` means document preprocessing has produced `file_contents` /
   `pre_split_chunks` for QA; it is not the terminal state of the full pipeline.
 

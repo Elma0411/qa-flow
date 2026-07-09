@@ -228,6 +228,13 @@ class QADocumentEvidenceIndex:
             for chunk in chunks
             if int(chunk.get("chunk_index") or 0) > 0
         }
+        self._children_by_parent: Dict[str, List[int]] = {}
+        for chunk in chunks:
+            parent_key = _safe_text(chunk.get("parent_index_path"))
+            chunk_index = int(chunk.get("chunk_index") or 0)
+            if not parent_key or chunk_index <= 0:
+                continue
+            self._children_by_parent.setdefault(parent_key, []).append(chunk_index)
 
     @classmethod
     def build(cls, chunks: List[Dict[str, Any]]) -> "QADocumentEvidenceIndex":
@@ -539,6 +546,7 @@ class QADocumentEvidenceIndex:
         self,
         *,
         source_chunk_index: int,
+        source_unit: Optional[Dict[str, Any]] = None,
         question: str,
         source_anchor_text: str,
         retrieval_query: str = "",
@@ -558,6 +566,22 @@ class QADocumentEvidenceIndex:
         answer_scope_decision: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         source_chunk = self.get_chunk(source_chunk_index)
+        source_unit_payload = dict(source_unit or {}) if isinstance(source_unit, dict) else {}
+        source_unit_indexes = [
+            _safe_int(index, 0)
+            for index in (source_unit_payload.get("source_chunk_indexes") or [])
+            if _safe_int(index, 0) > 0
+        ]
+        if not source_unit_indexes:
+            source_unit_indexes = [int(source_chunk_index)]
+        source_index_set = set(source_unit_indexes)
+        source_chunks = [
+            self.get_chunk(index)
+            for index in source_unit_indexes
+            if index in self._chunks_by_index
+        ]
+        if not source_chunks:
+            source_chunks = [source_chunk]
         clean_retrieval_query = _safe_text(retrieval_query) or _safe_text(question)
         normalized_terms = _normalize_terms(must_have_terms)
         normalized_scope = _safe_text(answer_scope).lower() or "source_primary"
@@ -576,11 +600,46 @@ class QADocumentEvidenceIndex:
             )
         else:
             hits, raw_trace = semantic_hits, raw_semantic_trace
-        source_parent = _safe_text(source_chunk.get("parent_index_path"))
+        source_parent = _safe_text(source_unit_payload.get("parent_index_path")) or _safe_text(source_chunk.get("parent_index_path"))
 
         selected_hits: List[EvidenceHit] = []
-        remaining_budget = max(1000, int(max_unit_chars)) - len(_format_chunk_for_unit(source_chunk))
+        source_text_budget = sum(len(_format_chunk_for_unit(chunk)) for chunk in source_chunks)
+        remaining_budget = max(1000, int(max_unit_chars)) - source_text_budget
+        auto_merge_trace: List[Dict[str, Any]] = []
+        source_count_by_parent: Dict[str, int] = {}
+        for chunk in source_chunks:
+            parent_key = _safe_text(chunk.get("parent_index_path"))
+            if parent_key:
+                source_count_by_parent[parent_key] = source_count_by_parent.get(parent_key, 0) + 1
+        hit_indexes_by_parent: Dict[str, set[int]] = {}
         for hit in hits:
+            if int(hit.chunk_index) in source_index_set:
+                continue
+            parent_key = _safe_text(hit.parent_index_path)
+            if parent_key:
+                hit_indexes_by_parent.setdefault(parent_key, set()).add(int(hit.chunk_index))
+        auto_merge_parent_coverage: Dict[str, float] = {}
+        for parent_key, hit_indexes in hit_indexes_by_parent.items():
+            parent_children = self._children_by_parent.get(parent_key) or []
+            source_children = source_count_by_parent.get(parent_key, 0)
+            denominator = max(1, len(parent_children) - source_children)
+            coverage = len(hit_indexes) / denominator
+            auto_merge_parent_coverage[parent_key] = coverage
+            if coverage >= 0.50 and len(hit_indexes) >= 2:
+                auto_merge_trace.append(
+                    {
+                        "parent_index_path": parent_key,
+                        "matched_child_count": len(hit_indexes),
+                        "source_child_count": source_children,
+                        "parent_child_count": len(parent_children),
+                        "coverage": coverage,
+                        "source_chunk_indexes": sorted(source_index_set),
+                        "matched_chunk_indexes": sorted(hit_indexes),
+                    }
+                )
+        for hit in hits:
+            if int(hit.chunk_index) in source_index_set:
+                continue
             hit_is_same_section = bool(
                 hit.parent_index_path
                 and source_parent
@@ -595,7 +654,11 @@ class QADocumentEvidenceIndex:
             hit_text = _format_chunk_for_unit(chunk)
             if remaining_budget - len(hit_text) < 0:
                 continue
-            role = "same_section_context" if hit_is_same_section or hit_is_adjacent else "related_context"
+            auto_merge_coverage = auto_merge_parent_coverage.get(hit.parent_index_path, 0.0)
+            if hit_is_same_section and auto_merge_coverage >= 0.50:
+                role = "auto_merged_section_context"
+            else:
+                role = "same_section_context" if hit_is_same_section or hit_is_adjacent else "related_context"
             selected_hits.append(
                 EvidenceHit(
                     chunk_id=hit.chunk_id,
@@ -615,12 +678,21 @@ class QADocumentEvidenceIndex:
 
         unit_text = self._render_unit_text(
             source_chunk=source_chunk,
+            source_chunks=source_chunks,
+            source_unit=source_unit_payload,
             hits=selected_hits,
         )
         evidence_chunk_ids = [hit.chunk_id for hit in selected_hits if hit.chunk_id]
+        source_chunk_ids = [
+            _safe_text(chunk.get("chunk_id"))
+            for chunk in source_chunks
+            if _safe_text(chunk.get("chunk_id"))
+        ]
         unit_id = hashlib.sha1(
             (
-                _safe_text(source_chunk.get("chunk_id"))
+                _safe_text(source_unit_payload.get("unit_id"))
+                + "|||"
+                + "|||".join(source_chunk_ids)
                 + "|||"
                 + _safe_text(question)
                 + "|||"
@@ -630,6 +702,10 @@ class QADocumentEvidenceIndex:
         return {
             "qa_generation_unit_id": unit_id,
             "source_chunk": source_chunk,
+            "source_unit": source_unit_payload,
+            "source_chunks": source_chunks,
+            "source_chunk_ids": source_chunk_ids,
+            "source_unit_text": _safe_text(source_unit_payload.get("unit_text")) or "\n\n".join(_format_chunk_for_unit(chunk) for chunk in source_chunks),
             "source_anchor_text": _safe_text(source_anchor_text),
             "evidence_hits": [hit.to_dict() for hit in selected_hits],
             "evidence_chunk_ids": evidence_chunk_ids,
@@ -643,6 +719,16 @@ class QADocumentEvidenceIndex:
                 "answer_scope": normalized_scope,
                 "effective_answer_scope": normalized_scope,
                 "answer_scope_decision": answer_scope_decision or {},
+                "source_unit": {
+                    "unit_id": source_unit_payload.get("unit_id"),
+                    "unit_index": source_unit_payload.get("unit_index"),
+                    "unit_type": source_unit_payload.get("unit_type"),
+                    "qa_mode": source_unit_payload.get("qa_mode"),
+                    "anchor_chunk_index": source_unit_payload.get("anchor_chunk_index"),
+                    "source_chunk_indexes": source_unit_indexes,
+                    "source_chunk_ids": source_chunk_ids,
+                    "quality_child_coverage": source_unit_payload.get("quality_child_coverage"),
+                },
                 "retrieval_mode": _safe_text(retrieval_mode) or DEFAULT_RETRIEVAL_MODE,
                 "hybrid_weight_dense": _safe_float(hybrid_weight_dense, DEFAULT_HYBRID_WEIGHT_DENSE),
                 "hybrid_weight_lexical": _safe_float(hybrid_weight_lexical, DEFAULT_HYBRID_WEIGHT_LEXICAL),
@@ -652,6 +738,7 @@ class QADocumentEvidenceIndex:
                 "max_unit_chars": int(max_unit_chars),
                 "raw_semantic_hits": raw_trace,
                 "selected_evidence": [hit.to_dict() for hit in selected_hits],
+                "auto_merge_trace": auto_merge_trace,
             },
         }
 
@@ -659,20 +746,54 @@ class QADocumentEvidenceIndex:
         self,
         *,
         source_chunk: Dict[str, Any],
+        source_chunks: Optional[Sequence[Dict[str, Any]]] = None,
+        source_unit: Optional[Dict[str, Any]] = None,
         hits: Sequence[EvidenceHit],
     ) -> str:
-        sections: List[str] = [
-            "【主来源块】\n"
-            + f"chunk_id：{_safe_text(source_chunk.get('chunk_id'))}\n"
-            + _format_chunk_for_unit(source_chunk)
-        ]
+        source_chunks = list(source_chunks or [source_chunk])
+        source_unit = dict(source_unit or {})
+        unit_type = _safe_text(source_unit.get("unit_type"))
+        if len(source_chunks) > 1 or unit_type in {"section", "virtual_parent"}:
+            source_title = "【主来源单元】"
+            unit_meta_parts = []
+            if source_unit.get("unit_id"):
+                unit_meta_parts.append(f"unit_id：{source_unit.get('unit_id')}")
+            if unit_type:
+                unit_meta_parts.append(f"unit_type：{unit_type}")
+            if source_unit.get("qa_mode"):
+                unit_meta_parts.append(f"qa_mode：{source_unit.get('qa_mode')}")
+            unit_body = _safe_text(source_unit.get("unit_text"))
+            if not unit_body:
+                unit_body = "\n\n".join(
+                    f"chunk_id：{_safe_text(chunk.get('chunk_id'))}\n{_format_chunk_for_unit(chunk)}"
+                    for chunk in source_chunks
+                )
+            sections: List[str] = [
+                "\n".join([source_title, *unit_meta_parts, unit_body]).strip()
+            ]
+        else:
+            sections = [
+                "【主来源块】\n"
+                + f"chunk_id：{_safe_text(source_chunk.get('chunk_id'))}\n"
+                + _format_chunk_for_unit(source_chunk)
+            ]
 
-        same_section_hits = [hit for hit in hits if hit.role == "same_section_context"]
-        related_hits = [hit for hit in hits if hit.role != "same_section_context"]
+        same_section_hits = [
+            hit
+            for hit in hits
+            if hit.role in {"same_section_context", "auto_merged_section_context"}
+        ]
+        related_hits = [
+            hit
+            for hit in hits
+            if hit.role not in {"same_section_context", "auto_merged_section_context"}
+        ]
 
         if same_section_hits:
             parent_title = _parent_title_path(_safe_text(source_chunk.get("title_path"))) or "同章节"
-            parts = [f"【同章节上下文：{parent_title}】"]
+            has_auto_merge = any(hit.role == "auto_merged_section_context" for hit in same_section_hits)
+            label = "自动合并同章节上下文" if has_auto_merge else "同章节上下文"
+            parts = [f"【{label}：{parent_title}】"]
             for hit in same_section_hits:
                 chunk = self.get_chunk(hit.chunk_index)
                 parts.append(f"chunk_id：{hit.chunk_id}\n{_format_chunk_for_unit(chunk)}")

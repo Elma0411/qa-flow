@@ -749,10 +749,11 @@ function compactLabelCopy(label) {
   const original = textNodes.map((node) => node.textContent || '').join(' ').trim();
   const primaryId = controls.find((control) => control.id)?.id || '';
   const friendlyById = {
-    qaPerChunk: '每块数量',
+    qaTotalLimit: '总题数上限',
+    qaTotalLimitScope: '上限范围',
     llmMaxConcurrentRequests: 'LLM/VLM 请求并发',
-    chunkMaxAttempts: 'chunk 尝试次数',
-    chunkMaxConcurrency: 'chunk 并发',
+    chunkMaxAttempts: 'unit 尝试次数',
+    chunkMaxConcurrency: 'unit 并发',
     maxConcurrency: '文件并发',
     evalMaxConcurrency: '评估并发',
     augmentMaxConcurrency: '增广并发',
@@ -1488,7 +1489,7 @@ function pipelineStorageSummary() {
 function setupPipelineModuleConsole() {
   const form = $('#pipelineForm');
   const modeNode = nodeForField('pipelineProcessingMode');
-  const qaNode = nodeForField('qaPerChunk');
+  const qaNode = nodeForField('qaTotalLimit');
   const runActions = $('#cancelTaskBtn')?.closest('.actions-row');
   if (!form || !modeNode || !qaNode) return;
   modeNode.insertAdjacentElement('afterend', qaNode);
@@ -1532,6 +1533,7 @@ function setupPipelineModuleConsole() {
         title: '问答生成',
         description: '配置 QA 粒度、分类器、题型、few-shot、增广条数和尝试次数。',
         nodes: [
+          { field: 'qaTotalLimitScope' },
           { field: 'augmentPerQa' },
           { field: 'qaDetailMode' },
           { field: 'knowledgeClassifier' },
@@ -1543,7 +1545,7 @@ function setupPipelineModuleConsole() {
           { selector: '#fewShotList', closest: '.inline-checkbox-group' },
           { field: 'chunkMaxAttempts' },
         ],
-        summary: () => `${checkedQuestionTypesSummary()} / 增广 ${$('#augmentPerQa')?.value || 0} / 尝试 ${$('#chunkMaxAttempts')?.value || 2}`,
+        summary: () => `${checkedQuestionTypesSummary()} / 上限 ${$('#qaTotalLimit')?.value || 20} / 尝试 ${$('#chunkMaxAttempts')?.value || 2}`,
       },
       {
         key: 'retrieval',
@@ -1913,7 +1915,7 @@ function setupTaskWorkspace(pipelineSection) {
   statusWrap.dataset.taskPanel = 'status';
   const statusEmpty = document.createElement('div');
   statusEmpty.className = 'current-task-empty';
-  statusEmpty.textContent = '等待提交任务。开始执行后会显示进度、阶段耗时和 chunk 明细。';
+  statusEmpty.textContent = '等待提交任务。开始执行后会显示进度、阶段耗时和 generation unit 明细。';
   statusPanel.appendChild(statusEmpty);
   statusWrap.appendChild(statusPanel);
 
@@ -2118,7 +2120,7 @@ function setupWorkbenchHero() {
 
   const core = $('#pipelineCoreFields');
   const modeNode = nodeForField('pipelineProcessingMode');
-  const qaNode = nodeForField('qaPerChunk');
+  const qaNode = nodeForField('qaTotalLimit');
   if (core && modeNode) core.appendChild(modeNode);
   if (core && qaNode) core.appendChild(qaNode);
 
@@ -2154,10 +2156,10 @@ function setupWorkbenchHero() {
     items.push(createSummaryChip('OCR', () => String($('#ocrCfgActive')?.textContent || '').trim() || `${$('#ocrCfgProvider')?.value || 'batch_ocr'}`, { moduleKey: 'ocr.saved' }));
     items.push(createSummaryChip('流程', () => $('#pipelineProcessingMode')?.value === 'integrated' ? '一体流程' : '标准 OCR', { moduleKey: 'pipeline.document' }));
     items.push(createSummaryChip('切分', () => `${$('#chunkingSplitType')?.value || 'markdown'} / ${$('#chunkSize')?.value || 600}`, { moduleKey: 'pipeline.chunking' }));
-    items.push(createSummaryChip('生成', () => `${checkedQuestionTypesSummary()} / 尝试 ${$('#chunkMaxAttempts')?.value || 2}`, { moduleKey: 'pipeline.generation' }));
+    items.push(createSummaryChip('生成', () => `${checkedQuestionTypesSummary()} / 上限 ${$('#qaTotalLimit')?.value || 20}`, { moduleKey: 'pipeline.generation' }));
     items.push(createSummaryChip('检索', () => `${$('#retrievalMode')?.value || 'hybrid'} / topK ${$('#semanticTopK')?.value || 3}`, { moduleKey: 'pipeline.retrieval' }));
     items.push(createSummaryChip('评估', () => pipelineEvaluationSummary(), { moduleKey: 'pipeline.evaluation' }));
-    items.push(createSummaryChip('并发', () => `chunk ${$('#chunkMaxConcurrency')?.value || '8'} / API ${$('#llmMaxConcurrentRequests')?.value || '默认'}`, { moduleKey: 'pipeline.performance' }));
+    items.push(createSummaryChip('并发', () => `unit ${$('#chunkMaxConcurrency')?.value || '8'} / API ${$('#llmMaxConcurrentRequests')?.value || '默认'}`, { moduleKey: 'pipeline.performance' }));
     items.push(createSummaryChip('存储', () => pipelineStorageSummary(), { moduleKey: 'pipeline.output' }));
     items.forEach((item) => summary.appendChild(item));
   }
@@ -2281,7 +2283,8 @@ async function handlePipelineSubmit(e) {
         ? '/batch-upload-integrated-document-pipeline'
         : '/batch-upload-complete-pipeline-with-evaluation');
 
-    const qaPerChunk = $('#qaPerChunk')?.value || '1';
+    const qaTotalLimit = $('#qaTotalLimit')?.value || '20';
+    const qaTotalLimitScope = $('#qaTotalLimitScope')?.value || 'per_file';
     const augmentPerQa = $('#augmentPerQa')?.value || '0';
     const chunkSize = $('#chunkSize')?.value || '600';
     const ocrTimeoutSeconds = $('#ocrTimeoutSeconds')?.value || '';
@@ -2378,7 +2381,8 @@ async function handlePipelineSubmit(e) {
     const augmentMaxConcurrency = $('#augmentMaxConcurrency')?.value || '';
     const saveModeEl = $('#saveMode');
 
-    formData.append('qa_per_chunk', qaPerChunk);
+    formData.append('qa_total_limit', qaTotalLimit);
+    formData.append('qa_total_limit_scope', qaTotalLimitScope);
     formData.append('augment_per_qa', augmentPerQa);
     formData.append('chunk_size', chunkSize);
     if (!useIntegratedPipeline && String(ocrTimeoutSeconds).trim()) {
@@ -2854,7 +2858,11 @@ function normalizeGenerationWallDetail(detail, explicitWallDetail) {
       scheduler_gap_seconds: total,
       chunks_total: normalized.chunks_total,
       chunks_completed: normalized.chunks_completed,
+      generation_units_total: normalized.generation_units_total,
+      generation_units_completed: normalized.generation_units_completed,
       qa_generated: normalized.qa_generated,
+      qa_total_limit: normalized.qa_total_limit,
+      qa_total_limit_scope: normalized.qa_total_limit_scope,
       wall_detail_unavailable: true,
     };
   }
@@ -2869,6 +2877,7 @@ function deriveGenerationTimingViews(generationExtra, outputTimings) {
   let cumulativeDetail = {};
   let explicitWallDetail = false;
   let outputChunkDetails = [];
+  let outputUnitDetails = [];
 
   if (hasObjectKeys(generationExtra.generation_wall_detail)) {
     wallDetail = generationExtra.generation_wall_detail;
@@ -2885,6 +2894,9 @@ function deriveGenerationTimingViews(generationExtra, outputTimings) {
   }
 
   outputTimings.forEach((timing) => {
+    if (Array.isArray(timing.generation_unit_details)) {
+      outputUnitDetails = outputUnitDetails.concat(timing.generation_unit_details);
+    }
     if (Array.isArray(timing.generation_chunk_details)) {
       outputChunkDetails = outputChunkDetails.concat(timing.generation_chunk_details);
     }
@@ -2905,12 +2917,21 @@ function deriveGenerationTimingViews(generationExtra, outputTimings) {
     explicitWallDetail = Boolean(progressTiming.scheduler_gap_seconds !== undefined);
   }
 
+  const progressUnitDetails = Array.isArray(generationExtra.generation_unit_details)
+    ? generationExtra.generation_unit_details
+    : [];
+  const progressChunkDetails = Array.isArray(generationExtra.generation_chunk_details)
+    ? generationExtra.generation_chunk_details
+    : [];
+  const unitDetails = progressUnitDetails.length
+    ? progressUnitDetails
+    : (outputUnitDetails.length ? outputUnitDetails : (progressChunkDetails.length ? progressChunkDetails : outputChunkDetails));
+
   return {
     wallDetail: normalizeGenerationWallDetail(wallDetail, explicitWallDetail),
     cumulativeDetail,
-    chunkDetails: Array.isArray(generationExtra.generation_chunk_details)
-      ? generationExtra.generation_chunk_details
-      : outputChunkDetails,
+    unitDetails,
+    chunkDetails: progressChunkDetails.length ? progressChunkDetails : outputChunkDetails,
   };
 }
 
@@ -2962,6 +2983,7 @@ function derivePipelineTiming(status) {
     live_elapsed_seconds: totalSeconds,
     generation_detail: generationTiming,
     generation_cumulative_detail: generationViews.cumulativeDetail,
+    generation_unit_details: generationViews.unitDetails,
     generation_chunk_details: generationViews.chunkDetails,
   };
 }
@@ -3545,9 +3567,12 @@ function renderPipelineDebugStatus(status, options = {}) {
   const genMeta = document.createElement('div');
   genMeta.className = 'pipeline-debug-kv-grid';
   appendTextMetric(genMeta, 'chunk 总数', firstNumber(detail.chunks_total, safeStatus.chunk_count));
-  appendTextMetric(genMeta, '已完成 chunk', firstNumber(detail.chunks_completed));
+  appendTextMetric(genMeta, 'unit 总数', firstNumber(detail.generation_units_total, safeStatus.generation_units_total));
+  appendTextMetric(genMeta, '已完成 unit', firstNumber(detail.generation_units_completed, safeStatus.generation_units_done));
   appendTextMetric(genMeta, '生成 QA 数', firstNumber(detail.qa_generated));
-  appendTextMetric(genMeta, 'chunk 生成最大尝试次数', safeStatus.chunk_max_attempts);
+  appendTextMetric(genMeta, '总题数上限', firstNumber(detail.qa_total_limit, safeStatus.qa_total_limit));
+  appendTextMetric(genMeta, '上限范围', detail.qa_total_limit_scope || safeStatus.qa_total_limit_scope || 'per_file');
+  appendTextMetric(genMeta, 'unit 最大尝试次数', safeStatus.chunk_max_attempts);
   appendTextMetric(genMeta, 'LLM/VLM API 请求并发', safeStatus.llm_max_concurrent_requests || 'Docker 环境默认');
   const retrievalConfig = safeStatus.retrieval_config || {};
   appendTextMetric(genMeta, '检索模式', retrievalConfig.retrieval_mode || 'hybrid');
@@ -3557,18 +3582,19 @@ function renderPipelineDebugStatus(status, options = {}) {
   generation.appendChild(genMeta);
   root.appendChild(generation);
 
-  const chunks = (timing.generation_chunk_details || []).slice().sort((a, b) => {
-    return Number(a && a.chunk_index || 0) - Number(b && b.chunk_index || 0);
+  const units = (timing.generation_unit_details || timing.generation_chunk_details || []).slice().sort((a, b) => {
+    return Number(a && (a.unit_index || a.anchor_chunk_index || a.chunk_index) || 0)
+      - Number(b && (b.unit_index || b.anchor_chunk_index || b.chunk_index) || 0);
   });
   const chunkSection = document.createElement('section');
   chunkSection.className = 'pipeline-debug-section';
   const chunkTitle = document.createElement('h4');
-  chunkTitle.textContent = 'chunk 明细';
+  chunkTitle.textContent = 'generation unit 明细';
   chunkSection.appendChild(chunkTitle);
-  if (!chunks.length) {
+  if (!units.length) {
     const empty = document.createElement('div');
     empty.className = 'pipeline-debug-empty';
-    empty.textContent = '生成阶段完成一个 chunk 后会显示明细。';
+    empty.textContent = '生成阶段完成一个 generation unit 后会显示明细。';
     chunkSection.appendChild(empty);
   } else {
     const tableWrap = document.createElement('div');
@@ -3578,7 +3604,10 @@ function renderPipelineDebugStatus(status, options = {}) {
     const thead = document.createElement('thead');
     const headRow = document.createElement('tr');
     [
-      'chunk',
+      'unit',
+      '类型',
+      '模式',
+      '来源 chunk',
       '状态',
       '候选题',
       '进入答案',
@@ -3597,10 +3626,19 @@ function renderPipelineDebugStatus(status, options = {}) {
     thead.appendChild(headRow);
     table.appendChild(thead);
     const tbody = document.createElement('tbody');
-    chunks.forEach((chunk) => {
+    units.forEach((chunk) => {
       const row = document.createElement('tr');
       const ct = chunk.timing && typeof chunk.timing === 'object' ? chunk.timing : {};
-      appendChunkTableCell(row, debugCountText(chunk.chunk_index, '?'), 'mono');
+      appendChunkTableCell(row, debugCountText(chunk.unit_index || chunk.chunk_index, '?'), 'mono');
+      appendChunkTableCell(row, chunk.unit_type || 'leaf');
+      appendChunkTableCell(row, chunk.qa_mode || 'point');
+      appendChunkTableCell(
+        row,
+        Array.isArray(chunk.source_chunk_indexes) && chunk.source_chunk_indexes.length
+          ? chunk.source_chunk_indexes.join(',')
+          : debugCountText(chunk.anchor_chunk_index || chunk.chunk_index, '?'),
+        'mono',
+      );
       const stateCell = appendChunkTableCell(row, chunkStatusText(chunk));
       stateCell.dataset.state = chunkStatusText(chunk);
       appendChunkTableCell(row, debugCountText(chunk.candidate_questions));
@@ -3631,7 +3669,7 @@ function renderPipelineDebugStatus(status, options = {}) {
       rawBtn.type = 'button';
       rawBtn.className = 'secondary compact';
       rawBtn.textContent = '查看';
-      rawBtn.addEventListener('click', () => openChunkDebugRawModal(chunk.chunk_index));
+      rawBtn.addEventListener('click', () => openChunkDebugRawModal(chunk.anchor_chunk_index || chunk.chunk_index));
       actionCell.appendChild(rawBtn);
       row.appendChild(actionCell);
       tbody.appendChild(row);

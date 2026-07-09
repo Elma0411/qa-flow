@@ -535,6 +535,7 @@ def call_evidence_answer_llm(
 ) -> Tuple[Optional[Dict[str, Any]], str]:
     source_chunk = generation_unit.get("source_chunk") or {}
     source_chunk_text = str(source_chunk.get("text") or "").strip()
+    source_unit_text = str(generation_unit.get("source_unit_text") or "").strip()
     unit_text = str(generation_unit.get("qa_generation_unit_text") or "").strip()
     language_code, language_instruction = _resolve_generation_language(
         prompt_language,
@@ -669,7 +670,7 @@ def call_evidence_answer_llm(
     if normalized_item and not _is_source_anchored(
         source_fact_text=str(normalized_item.get("source_fact_text") or ""),
         source_anchor_text=source_anchor_text,
-        source_chunk_text=source_chunk_text,
+        source_chunk_text=source_unit_text or source_chunk_text,
     ):
         dropped_reason = "source_fact_not_anchored_to_source_chunk"
         normalized_item = None
@@ -677,7 +678,7 @@ def call_evidence_answer_llm(
     if normalized_item:
         source_override_handler(
             normalized_item,
-            chunk_text=source_chunk_text,
+            chunk_text=source_unit_text or source_chunk_text,
             language_code=language_code,
         )
         normalized_item["question"] = candidate_question
