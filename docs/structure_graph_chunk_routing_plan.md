@@ -123,6 +123,189 @@ chunk 质量门控
 -> 候选问题生成不再只看单个 chunk，而是看 unit
 ```
 
+generation unit 的划分流程建议拆成 7 步。
+
+第 1 步：准备输入
+
+每个 chunk 进入规划器前，应先带上这些基础信息：
+
+```text
+chunk 原文
+chunk_index
+title_path
+parent_index_path
+level
+prev / next
+质量门控结果
+是否有明显事实信号
+是否有列表、条款、小标题、分段
+```
+
+这里不要急着决定 point 或 summary。第一步只是把每个 chunk 的“位置、质量、形态”标出来。
+
+第 2 步：先生成候选 unit，不急着选
+
+规划器先生成三类候选：
+
+```text
+point unit 候选
+  每个质量合格、内容自包含的 chunk 都可以先成为候选
+
+section summary unit 候选
+  同一个 parent_index_path 下，多个质量合格或可合并的 chunk 可以组成候选
+
+long-chunk summary unit 候选
+  单个 chunk 如果内部有多个段落、条款、列表项或小标题，也可以组成候选
+```
+
+这一步允许重叠。比如一个 chunk 可以同时属于 section summary 候选，也可以自己是 point 候选。先保留候选，后面再解决冲突。
+
+第 3 步：给候选 unit 打分
+
+打分不是为了追求很复杂，而是为了避免硬规则冲突。
+
+point unit 主要看：
+
+```text
+内容是否自包含
+是否有明确事实点
+是否不依赖前后 chunk
+是否不是标题、目录、页眉页脚
+```
+
+section summary unit 主要看：
+
+```text
+同父 chunk 数量是否足够
+这些 chunk 是否围绕同一个章节主题
+它们之间是否互补，而不是重复
+是否形成条件、材料、流程、分类、组成、清单等成组内容
+合并后的上下文是否不会过长
+```
+
+long-chunk summary unit 主要看：
+
+```text
+单个 chunk 是否明显偏长
+内部是否有多个自然段、小标题、编号、列表项
+内部子项是否围绕同一主题
+是否适合问“包括哪些、流程是什么、条件有哪些”这类问题
+```
+
+第 4 步：先选 summary unit，再补 point unit
+
+推荐选择顺序：
+
+```text
+先选 section summary unit
+再选 long-chunk summary unit
+最后选 point unit
+```
+
+原因是 summary unit 通常覆盖多个 chunk。如果先把每个 chunk 都选成 point unit，后面再合 summary 容易重复。
+
+但这不是说 summary 永远优先。只有 summary 候选分数足够高时才选；分数不够就回到 point。
+
+第 5 步：处理覆盖和重复
+
+选中一个 summary unit 后，它覆盖的 chunk 要打上标记：
+
+```text
+covered_by_summary_unit = true
+```
+
+被覆盖的 chunk 默认不再单独出 point 题，除非它有特别强的单点事实，例如：
+
+```text
+电话
+金额
+日期
+地址
+明确定义
+办理时限
+```
+
+这样可以避免两个问题：
+
+- 同一段内容重复出题。
+- summary 已经覆盖整个章节，但下面每个小 chunk 又重复生成类似问题。
+
+第 6 步：分配题量预算
+
+原来的 `qa_per_chunk` 不能再机械理解为“每个物理 chunk 都出几题”。在新方案里，它更适合被理解为“题量密度”。
+
+第一版可以这样处理：
+
+```text
+总题量预算 ≈ qa_per_chunk × 有效 chunk 数
+```
+
+然后分配给 generation units：
+
+```text
+point unit
+  通常 1 题
+
+section summary unit
+  至少 1 题
+  覆盖内容多、信息点多时可以更多
+
+long-chunk summary unit
+  至少 1 题
+  内部子项多时可以更多
+```
+
+重点是总题量不要因为多个 chunk 合并成一个 unit 后突然大幅下降，也不要因为一个 summary unit 覆盖很多 chunk 就机械生成太多重复题。
+
+第 7 步：输出最终 generation unit 列表
+
+最终给候选问题 LLM 的不是 chunk list，而是 unit list：
+
+```text
+unit_id
+unit_type: point / section_summary / long_chunk_summary
+source_chunk_ids
+primary_chunk_id
+covered_chunk_ids
+recommended_qa_mode: point / summary
+target_qa_count
+route_reason
+```
+
+候选问题生成时，每个 unit 都带着自己的上下文和推荐模式进入 prompt。
+
+一个直观例子：
+
+```text
+chunk 1：退费条件
+chunk 2：退费材料
+chunk 3：退费流程
+chunk 4：客服电话
+chunk 5：很长一段，里面包含申请条件、办理流程、注意事项
+chunk 6：页眉页脚
+```
+
+规划结果可能是：
+
+```text
+unit A: section_summary
+  包含 chunk 1 + chunk 2 + chunk 3
+  生成退费规则类 summary 问题
+
+unit B: point
+  包含 chunk 4
+  生成客服电话类 point 问题
+
+unit C: long_chunk_summary
+  包含 chunk 5
+  生成长块内部流程/条件类 summary 问题
+
+chunk 6
+  不生成问题，只作为低质量 chunk 记录在 debug 中
+```
+
+这样划分后，系统不是“每个 chunk 都出题”，而是“每次拿一个最小完整上下文出题”。
+
 ### 4. `auto` 不再是简单打标签
 
 `qa_detail_mode=auto` 不应该理解成“看到流程词就 summary，看到电话就 point”。这些词只能作为弱信号，不能作为最终标签。
