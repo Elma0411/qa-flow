@@ -337,6 +337,135 @@ base = 1.0
 | 有条件词、步骤词、定义词、数值、日期、主体 | 小词表/正则 + 实体样式正则 | 例如 `条件/流程/步骤/要求/定义/包括/应当`、日期、金额、电话、百分比 |
 | 和同章节兄弟 chunk 互补 | 同 parent 下兄弟 chunk 的关键词差异和顺序关系 | 用 section sibling 信息判断是否适合并入 summary |
 
+这两项分别解决两个问题：
+
+- “有条件词、步骤词、定义词、数值、日期、主体”判断当前 chunk 是否有可问答事实或规则信号。它不是做 NER，也不是理解全文，只是用小词表和正则识别“这段有信息量”。
+- “和同章节兄弟 chunk 互补”判断当前 chunk 是否只是一个章节中的局部片段。它不是判断内容好坏，而是判断“单独出 point 题是否太碎，是否更适合把同章节兄弟合起来走 summary”。
+
+事实/规则信号第一版可这样实现：
+
+```python
+SIGNAL_TERMS = {
+    "condition": ["条件", "若", "如果", "当", "满足", "符合", "仅限", "除非", "适用", "不适用"],
+    "step": ["流程", "步骤", "首先", "然后", "提交", "申请", "审核", "办理", "确认", "完成"],
+    "definition": ["是指", "定义为", "包括", "包含", "由", "组成", "分为", "分类", "以下简称"],
+    "requirement": ["应当", "必须", "不得", "禁止", "需要", "要求", "标准", "范围"],
+}
+
+PATTERNS = {
+    "date": r"\d{4}[年/-]\d{1,2}([月/-]\d{1,2}日?)?",
+    "percent": r"\d+(\.\d+)?%",
+    "money": r"\d+(\.\d+)?\s*(元|万元|亿元|人民币)",
+    "phone": r"(1[3-9]\d{9}|400[- ]?\d{3}[- ]?\d{4}|\d{3,4}[- ]?\d{7,8})",
+    "ratio": r"\d+[:：]\d+",
+    "number_with_unit": r"\d+(\.\d+)?\s*(天|日|小时|分钟|个月|年|次|项|人|份|kg|m|㎡)",
+    "subject_colon": r"^[\u4e00-\u9fa5A-Za-z0-9（）()《》]{2,30}[：:]",
+}
+```
+
+实现要点：
+
+- 词表命中要按类别计数，不要一个词重复刷分。
+- 正则命中要返回 flag，例如 `has_date`、`has_money`、`has_requirement_term`。
+- “主体”第一版不用复杂模型，可以来自三类信号：`title_path` 最后一段、行首 `主体：内容`、条款/列表项开头的名词短语。
+- 短文本只要有日期、金额、电话、定义、强条件词，就不能直接按 `too_short_no_fact` 跳过。
+
+伪代码：
+
+```python
+def extract_fact_signals(text: str, title_path: str) -> Dict[str, Any]:
+    flags = []
+    category_hits = {}
+    for category, terms in SIGNAL_TERMS.items():
+        hits = [term for term in terms if term in text]
+        if hits:
+            category_hits[category] = hits[:5]
+            flags.append(f"has_{category}_term")
+
+    for name, pattern in PATTERNS.items():
+        if re.search(pattern, text):
+            flags.append(f"has_{name}")
+
+    if title_path:
+        flags.append("has_title_subject")
+
+    has_fact_signal = bool(flags)
+    return {
+        "has_fact_signal": has_fact_signal,
+        "flags": flags,
+        "category_hits": category_hits,
+    }
+```
+
+同章节兄弟互补性第一版可这样实现：
+
+```python
+def sibling_complementarity(
+    *,
+    chunk: Dict[str, Any],
+    siblings: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    current_tokens = set(_lexical_tokens(chunk["text"]))
+    other_tokens = set()
+    adjacent_tokens = set()
+    current_index = int(chunk["chunk_index"])
+
+    for sibling in siblings:
+        sibling_index = int(sibling["chunk_index"])
+        if sibling_index == current_index:
+            continue
+        tokens = set(_lexical_tokens(sibling["text"]))
+        other_tokens |= tokens
+        if abs(sibling_index - current_index) == 1:
+            adjacent_tokens |= tokens
+
+    overlap = len(current_tokens & other_tokens) / max(1, len(current_tokens | other_tokens))
+    adjacent_overlap = len(current_tokens & adjacent_tokens) / max(1, len(current_tokens | adjacent_tokens))
+    novelty = len(current_tokens - other_tokens) / max(1, len(current_tokens))
+
+    return {
+        "same_section_sibling_count": max(0, len(siblings) - 1),
+        "section_overlap": overlap,
+        "adjacent_overlap": adjacent_overlap,
+        "novelty": novelty,
+        "is_complementary": (
+            len(siblings) >= 2
+            and overlap >= 0.08
+            and novelty >= 0.18
+            and adjacent_overlap < 0.85
+        ),
+    }
+```
+
+判断逻辑：
+
+- `overlap` 太低，说明当前 chunk 和同章节其他内容关系弱，不应强行合并。
+- `novelty` 太低，说明它和兄弟 chunk 高重复，可能是页眉、重复标题或 OCR 重复，不算互补。
+- `adjacent_overlap` 过高，说明和相邻 chunk 近似重复，应走 `near_duplicate` 或 `merge_with_neighbors`，不应给 summary 加分。
+- 同章节有多个 chunk，且当前 chunk 与兄弟 chunk 有一定主题重叠但又提供新信息，才算互补。
+
+例子：
+
+```text
+父章节：退费规则
+chunk 10：退费申请条件
+chunk 11：退费所需材料
+chunk 12：退费办理流程
+chunk 13：不予退费情形
+```
+
+这些 chunk 的标题/关键词有共同主题“退费”，但各自提供不同子项。它们互补，适合合并成 summary 上下文。
+
+反例：
+
+```text
+chunk 10：某某公司内部资料 第 3 页
+chunk 11：某某公司内部资料 第 4 页
+chunk 12：某某公司内部资料 第 5 页
+```
+
+这些只是高重复页眉页脚，不算互补，应该被质量门控压低分。
+
 第一版可先用轻量函数实现，不引入模型：
 
 ```python
