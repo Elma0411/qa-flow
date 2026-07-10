@@ -24,6 +24,7 @@ from app.services.llm import LLMClientConfig, get_llm_client_pool
 from .markers import (
     extract_marker_ids,
     locate_markers_in_chunks,
+    remove_seal_image_divs,
     replace_image_divs_with_markers,
     restore_markers_in_text,
     with_context,
@@ -373,8 +374,11 @@ class IntegratedPipelineRunner:
             state="processing",
             message="图片占位标记替换中",
         )
-        marked_markdown, image_markers = replace_image_divs_with_markers(
+        seal_cleaned_markdown, removed_seal_image_divs = remove_seal_image_divs(
             ocr_result.markdown_content,
+        )
+        marked_markdown, image_markers = replace_image_divs_with_markers(
+            seal_cleaned_markdown,
             ocr_result.images_info,
         )
         _emit_integrated_progress(
@@ -383,7 +387,11 @@ class IntegratedPipelineRunner:
             stage="doc_marker",
             state="completed",
             message=f"图片占位标记完成：{len(image_markers)} 个 marker",
-            extra={"image_markers": len(image_markers), "markdown_chars": len(marked_markdown)},
+            extra={
+                "image_markers": len(image_markers),
+                "removed_seal_image_divs": removed_seal_image_divs,
+                "markdown_chars": len(marked_markdown),
+            },
         )
         doc_id = build_doc_id(filename, marked_markdown)
         _emit_integrated_progress(
@@ -693,6 +701,7 @@ class IntegratedPipelineRunner:
         ocr_raw_entry = ocr_result.to_dict()
         ocr_raw_entry["integrated_pipeline"] = {
             "replace_images": self.replace_images,
+            "removed_seal_image_divs": removed_seal_image_divs,
             "image_markers": [marker.__dict__ for marker in image_markers],
             "image_analysis": {
                 "enabled": self.image_analysis_enabled,

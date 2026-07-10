@@ -68,7 +68,7 @@ This flow keeps the batch endpoint behavior-compatible:
 
 **Integrated OCR-Image-QA Flow**
 
-`upload -> OCRWorkerManager -> OCRResult -> marked markdown -> tree chunks -> image analysis -> placement judging -> final pre_split chunks -> run_batch_complete_pipeline_async -> qa`
+`upload -> OCRWorkerManager -> OCRResult -> seal-cleaned markdown -> marked markdown -> tree chunks -> image analysis -> placement judging -> final pre_split chunks -> run_batch_complete_pipeline_async -> qa`
 
 This flow is exposed as:
 `POST /batch-upload-integrated-document-pipeline`.
@@ -81,6 +81,9 @@ Async integrated requests must create the task status before document
 preprocessing starts. Document preprocessing progress is stored in the normal
 task status `file_progress` map using `doc_*` stage names, then QA stages
 continue in the same per-file stage map.
+Before marker replacement, integrated preprocessing removes OCR seal image
+`<div>` tags whose image path contains `img_in_seal_box_`. These seal images do
+not become image markers, VLM inputs, chunks, or QA evidence text.
 
 **OCR-Compatible Flow**
 
@@ -227,6 +230,10 @@ Rules:
 - Keep image paths resolvable until downstream image analysis finishes.
 - If markdown no longer contains image `<div>` tags, provide an equivalent
   stable marker source before integrated chunking.
+- Integrated preprocessing may strip OCR-generated seal image divs matching
+  `img_in_seal_box_*` before marker replacement. This does not alter
+  `OCRResult.images_info`; it only prevents seal placeholders from entering
+  downstream understanding and QA text.
 - Integrated image understanding should use the chunk summary and marker-split
   chunk text as its prompt context. Immediate OCR context is retained as
   metadata and may be used for diagnostics, but should not be concatenated into

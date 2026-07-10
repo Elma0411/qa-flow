@@ -13,6 +13,11 @@ from .models import ImageMarker
 _DIV_PATTERN = re.compile(r"<div[^>]*>.*?</div>", re.DOTALL | re.IGNORECASE)
 _SRC_PATTERN = re.compile(r'src="([^"]+)"', re.IGNORECASE)
 _MARKER_RE = re.compile(r"\[\[IMAGE_REF:([^\]\s]+)\]\]")
+_SEAL_IMAGE_DIV_RE = re.compile(
+    r"<div\b[^>]*>\s*<img\b[^>]*\bsrc\s*=\s*([\"'])"
+    r"[^\"']*img_in_seal_box_[^\"']*\1[^>]*>\s*</div>",
+    re.DOTALL | re.IGNORECASE,
+)
 
 
 def marker_for_image(image_id: str) -> str:
@@ -35,6 +40,14 @@ def locate_markers_in_chunks(chunks_meta: Iterable[Mapping[str, Any]]) -> Dict[s
         for image_id in extract_marker_ids(str(meta.get("text") or "")):
             locations.setdefault(image_id, chunk_index)
     return locations
+
+
+def remove_seal_image_divs(markdown_content: str) -> Tuple[str, int]:
+    current = str(markdown_content or "")
+    cleaned, removed = _SEAL_IMAGE_DIV_RE.subn("\n\n", current)
+    if removed:
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned, removed
 
 
 def replace_image_divs_with_markers(
