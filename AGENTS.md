@@ -102,11 +102,13 @@ the proxy helper functions.
   use `bash -ic '<command>'` if the command is not found or may depend on
   `~/.bashrc`. In non-TTY Codex shells, `bash -ic` may print harmless job
   control warnings while still loading the environment correctly.
-- If CodeGraph was installed by the official standalone installer and
-  `codegraph` is still not on `PATH`, locate the current user's executable
-  with `command -v codegraph` or check that user's local install location
-  (commonly `~/.local/bin/codegraph`). Do not hard-code another user's home
-  directory.
+- For this repository's Codex setup, prefer the `nvm`/npm global CodeGraph
+  executable. Verify the path with `bash -ic 'command -v codegraph'`, verify
+  the version with `bash -ic 'codegraph version'`, keep the MCP `command`
+  pointed at that same resolved executable, and remove or demote standalone
+  installer paths such as `~/.local/bin/codegraph` if they shadow the `nvm`
+  path.
+- To refresh the `nvm` CodeGraph installation, run `bash -ic 'npm install -g @colbymchenry/codegraph@latest'`, then re-check both `command -v codegraph` and the MCP config path. Do not hard-code another user's home directory.
 - For network commands such as `git clone`, `git pull`, `curl`, `npm install`,
   or package downloads, first try the normal command. If it times out or appears
   blocked by network access, retry through the proxy helpers from `~/.bashrc`,
@@ -134,8 +136,9 @@ indexes, PATH mismatches, or version/configuration conflicts. Check local state
 first with commands such as `command -v codegraph`, `codegraph version`,
 `codegraph status <path>`, the agent MCP config, and the project's `.codegraph/`
 directory. Resolve common local problems by aligning the MCP command with the
-shell `PATH`, restarting or reinstalling CodeGraph, applying upstream-recommended
-MCP environment variables when relevant, and running `codegraph init`,
+shell `PATH` resolved through `bash -ic`, restarting or reinstalling CodeGraph
+through the same `nvm`/npm environment, applying upstream-recommended MCP
+environment variables when relevant, and running `codegraph init`,
 `codegraph sync`, or `codegraph index` from the repository root as appropriate.
 If local checks do not explain the failure, consult upstream sources such as the
 official README, release notes, and GitHub issues or PRs for the exact error and
