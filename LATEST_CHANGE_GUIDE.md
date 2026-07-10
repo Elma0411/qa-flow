@@ -4,31 +4,30 @@
 
 ## Objective
 
-避免 OCR 生成的印章图片占位 `<div><img ...></div>` 进入后续图片理解、切块和 QA 生成流程。
+收缩 Docker 部署默认宿主机端口，避免 QA Flow 与同机其他容器因 Milvus、etcd、MinIO、分类器等调试端口发生冲突。
 
 ## What Changed
 
-- `app/services/integrated_pipeline/markers.py`
-  - 新增 `remove_seal_image_divs()`，只移除图片路径包含 `img_in_seal_box_` 的 OCR 印章图片 div。
-  - 普通图片 div、图片 marker、VLM 图片理解逻辑保持不变。
-- `app/services/integrated_pipeline/service.py`
-  - 在 OCR 完成后、图片 marker 替换和切块之前清理印章图片 div。
-  - `doc_marker` 进度和 `ocr_raw_entry.integrated_pipeline` 增加 `removed_seal_image_divs`，方便确认本次清理数量。
-- `INTEGRATION_CONTRACT.md`
-  - 记录集成流程中 seal-cleaned markdown 的边界行为。
+- `docker/docker-compose.yml` 和 `docker/docker-compose.debug.yml`
+  - 默认只发布 `QA_FLOW_API_HOST_PORT:12000` 与 `OCR_API_HOST_PORT:11169`。
+  - 不再发布图片分类器、Milvus、Milvus metrics、etcd、MinIO API、MinIO Console 的宿主机端口。
+- `docker/Dockerfile`
+  - `EXPOSE` 元数据收窄为 `11169 12000`，与 Compose 默认发布面保持一致。
+- `docs/docker_compose_parameters.md` 和 `INTEGRATION_CONTRACT.md`
+  - 记录非业务调试端口保持容器内访问，由 healthcheck 与 `/environment-check` 进行内部探测。
 
 ## Expected Behavior
 
-- OCR 原始 markdown 中的印章图片占位不会进入 `marked_markdown`、`pre_split_chunks`、图片理解 prompt 或最终 QA evidence。
-- 非印章图片仍按原流程转换为 `[[IMAGE_REF:...]]` marker，并按原规则做图片理解和位置回填。
-- 如需取消本改动，删除 `service.py` 中对 `remove_seal_image_divs()` 的调用及 `markers.py` 中对应 helper 即可。
+- `docker compose -f docker/docker-compose.yml up -d` 只占用宿主机 `12000` 和 `11169`。
+- 容器内 Milvus、etcd、MinIO、Milvus metrics 和图片分类器继续按原端口启动，主 API 可正常访问它们。
+- 前端的一键环境检测继续通过 `http://localhost:12000/environment-check` 覆盖依赖、模型、Milvus、LLM、OCR、CUDA 和运行目录等检查。
 
 ## Validation
 
 ```bash
 cd /data2/hjk/qa-flow
 
-python -m compileall app qa
-docker exec qa-flow-runtime python -m compileall app qa
-curl http://localhost:12000/test-connection
+docker compose -f docker/docker-compose.yml config
+docker compose -f docker/docker-compose.debug.yml config
+curl http://localhost:12000/environment-check
 ```

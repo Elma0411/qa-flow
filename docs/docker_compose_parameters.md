@@ -1,6 +1,6 @@
 # Docker Compose Parameters
 
-更新时间：2026-07-07（Asia/Shanghai）
+更新时间：2026-07-10（Asia/Shanghai）
 
 本文档说明 `docker/docker-compose.yml` 和
 `docker/docker-compose.debug.yml` 中与运行、接口端口、OCR、图片理解和并发
@@ -39,12 +39,10 @@ docker compose -f docker/docker-compose.yml up -d
 | --- | --- | --- | --- |
 | `QA_FLOW_API_HOST_PORT` | `12000` | `12000` | QA Flow 主 API 端口。 |
 | `OCR_API_HOST_PORT` | `11169` | `11169` | OCR-compatible API 端口。 |
-| `CLASSIFIER_HOST_PORT` | `10488` | `10488` | 图片分类器 API 端口。 |
-| `MILVUS_HOST_PORT` | `12530` | `19530` | Milvus 端口。 |
-| `MILVUS_METRICS_HOST_PORT` | `12091` | `9091` | Milvus metrics/health 端口。 |
-| `ETCD_HOST_PORT` | `12379` | `2379` | etcd 端口。 |
-| `MINIO_API_HOST_PORT` | `12900` | `9000` | MinIO API 端口。 |
-| `MINIO_CONSOLE_HOST_PORT` | `12901` | `9001` | MinIO Console 端口。 |
+
+默认只发布 QA Flow 主 API 和 OCR-compatible API 到宿主机。图片分类器、
+Milvus、etcd、MinIO 和 Milvus metrics 仅在容器内监听，由主 API、健康检查和
+`/environment-check` 通过容器内地址访问。
 
 ## 路径参数
 

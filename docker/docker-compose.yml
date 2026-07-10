@@ -60,12 +60,6 @@ services:
     ports:
       - "${QA_FLOW_API_HOST_PORT:-12000}:12000"
       - "${OCR_API_HOST_PORT:-11169}:11169"
-      - "${CLASSIFIER_HOST_PORT:-10488}:10488"
-      - "${MILVUS_HOST_PORT:-12530}:19530"
-      - "${MILVUS_METRICS_HOST_PORT:-12091}:9091"
-      - "${ETCD_HOST_PORT:-12379}:2379"
-      - "${MINIO_API_HOST_PORT:-12900}:9000"
-      - "${MINIO_CONSOLE_HOST_PORT:-12901}:9001"
     volumes:
       - ../:/app
       - ../runtime_assets:/app/runtime_assets

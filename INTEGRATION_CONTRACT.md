@@ -133,6 +133,9 @@ Docker API ports:
   `12000` and defaults to `12000`.
 - `OCR_API_HOST_PORT` controls the host port mapped to container port `11169`
   and defaults to `11169`.
+- The Docker deployment does not publish classifier, Milvus, etcd, MinIO, or
+  Milvus metrics ports to the host by default. They remain container-local and
+  are probed through the runtime healthcheck and `GET /environment-check`.
 - `QA_FLOW_API_RELOAD` controls whether the mounted QA Flow API runs with
   Uvicorn reload enabled. It defaults to `true` in the formal and debug Docker
   environment so changes under `app/`, `qa/`, and `scripts/` are picked up

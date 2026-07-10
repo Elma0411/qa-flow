@@ -218,7 +218,7 @@ RUN chmod +x /usr/local/bin/check-merged-runtime
 
 WORKDIR /workspace
 
-EXPOSE 11169 10488 12000 19530 9091 2379 2380 9000 9001
+EXPOSE 11169 12000
 VOLUME ["/data/etcd", "/data/minio", "/data/milvus", "/app/runtime_assets", "/app/models"]
 
 CMD ["/bin/bash"]
