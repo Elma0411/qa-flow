@@ -4,39 +4,32 @@
 
 ## Objective
 
-让 QA Flow 的无监督评估可以在前端选择 NLI、抽取式 QA 和 Embedding
-模型，并让新下载的 XLM-R Large、Qwen3 Embedding 模型在标准和集成流水线中真正生效。
+改善 Chunk 溯源“按 QA 看”的分栏布局，让长问题在 QA 列表中正常换行，
+并把主要可用高度留给 QA 详情。
 
 ## What Changed
 
-- `runtime_assets/models/` 新增以下本地模型目录（模型文件不进入 Git）：
-  - `deepset_xlm_roberta_large_squad2`
-  - `xlm_roberta_large_xnli`
-  - `qwen3_embedding_0_6b`
-  - `qwen3_embedding_4b`
-- 新增共享评估模型目录白名单和路径校验。空值、`auto`、`default` 继续使用后端默认模型。
-- `/batch-upload-complete-pipeline-with-evaluation`、
-  `/batch-upload-integrated-document-pipeline` 和 `/eval/jobs` 支持：
-  `faithfulness_nli_model`、`answerability_qa_model`、
-  `coverage_embedding_model`、`unsupervised_batch_size`。
-- 流水线页和独立评测页增加对应下拉框；选择 Qwen3-Embedding-4B 时可将本地评估批量设为 1。
-- Coverage 在 CUDA 上加载 Qwen3 Embedding 时强制 FP16；SentenceTransformers 依赖下限提升到 2.7.0。
+- QA 列表禁止横向滚动，只保留纵向滚动。
+- QA 问题标题最多显示两行；长文本可在任意必要位置换行，不再被全局按钮的
+  单行样式撑宽列表。
+- QA 元信息允许换行，列表项宽度始终限制在列表容器内。
+- 窄容器下 QA 列表高度改为 `160px` 至 `220px` 的受限区域，QA 详情使用
+  剩余高度并独立滚动。
+- 更新三个前端页面的 CSS 资源版本号，避免浏览器沿用旧缓存。
 
 ## Expected Behavior
 
-- 未选择模型时行为保持原状：mDeBERTa / XLM-R Base SQuAD2 / BGE-M3 使用服务默认配置。
-- 选择新模型后，任务状态和独立评测结果会记录实际选择的模型名。
-- 选择的模型目录不存在或不属于对应评估类型时，任务提交立即返回 400，不会排队后才失败。
-- Qwen3-Embedding-0.6B 可作为 BGE-M3 的覆盖度候选；4B 在 11GB 显存上必须小批量运行。
+- 长 QA 问题在列表中最多展示两行，不出现横向滚动条。
+- QA 数量较多时只滚动左侧或上方列表，不拉高整个工作台。
+- 工作台较窄并改为上下布局时，QA 详情仍占据主要空间。
+- 点击列表项和双击打开详情弹窗的交互保持不变。
 
 ## Validation
 
 ```bash
 cd /data2/hjk/qa-flow
-python -m compileall app qa scripts
-python -m unittest tests.test_unsupervised_model_options
-docker compose -f docker/docker-compose.yml config
-docker compose -f docker/docker-compose.debug.yml config
+node --check static/app_query.js
+git diff --check
 curl http://localhost:12000/test-connection
 curl http://localhost:12000/environment-check
 ```

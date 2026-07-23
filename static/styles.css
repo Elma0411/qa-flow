@@ -5304,3 +5304,47 @@ body.qa-workbench-redesign .settings-tab-panel .module-settings-shell {
     overflow: auto;
   }
 }
+
+/* Keep the QA split view compact and prevent long questions from widening it. */
+.chunk-debug-qa-list-box > #chunkDebugQaList {
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.chunk-debug-qa-list .chunk-debug-qa-item {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: normal;
+}
+
+.chunk-debug-qa-item-title {
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.chunk-debug-qa-item-meta {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+}
+
+@container (max-width: 860px) {
+  .chunk-debug-qa-layout {
+    grid-template-rows: clamp(160px, 34%, 220px) minmax(0, 1fr);
+    overflow: hidden;
+  }
+
+  .chunk-debug-qa-list-box,
+  .chunk-debug-qa-detail-box {
+    min-height: 0;
+    height: 100%;
+  }
+}
