@@ -257,8 +257,26 @@
                 faithfulness_nli_model（可空）
                 <select id="faithNliModel">
                   <option value="" selected>auto（服务默认）</option>
-                  <option value="mdeberta_v3_base_xnli_nli_2mil7">mdeberta_v3_base_xnli_nli_2mil7（推荐）</option>
+                  <option value="mdeberta_v3_base_xnli_nli_2mil7">mDeBERTa XNLI（默认）</option>
                   <option value="erlangshen_roberta_110m_nli">erlangshen_roberta_110m_nli</option>
+                  <option value="xlm_roberta_large_xnli">XLM-RoBERTa Large XNLI</option>
+                </select>
+              </label>
+              <label>
+                answerability_qa_model（可空）
+                <select id="answerabilityQaModel">
+                  <option value="" selected>auto（服务默认）</option>
+                  <option value="deepset_xlm_roberta_base_squad2">XLM-RoBERTa Base SQuAD2（默认）</option>
+                  <option value="deepset_xlm_roberta_large_squad2">XLM-RoBERTa Large SQuAD2</option>
+                </select>
+              </label>
+              <label>
+                coverage_embedding_model（可空）
+                <select id="coverageEmbeddingModel">
+                  <option value="" selected>auto（服务默认）</option>
+                  <option value="bge-m3">BGE-M3（默认）</option>
+                  <option value="qwen3_embedding_0_6b">Qwen3-Embedding-0.6B</option>
+                  <option value="qwen3_embedding_4b">Qwen3-Embedding-4B（建议 batch=1）</option>
                 </select>
               </label>
               <label>
@@ -392,6 +410,6 @@
     </aside>
 
     <script src="/ui/ui.js?v=2026-07-03-3"></script>
-    <script src="/ui/eval.js?v=2026-04-16-2"></script>
+    <script src="/ui/eval.js?v=2026-07-23-1"></script>
   </body>
 </html>

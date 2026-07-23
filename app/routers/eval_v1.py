@@ -38,6 +38,7 @@ from app.services.eval_jobs import (
 )
 from app.services.eval_jobs import evaluate_dataset_job, ingest_scored_items_to_milvus, read_scored_items_page
 from app.services.gpu import admit_gpu_job, release_gpu_job
+from app.services.unsupervised_evaluation import validate_evaluation_model_name
 
 
 router = APIRouter(prefix="/eval", tags=["eval"])
@@ -188,6 +189,8 @@ async def create_eval_job(
     file_ranges_json: Optional[str] = Form(None),
     unsupervised_batch_size: Optional[int] = Form(None),
     faithfulness_nli_model: Optional[str] = Form(None),
+    answerability_qa_model: Optional[str] = Form(None),
+    coverage_embedding_model: Optional[str] = Form(None),
     # faithfulness hypothesis overrides (optional)
     faithfulness_hypothesis_mode: Optional[str] = Form(None),
     faithfulness_hypothesis_timeout: Optional[int] = Form(None),
@@ -250,14 +253,21 @@ async def create_eval_job(
             detail=f"映射字段不存在于共享列中: {missing_required}",
         )
 
-    resolved_nli_model = (str(faithfulness_nli_model or "").strip() or "").strip()
-    if resolved_nli_model and resolved_nli_model.lower() not in {"auto", "default"}:
-        allowed = {"erlangshen_roberta_110m_nli", "mdeberta_v3_base_xnli_nli_2mil7"}
-        if resolved_nli_model not in allowed:
-            raise HTTPException(
-                status_code=400,
-                detail=f"faithfulness_nli_model 必须为空/auto 或以下之一：{sorted(allowed)}",
-            )
+    try:
+        resolved_nli_model = validate_evaluation_model_name(
+            faithfulness_nli_model,
+            kind="faithfulness_nli",
+        )
+        resolved_qa_model = validate_evaluation_model_name(
+            answerability_qa_model,
+            kind="answerability_qa",
+        )
+        resolved_coverage_model = validate_evaluation_model_name(
+            coverage_embedding_model,
+            kind="coverage_embedding",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     job = create_job(
         "eval",
@@ -287,6 +297,8 @@ async def create_eval_job(
             ],
             "unsupervised_batch_size": unsupervised_batch_size,
             "faithfulness_nli_model": resolved_nli_model,
+            "answerability_qa_model": resolved_qa_model,
+            "coverage_embedding_model": resolved_coverage_model,
             "faithfulness_hypothesis_mode": faithfulness_hypothesis_mode,
             "faithfulness_hypothesis_timeout": faithfulness_hypothesis_timeout,
             "faithfulness_hypothesis_max_retries": faithfulness_hypothesis_max_retries,
@@ -340,6 +352,8 @@ async def create_eval_job(
                 sheet_name=sheet_name,
                 unsupervised_batch_size=unsupervised_batch_size,
                 faithfulness_nli_model=resolved_nli_model,
+                answerability_qa_model=resolved_qa_model,
+                coverage_embedding_model=resolved_coverage_model,
                 faithfulness_hypothesis_mode=faithfulness_hypothesis_mode,
                 faithfulness_hypothesis_timeout=faithfulness_hypothesis_timeout,
                 faithfulness_hypothesis_max_retries=faithfulness_hypothesis_max_retries,

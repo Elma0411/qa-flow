@@ -1083,6 +1083,16 @@
     const fm = ($("faithNliModel") && $("faithNliModel").value ? String($("faithNliModel").value).trim() : "");
     if (fm) fd.append("faithfulness_nli_model", fm);
 
+    const qm = ($("answerabilityQaModel") && $("answerabilityQaModel").value
+      ? String($("answerabilityQaModel").value).trim()
+      : "");
+    if (qm) fd.append("answerability_qa_model", qm);
+
+    const cm = ($("coverageEmbeddingModel") && $("coverageEmbeddingModel").value
+      ? String($("coverageEmbeddingModel").value).trim()
+      : "");
+    if (cm) fd.append("coverage_embedding_model", cm);
+
     const hm = ($("hypMode").value || "").trim();
     const ht = ($("hypTimeout").value || "").trim();
     const hr = ($("hypRetries").value || "").trim();

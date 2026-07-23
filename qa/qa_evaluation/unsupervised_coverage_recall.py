@@ -269,7 +269,18 @@ def _get_embed_model(model_path: Optional[str], *, device: Optional[str]) -> Tup
             return cached, resolved_path
         if not os.path.exists(resolved_path):
             raise RuntimeError(f"Coverage Recall embedding 模型路径不存在: {resolved_path}")
-        model = SentenceTransformer(resolved_path, device=resolved_device)
+        model_kwargs: Dict[str, Any] = {}
+        model_dir_name = os.path.basename(os.path.normpath(resolved_path)).lower()
+        if resolved_device.startswith("cuda") and model_dir_name.startswith("qwen3_embedding_"):
+            model_kwargs["torch_dtype"] = torch.float16
+        if model_kwargs:
+            model = SentenceTransformer(
+                resolved_path,
+                device=resolved_device,
+                model_kwargs=model_kwargs,
+            )
+        else:
+            model = SentenceTransformer(resolved_path, device=resolved_device)
         _MODEL_CACHE[cache_key] = model
         return model, resolved_path
 

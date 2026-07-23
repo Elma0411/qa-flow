@@ -778,6 +778,37 @@
             <small>llm 使用远程模型评估；local 使用本地指标；unsupervised_f1 会执行无监督套件。</small>
           </label>
           <label>
+            无监督评估批量（unsupervised_batch_size）
+            <input type="number" id="unsupervisedBatchSize" min="1" max="512" step="1" placeholder="留空使用后端默认" />
+            <small>选择 Qwen3-Embedding-4B 时建议填 1。</small>
+          </label>
+          <label>
+            忠实度 NLI 模型（faithfulness_nli_model）
+            <select id="faithfulnessNliModel">
+              <option value="" selected>auto（服务默认）</option>
+              <option value="mdeberta_v3_base_xnli_nli_2mil7">mDeBERTa XNLI（默认）</option>
+              <option value="erlangshen_roberta_110m_nli">Erlangshen RoBERTa NLI</option>
+              <option value="xlm_roberta_large_xnli">XLM-RoBERTa Large XNLI</option>
+            </select>
+          </label>
+          <label>
+            可回答性 QA 模型（answerability_qa_model）
+            <select id="answerabilityQaModel">
+              <option value="" selected>auto（服务默认）</option>
+              <option value="deepset_xlm_roberta_base_squad2">XLM-RoBERTa Base SQuAD2（默认）</option>
+              <option value="deepset_xlm_roberta_large_squad2">XLM-RoBERTa Large SQuAD2</option>
+            </select>
+          </label>
+          <label>
+            覆盖度 Embedding 模型（coverage_embedding_model）
+            <select id="coverageEmbeddingModel">
+              <option value="" selected>auto（服务默认）</option>
+              <option value="bge-m3">BGE-M3（默认）</option>
+              <option value="qwen3_embedding_0_6b">Qwen3-Embedding-0.6B</option>
+              <option value="qwen3_embedding_4b">Qwen3-Embedding-4B（建议 batch=1）</option>
+            </select>
+          </label>
+          <label>
             忠实度陈述句生成（faithfulness_hypothesis_mode）
             <select id="faithfulnessHypothesisMode">
               <option value="llm" selected>llm（推荐）</option>
@@ -1141,7 +1172,7 @@
     <script src="/ui/app_config.js?v=2026-06-25-1"></script>
     <script src="/ui/app_render.js?v=2026-07-03-1"></script>
     <script src="/ui/app_query.js?v=2026-07-05-1"></script>
-    <script src="/ui/app.js?v=2026-07-07-1"></script>
+    <script src="/ui/app.js?v=2026-07-23-1"></script>
     <script>
       (function () {
         if (window.__QA_UI_APPJS_READY__) return;

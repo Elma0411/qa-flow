@@ -62,6 +62,7 @@ from app.services.storage import (
 from app.services.unsupervised_evaluation import (
     UNSUPERVISED_EVALUATION_AVAILABLE,
     execute_unsupervised_suite_blocking,
+    resolve_evaluation_model_path,
 )
 
 
@@ -182,6 +183,29 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
     except Exception:
         faithfulness_hypothesis_max_concurrency = 8
     faithfulness_hypothesis_max_concurrency = max(1, faithfulness_hypothesis_max_concurrency)
+    try:
+        unsupervised_batch_size = (
+            max(1, min(512, int(job_context["unsupervised_batch_size"])))
+            if job_context.get("unsupervised_batch_size") is not None
+            else None
+        )
+    except Exception:
+        unsupervised_batch_size = None
+    faithfulness_nli_model = str(job_context.get("faithfulness_nli_model") or "").strip()
+    answerability_qa_model = str(job_context.get("answerability_qa_model") or "").strip()
+    coverage_embedding_model = str(job_context.get("coverage_embedding_model") or "").strip()
+    faith_model_path = resolve_evaluation_model_path(
+        faithfulness_nli_model,
+        kind="faithfulness_nli",
+    )
+    qa_model_path = resolve_evaluation_model_path(
+        answerability_qa_model,
+        kind="answerability_qa",
+    )
+    coverage_model_path = resolve_evaluation_model_path(
+        coverage_embedding_model,
+        kind="coverage_embedding",
+    )
     filter_by_threshold: bool = job_context["filter_by_threshold"]
     score_threshold: float = job_context["score_threshold"]
     save_mode: str = job_context["save_mode"]
@@ -1007,12 +1031,19 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                                 execute_unsupervised_suite_blocking,
                                 qa_data,
                                 only_primary=True,
+                                faith_model_path=faith_model_path,
+                                qa_model_path=qa_model_path,
+                                coverage_embed_model_path=coverage_model_path,
                                 hypothesis_mode=faithfulness_hypothesis_mode,
                                 llm_api_key=llm_config.get("api_key"),
                                 llm_base_url=llm_config.get("base_url"),
                                 llm_model=llm_config.get("model"),
                                 llm_max_retries=llm_config.get("max_retries"),
                                 llm_max_concurrency=faithfulness_hypothesis_max_concurrency,
+                                faith_batch_size=unsupervised_batch_size,
+                                qa_batch_size=unsupervised_batch_size,
+                                coverage_embed_batch_size=unsupervised_batch_size,
+                                fluency_batch_size=unsupervised_batch_size,
                                 gpu_job_id=task_id,
                             )
                             unsupervised_duration = time.time() - unsup_start

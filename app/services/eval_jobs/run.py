@@ -8,7 +8,6 @@ import time
 from typing import Any, Dict, List, Optional
 
 from app.core.config import AUTO_EVAL_MAX_ITEMS_PER_REQUEST, CONFIG, LOCAL_EVALUATION_METRICS
-from app.core.runtime_paths import resolve_model_reference
 from app.core.logger import logger
 from .dataset import (
     extract_canonical_rows,
@@ -26,6 +25,7 @@ from app.services.evaluation import execute_local_evaluation_blocking
 from app.services.unsupervised_evaluation import (
     UNSUPERVISED_EVALUATION_AVAILABLE,
     execute_unsupervised_suite_blocking,
+    resolve_evaluation_model_path,
 )
 
 
@@ -58,6 +58,8 @@ def evaluate_dataset_job(
     sheet_name: Optional[str],
     unsupervised_batch_size: Optional[int] = None,
     faithfulness_nli_model: Optional[str] = None,
+    answerability_qa_model: Optional[str] = None,
+    coverage_embedding_model: Optional[str] = None,
     faithfulness_hypothesis_mode: Optional[str] = None,
     faithfulness_hypothesis_timeout: Optional[int] = None,
     faithfulness_hypothesis_max_retries: Optional[int] = None,
@@ -209,12 +211,18 @@ def evaluate_dataset_job(
             if faithfulness_hypothesis_max_concurrency is not None
             else unsup_cfg.get("hypothesis_max_concurrency")
         )
-        faith_model_path: Optional[str] = None
-        raw_faith_model = str(faithfulness_nli_model or "").strip()
-        if raw_faith_model and raw_faith_model.lower() not in {"auto", "default"}:
-            faith_model_path = resolve_model_reference(raw_faith_model)
-            if not os.path.exists(faith_model_path):
-                raise ValueError(f"faithfulness_nli_model 不存在: {faith_model_path}")
+        faith_model_path = resolve_evaluation_model_path(
+            faithfulness_nli_model,
+            kind="faithfulness_nli",
+        )
+        qa_model_path = resolve_evaluation_model_path(
+            answerability_qa_model,
+            kind="answerability_qa",
+        )
+        coverage_model_path = resolve_evaluation_model_path(
+            coverage_embedding_model,
+            kind="coverage_embedding",
+        )
         hypothesis_mode = faithfulness_hypothesis_mode or unsup_cfg.get("hypothesis_mode")
         llm_api_key = unsup_cfg.get("hypothesis_api_key") or CONFIG.get("api_key")
         llm_base_url = unsup_cfg.get("hypothesis_base_url") or CONFIG.get("base_url")
@@ -233,6 +241,8 @@ def evaluate_dataset_job(
                 only_primary=True,
                 prune_item_details=False,
                 faith_model_path=faith_model_path,
+                qa_model_path=qa_model_path,
+                coverage_embed_model_path=coverage_model_path,
                 hypothesis_mode=hypothesis_mode,
                 llm_api_key=llm_api_key,
                 llm_base_url=llm_base_url,
@@ -380,6 +390,11 @@ def evaluate_dataset_job(
             "unsupervised_batch_size": unsupervised_batch_size,
         },
         "unsupervised": {
+            "models": {
+                "faithfulness_nli_model": str(faithfulness_nli_model or "") or "auto",
+                "answerability_qa_model": str(answerability_qa_model or "") or "auto",
+                "coverage_embedding_model": str(coverage_embedding_model or "") or "auto",
+            },
             "scores": minimal_summary_line["scores"],
             "details": unsup_summary,
         },

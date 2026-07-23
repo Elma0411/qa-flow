@@ -358,8 +358,10 @@ Required groups:
   `chunking_manual_split_points`.
 - Evaluation: `include_evaluation`, `include_unsupervised_evaluation`,
   `evaluation_method`, `faithfulness_hypothesis_mode`,
-  `faithfulness_hypothesis_max_concurrency`, `filter_by_threshold`,
-  `score_threshold`, `criteria_list`, `eval_max_concurrency`.
+  `faithfulness_hypothesis_max_concurrency`, `unsupervised_batch_size`,
+  `faithfulness_nli_model`, `answerability_qa_model`,
+  `coverage_embedding_model`, `filter_by_threshold`, `score_threshold`,
+  `criteria_list`, `eval_max_concurrency`.
 - Storage: `save_mode`, `enable_vector_storage`, `enable_chunk_storage`,
   `chunk_storage_fail_fast`.
 - Runtime: `llm_config`, `max_concurrency`, `chunk_max_concurrency`,
@@ -378,6 +380,21 @@ Rules:
 - New route parameters that affect QA generation, chunking, evaluation,
   storage, or runtime behavior must be added to both the route status payload
   and `job_context` when they need to be visible after scheduling.
+- The three model selection fields are optional model directory names. Empty,
+  `auto`, and `default` mean the service-configured default. Non-empty values
+  are validated against the shared catalog before a task is scheduled:
+  `faithfulness_nli_model` selects the NLI classifier,
+  `answerability_qa_model` selects the extractive SQuAD2 model, and
+  `coverage_embedding_model` selects the SentenceTransformers embedding
+  model. The selected names must resolve under `APP_MODELS_DIR`.
+- `unsupervised_batch_size`, when present, is clamped to 1..512 and is passed
+  to all local unsupervised metric runners. Qwen3-Embedding-4B deployments
+  on 11GB GPUs should use 1.
+- Supported local model directories are:
+  `mdeberta_v3_base_xnli_nli_2mil7`, `erlangshen_roberta_110m_nli`,
+  `xlm_roberta_large_xnli`, `deepset_xlm_roberta_base_squad2`,
+  `deepset_xlm_roberta_large_squad2`, `bge-m3`,
+  `qwen3_embedding_0_6b`, and `qwen3_embedding_4b`.
 - Standard and integrated pipeline task status payloads include task-level
   `created_at` and `updated_at`. `created_at` is set once when the task is
   accepted; `updated_at` changes on status updates.
@@ -429,6 +446,29 @@ Rules:
   requested main-QA total.
 - `doc_handoff` means document preprocessing has produced `file_contents` /
   `pre_split_chunks` for QA; it is not the terminal state of the full pipeline.
+
+## Contract D2: Dataset Evaluation Model Selection
+
+Producer:
+
+- `POST /eval/jobs`
+- `static/eval.html` and `static/eval.js`
+
+Consumer:
+
+- `app.services.eval_jobs.evaluate_dataset_job`
+- `app.services.unsupervised_evaluation.execute_unsupervised_suite_blocking`
+
+Optional request fields:
+
+- `faithfulness_nli_model`
+- `answerability_qa_model`
+- `coverage_embedding_model`
+- `unsupervised_batch_size`
+
+The job result stores the normalized model names under
+`unsupervised.models`. This records the requested override (`auto` when no
+override was supplied); it does not copy model weights into job artifacts.
 
 ## Contract D1: Standalone Document Job Status
 

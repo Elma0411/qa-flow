@@ -560,12 +560,22 @@ function setupEvaluationUI() {
   const filterEl = $('#filterByThreshold');
   const thresholdEl = $('#scoreThreshold');
   const evalMethodEl = $('#evaluationMethod');
+  const unsupervisedBatchSizeEl = $('#unsupervisedBatchSize');
+  const faithfulnessNliModelEl = $('#faithfulnessNliModel');
+  const answerabilityQaModelEl = $('#answerabilityQaModel');
+  const coverageEmbeddingModelEl = $('#coverageEmbeddingModel');
   const hypothesisModeEl = $('#faithfulnessHypothesisMode');
   const hypothesisConcurrencyEl = $('#faithfulnessHypothesisMaxConcurrency');
-  const hypothesisModeRow = hypothesisModeEl ? hypothesisModeEl.closest('label') : null;
-  const hypothesisConcurrencyRow = hypothesisConcurrencyEl
-    ? hypothesisConcurrencyEl.closest('label')
-    : null;
+  const unsupervisedRows = [
+    unsupervisedBatchSizeEl,
+    faithfulnessNliModelEl,
+    answerabilityQaModelEl,
+    coverageEmbeddingModelEl,
+    hypothesisModeEl,
+    hypothesisConcurrencyEl,
+  ]
+    .map((el) => (el ? el.closest('label') : null))
+    .filter(Boolean);
 
   function sync() {
     const enabled = !!includeEl?.checked;
@@ -575,10 +585,9 @@ function setupEvaluationUI() {
     if (filterEl) filterEl.disabled = !enabled;
     if (thresholdEl) thresholdEl.disabled = !enabled;
     if (evalMethodEl) evalMethodEl.disabled = !enabled;
-    if (hypothesisModeRow) hypothesisModeRow.style.display = useUnsupervisedSuite ? '' : 'none';
-    if (hypothesisConcurrencyRow) {
-      hypothesisConcurrencyRow.style.display = useUnsupervisedSuite ? '' : 'none';
-    }
+    unsupervisedRows.forEach((row) => {
+      row.style.display = useUnsupervisedSuite ? '' : 'none';
+    });
   }
 
   if (includeEl) includeEl.addEventListener('change', sync);
@@ -1573,6 +1582,10 @@ function setupPipelineModuleConsole() {
         nodes: [
           { field: 'includeEvaluation' },
           { field: 'evaluationMethod' },
+          { field: 'unsupervisedBatchSize' },
+          { field: 'faithfulnessNliModel' },
+          { field: 'answerabilityQaModel' },
+          { field: 'coverageEmbeddingModel' },
           { field: 'faithfulnessHypothesisMode' },
           { field: 'faithfulnessHypothesisMaxConcurrency' },
           { field: 'filterByThreshold' },
@@ -2341,6 +2354,10 @@ async function handlePipelineSubmit(e) {
     const fewShotExamples = collectFewShotExamples();
     const includeEvaluation = $('#includeEvaluation')?.checked;
     const evaluationMethod = $('#evaluationMethod')?.value || 'llm';
+    const unsupervisedBatchSize = $('#unsupervisedBatchSize')?.value || '';
+    const faithfulnessNliModel = $('#faithfulnessNliModel')?.value || '';
+    const answerabilityQaModel = $('#answerabilityQaModel')?.value || '';
+    const coverageEmbeddingModel = $('#coverageEmbeddingModel')?.value || '';
     const faithfulnessHypothesisMode = $('#faithfulnessHypothesisMode')?.value || 'llm';
     const faithfulnessHypothesisMaxConcurrency =
       $('#faithfulnessHypothesisMaxConcurrency')?.value || '';
@@ -2433,6 +2450,18 @@ async function handlePipelineSubmit(e) {
     formData.append('include_evaluation', includeEvaluation ? 'true' : 'false');
     formData.append('evaluation_method', evaluationMethod);
     if (evaluationMethod === 'unsupervised_f1') {
+      if (String(unsupervisedBatchSize).trim()) {
+        formData.append('unsupervised_batch_size', String(unsupervisedBatchSize).trim());
+      }
+      if (String(faithfulnessNliModel).trim()) {
+        formData.append('faithfulness_nli_model', String(faithfulnessNliModel).trim());
+      }
+      if (String(answerabilityQaModel).trim()) {
+        formData.append('answerability_qa_model', String(answerabilityQaModel).trim());
+      }
+      if (String(coverageEmbeddingModel).trim()) {
+        formData.append('coverage_embedding_model', String(coverageEmbeddingModel).trim());
+      }
       formData.append('faithfulness_hypothesis_mode', faithfulnessHypothesisMode);
       if (String(faithfulnessHypothesisMaxConcurrency).trim()) {
         formData.append(

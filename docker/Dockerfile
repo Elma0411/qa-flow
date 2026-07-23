@@ -157,7 +157,7 @@ RUN python -m pip install \
 # These packages declare Torch dependencies. Install their package code now,
 # then satisfy Torch/TorchVision in the final fixed layer below.
 RUN python -m pip install --no-deps \
-        "sentence-transformers>=2.2.0" \
+        "sentence-transformers>=2.7.0" \
         "bert-score>=0.3.13"
 
 # Keep dw's install order: install project Python dependencies first, then

@@ -1,33 +1,42 @@
-# Latest Change Guide
+# 最新变更指南
 
-更新时间：2026-07-10（Asia/Shanghai）
+更新时间：2026-07-23（Asia/Shanghai）
 
 ## Objective
 
-收缩 Docker 部署默认宿主机端口，避免 QA Flow 与同机其他容器因 Milvus、etcd、MinIO、分类器等调试端口发生冲突。
+让 QA Flow 的无监督评估可以在前端选择 NLI、抽取式 QA 和 Embedding
+模型，并让新下载的 XLM-R Large、Qwen3 Embedding 模型在标准和集成流水线中真正生效。
 
 ## What Changed
 
-- `docker/docker-compose.yml` 和 `docker/docker-compose.debug.yml`
-  - 默认只发布 `QA_FLOW_API_HOST_PORT:12000` 与 `OCR_API_HOST_PORT:11169`。
-  - 不再发布图片分类器、Milvus、Milvus metrics、etcd、MinIO API、MinIO Console 的宿主机端口。
-- `docker/Dockerfile`
-  - `EXPOSE` 元数据收窄为 `11169 12000`，与 Compose 默认发布面保持一致。
-- `docs/docker_compose_parameters.md` 和 `INTEGRATION_CONTRACT.md`
-  - 记录非业务调试端口保持容器内访问，由 healthcheck 与 `/environment-check` 进行内部探测。
+- `runtime_assets/models/` 新增以下本地模型目录（模型文件不进入 Git）：
+  - `deepset_xlm_roberta_large_squad2`
+  - `xlm_roberta_large_xnli`
+  - `qwen3_embedding_0_6b`
+  - `qwen3_embedding_4b`
+- 新增共享评估模型目录白名单和路径校验。空值、`auto`、`default` 继续使用后端默认模型。
+- `/batch-upload-complete-pipeline-with-evaluation`、
+  `/batch-upload-integrated-document-pipeline` 和 `/eval/jobs` 支持：
+  `faithfulness_nli_model`、`answerability_qa_model`、
+  `coverage_embedding_model`、`unsupervised_batch_size`。
+- 流水线页和独立评测页增加对应下拉框；选择 Qwen3-Embedding-4B 时可将本地评估批量设为 1。
+- Coverage 在 CUDA 上加载 Qwen3 Embedding 时强制 FP16；SentenceTransformers 依赖下限提升到 2.7.0。
 
 ## Expected Behavior
 
-- `docker compose -f docker/docker-compose.yml up -d` 只占用宿主机 `12000` 和 `11169`。
-- 容器内 Milvus、etcd、MinIO、Milvus metrics 和图片分类器继续按原端口启动，主 API 可正常访问它们。
-- 前端的一键环境检测继续通过 `http://localhost:12000/environment-check` 覆盖依赖、模型、Milvus、LLM、OCR、CUDA 和运行目录等检查。
+- 未选择模型时行为保持原状：mDeBERTa / XLM-R Base SQuAD2 / BGE-M3 使用服务默认配置。
+- 选择新模型后，任务状态和独立评测结果会记录实际选择的模型名。
+- 选择的模型目录不存在或不属于对应评估类型时，任务提交立即返回 400，不会排队后才失败。
+- Qwen3-Embedding-0.6B 可作为 BGE-M3 的覆盖度候选；4B 在 11GB 显存上必须小批量运行。
 
 ## Validation
 
 ```bash
 cd /data2/hjk/qa-flow
-
+python -m compileall app qa scripts
+python -m unittest tests.test_unsupervised_model_options
 docker compose -f docker/docker-compose.yml config
 docker compose -f docker/docker-compose.debug.yml config
+curl http://localhost:12000/test-connection
 curl http://localhost:12000/environment-check
 ```

@@ -29,6 +29,7 @@ from app.services.pipeline_state import (
     upsert_pipeline_task_status,
 )
 from app.services.storage import resolve_batch_concurrency
+from app.services.unsupervised_evaluation import validate_evaluation_model_name
 
 router = APIRouter()
 _LOCAL_EVAL_COMPAT_FLAG = True
@@ -339,6 +340,22 @@ async def batch_upload_integrated_document_pipeline(
             "'faithfulness'(忠实度) / 'answerability'(可回答性) / 'unsupervised_f1'(无监督F1)"
         ),
     ),
+    unsupervised_batch_size: Optional[int] = Form(
+        None,
+        description="无监督评估本地模型批量；Qwen3-Embedding-4B 在 11GB 显存建议填 1",
+    ),
+    faithfulness_nli_model: Optional[str] = Form(
+        None,
+        description="忠实度 NLI 模型名；为空使用服务默认",
+    ),
+    answerability_qa_model: Optional[str] = Form(
+        None,
+        description="可回答性抽取式 QA 模型名；为空使用服务默认",
+    ),
+    coverage_embedding_model: Optional[str] = Form(
+        None,
+        description="覆盖度 Embedding 模型名；为空使用服务默认",
+    ),
     faithfulness_hypothesis_mode: str = Form(
         "llm",
         description="忠实度评估(QA→陈述句)生成方式: 'llm'=用大模型改写（仅 faithfulness 生效）",
@@ -567,6 +584,23 @@ async def batch_upload_integrated_document_pipeline(
         faithfulness_hypothesis_max_concurrency = max(
             1, int(faithfulness_hypothesis_max_concurrency or 1)
         )
+        try:
+            resolved_nli_model = validate_evaluation_model_name(
+                faithfulness_nli_model,
+                kind="faithfulness_nli",
+            )
+            resolved_qa_model = validate_evaluation_model_name(
+                answerability_qa_model,
+                kind="answerability_qa",
+            )
+            resolved_coverage_model = validate_evaluation_model_name(
+                coverage_embedding_model,
+                kind="coverage_embedding",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if unsupervised_batch_size is not None:
+            unsupervised_batch_size = max(1, min(512, int(unsupervised_batch_size)))
         parsed_few_shot_examples = parse_few_shot_examples(few_shot_examples)
         if include_evaluation and evaluation_method in ("faithfulness", "answerability", "unsupervised_f1"):
             include_unsupervised_evaluation = True
@@ -666,6 +700,10 @@ async def batch_upload_integrated_document_pipeline(
             "include_evaluation": include_evaluation,
             "include_unsupervised_evaluation": include_unsupervised_evaluation,
             "evaluation_method": evaluation_method,
+            "unsupervised_batch_size": unsupervised_batch_size,
+            "faithfulness_nli_model": resolved_nli_model,
+            "answerability_qa_model": resolved_qa_model,
+            "coverage_embedding_model": resolved_coverage_model,
             "faithfulness_hypothesis_mode": faithfulness_hypothesis_mode,
             "faithfulness_hypothesis_max_concurrency": faithfulness_hypothesis_max_concurrency,
             "filter_by_threshold": filter_by_threshold,
@@ -764,6 +802,10 @@ async def batch_upload_integrated_document_pipeline(
             "include_evaluation": include_evaluation,
             "include_unsupervised_evaluation": include_unsupervised_evaluation,
             "evaluation_method": evaluation_method,
+            "unsupervised_batch_size": unsupervised_batch_size,
+            "faithfulness_nli_model": resolved_nli_model,
+            "answerability_qa_model": resolved_qa_model,
+            "coverage_embedding_model": resolved_coverage_model,
             "faithfulness_hypothesis_mode": faithfulness_hypothesis_mode,
             "faithfulness_hypothesis_max_concurrency": faithfulness_hypothesis_max_concurrency,
             "filter_by_threshold": filter_by_threshold,

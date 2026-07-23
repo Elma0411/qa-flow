@@ -7,6 +7,12 @@ from .runtime import (
     UNSUPERVISED_EVALUATION_RUNTIME,
     UnsupervisedEvaluationRuntime,
 )
+from .model_options import (
+    EVALUATION_MODEL_OPTIONS,
+    normalize_evaluation_model_name,
+    resolve_evaluation_model_path,
+    validate_evaluation_model_name,
+)
 from .service import (
     execute_unsupervised_answerability_blocking,
     execute_unsupervised_coverage_recall_blocking,
@@ -45,6 +51,10 @@ def __getattr__(name):
 __all__ = [
     "UNSUPERVISED_EVALUATION_RUNTIME",
     "UnsupervisedEvaluationRuntime",
+    "EVALUATION_MODEL_OPTIONS",
+    "normalize_evaluation_model_name",
+    "resolve_evaluation_model_path",
+    "validate_evaluation_model_name",
     "execute_unsupervised_answerability_blocking",
     "execute_unsupervised_coverage_recall_blocking",
     "execute_unsupervised_faithfulness_blocking",
