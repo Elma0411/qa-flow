@@ -3,6 +3,31 @@
 ## Project Structure & Module Organization
 The FastAPI application factory lives in `app/main.py`; `api_server.py` and `scripts/start_api.py` are thin launchers only. Domain-specific processors and batch utilities live under `qa/` (use the `qa` package facade for the full text-to-QA pipeline and `qa.qa_evaluation` for scoring). Persistent artifacts and vector database volumes are isolated under `runtime_assets/`, `milvus_data/`, and `volumes/`, while `static/` hosts demo assets. Docker deployment assets live under `docker/` and should remain aligned with the QA Flow API at `http://localhost:12000` and the QA Flow OCR API at `http://localhost:11169`.
 
+## Repository Documentation Map
+The repository has several Markdown documents with different audiences and
+authority. Read `AGENTS.md` first when working as an agent, then consult the
+other documents according to the change being made. Keep these documents
+complementary; do not copy a field contract into the README or turn a latest
+change note into a second architecture guide.
+
+| Document | Purpose | Read or update it when |
+| --- | --- | --- |
+| `AGENTS.md` | Standing repository rules for agents and developers: structure, coding conventions, Docker-first QA Flow verification, CodeGraph, ResearchStudio, security, collaboration, and commit/push expectations. | Read before any task. Update only when a repository-wide rule or workflow changes. |
+| `AI_PROGRAMMING_GUIDE.md` | High-level engineering protocol: public facades, module ownership, canonical OCR-image-QA flow, compatibility boundaries, runtime/deployment rules, and validation checklist. | Use for architecture, ownership, refactoring, or runtime design. Update when high-level engineering rules or ownership change. |
+| `CONTEXT.md` | Shared vocabulary for discussions and design reviews, including processing stages, service capabilities, assembly layer, public facades, stateful capabilities, boundary changes, and contract tests. | Use when naming or explaining project concepts. Update when the project's shared terminology changes; it is not an implementation checklist. |
+| `INTEGRATION_CONTRACT.md` | Field-level contract for handoffs between document/OCR/image processing and QA generation/evaluation/storage, including canonical flows, endpoint/runtime fields, required/optional values, and failure semantics. | Read before a shared-boundary change. Update it and focused contract tests whenever a producer/consumer field, endpoint contract, runtime dependency, persisted shape, or error/status meaning changes. |
+| `README.md` | User-facing QA Flow usage guide: installation, Docker and local startup, addresses, supported API parameters/endpoints, runtime configuration, outputs, and current public workflow. | Use for operating or integrating with QA Flow. Update when public commands, endpoints, parameters, configuration, or user-visible behavior changes. |
+| `LATEST_CHANGE_GUIDE.md` | Current handoff for the newest substantive change: objective, changed logic/files, expected behavior, and practical validation commands. It is intentionally not a cumulative changelog. | Replace its contents after each substantive implementation or operational change so it describes the newest effective state. Leave it unchanged for purely explanatory work. |
+| `SLIMMING_FINAL_HANDOFF.md` | Consolidated deployment handoff for the completed code-slimming initiative: added/overwritten files, minimal server upload sets, migration steps, and artifacts that do not need re-uploading. | Use for slimming-initiative deployment and server synchronization. Update only when the consolidated slimming handoff materially changes; do not use it as the current architecture or routine change log. |
+
+The normal reading path is: `AGENTS.md` -> `AI_PROGRAMMING_GUIDE.md` and
+`CONTEXT.md` -> `INTEGRATION_CONTRACT.md` for boundary work -> `README.md` for
+user-facing operation -> `LATEST_CHANGE_GUIDE.md` for the newest handoff.
+Consult `SLIMMING_FINAL_HANDOFF.md` separately when deploying or auditing the
+slimming initiative. A document's role does not override a more specific
+contract: field-level behavior belongs in `INTEGRATION_CONTRACT.md`, while
+standing agent rules belong in this file.
+
 ## Build, Test, and Development Commands
 - `python -m venv .venv && .venv\Scripts\activate` (or `source .venv/bin/activate`) keeps Milvus and FastAPI deps isolated.
 - `pip install -r requirements.txt` installs the API server plus QA evaluation models.
@@ -171,6 +196,80 @@ working on QA Flow.
   `projectPath: "/data2/hjk/qa-flow/external_repos"`. Use the normal QA Flow
   repository CodeGraph project for first-party code.
 
+## ResearchStudio Idea and Experiment Workflow
+`ResearchStudio/` is a first-class, long-lived workspace inside the QA Flow
+folder for research ideation and early experiments. It is a separate Git
+checkout with its own virtual environment, while remaining visible beside
+`app/`, `qa/`, and the other QA Flow directories. It is intentionally separate
+from QA Flow source code and from `external_repos/`: ResearchStudio skills are
+expected to be called frequently, while `external_repos/` is reserved for
+temporary or occasional third-party repositories that we study for
+implementation ideas. ResearchStudio is not part of the QA Flow runtime or
+deployment surface. The current checkout was installed with the Idea bundle for Codex
+(`idea-spark`, `paper-search`, and `scoop-check`) in its own `.venv` using
+Python 3.9. The Reel bundle is not installed in this environment; it requires
+Python 3.10 or newer and should get a separate environment if it is needed
+later.
+
+### ResearchStudio artifacts
+- ResearchStudio skills write run state and idea artifacts to the run directory
+  passed to them. Following the bundled IdeaSpark convention and starting from
+  `ResearchStudio/`, the default location is
+  `ResearchStudio/ideaspark_run/<topic-slug>/`, containing phase JSON, Markdown,
+  LaTeX, and rendered idea-card outputs.
+- Retrieval and full-text caches may be kept outside the repository under
+  `~/.cache/ideaspark/`. Set the documented cache environment variables if a
+  different location is required.
+- Keep these exploratory artifacts in `ResearchStudio/` until an idea is
+  validated. Do not place them in `app/`, `qa/`, `runtime_assets/`, or Docker
+  volumes merely because the QA Flow folder is open.
+
+### Separate the two execution contexts
+- Use the ResearchStudio virtual environment for literature search, idea
+  generation, novelty checks, and experiments that do not call QA Flow
+  services. These activities normally do not need Docker, Milvus, the QA Flow
+  API, or the OCR API.
+- Keep the existing QA Flow application, pipeline, OCR, Milvus, integrated
+  endpoint, and evaluator feature tests on the Docker runtime by default. Use
+  `docker/docker-compose.yml`, `docker/docker-compose.debug.yml`, and
+  `docker exec` as described in the Docker testing sections above. A host-side
+  ResearchStudio environment must not be treated as a replacement for these
+  runtime checks.
+- If an early experiment intentionally exercises a QA Flow API, OCR service,
+  Milvus collection, or another deployed dependency, start the Docker runtime
+  for that experiment and record the required contract and test command.
+
+### Recommended handoff workflow
+1. Work on the research question and early implementation in
+   `ResearchStudio/` (or a separate experiment workspace), using its `.venv`
+   and keeping its connector credentials in its ignored `.env`.
+2. Keep generated idea cards, literature caches, and exploratory outputs out
+   of first-party QA Flow directories unless they are deliberately selected
+   for import.
+3. After an idea is validated, import or adapt the necessary implementation
+   into QA Flow's first-party packages. Do not make production code import
+   directly from `external_repos/`; preserve the third-party license and
+   attribution when adapting code.
+4. Once the idea becomes a QA Flow capability, treat its public fields,
+   persisted outputs, model behavior, or deployment dependencies as normal
+   QA Flow changes. Update `INTEGRATION_CONTRACT.md` when a shared boundary is
+   affected, then run the Docker-based compile/import/API/pipeline checks.
+
+### Local ResearchStudio commands
+```bash
+cd /data2/hjk/qa-flow/ResearchStudio
+source .venv/bin/activate
+```
+
+从该 ResearchStudio 目录启动 Codex，才能加载它项目级的 `.codex/skills`
+和 `.codex/settings.json`；从 QA Flow 根目录启动时不会自动加载这个嵌套
+项目的项目级技能。
+
+Use the activated environment for ResearchStudio scripts and experiments.
+Do not add its dependencies to QA Flow's `requirements.txt` or Docker image
+merely because the idea workspace uses them; add them only when the validated
+idea is intentionally adopted by the QA Flow application.
+
 ## Collaboration rules
 This section defines repository-level collaboration expectations for future
 work. Treat these rules as default constraints when discussing requirements,
@@ -257,7 +356,7 @@ Keep it aligned with the newest effective change set whenever you implement a
 real development change.
 
 - After each substantive development task, update
-  `X:\qanew\apiuse\LATEST_CHANGE_GUIDE.md`.
+  `LATEST_CHANGE_GUIDE.md` at the repository root (`/data2/hjk/qa-flow`).
 - Treat it as a "latest change" guide, not a cumulative changelog. Replace old
   guidance when it no longer describes the newest implementation.
 - Include the current change's objective, the logic that changed, the expected
