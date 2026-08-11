@@ -38,7 +38,7 @@ Important details:
 - `app/services/image_understanding/`: production image analyzer, prompts, image classification client, and image model contracts.
 - `app/services/llm/`: shared LLM/VLM client config, client pool, and compatibility `create_chat_completion_text` contract.
 - `app/services/integrated_pipeline/`: shared OCR-image-QA handoff orchestration and marker/summary/placement logic.
-- `qa/`: chunking, generation, grounding, validation, evaluation, and QA pipeline facade.
+- `qa/`: chunking, question/answer generation, structural normalization, evaluation, and QA pipeline facade.
 
 ## Parallel Development Rules
 

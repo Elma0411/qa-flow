@@ -6,8 +6,6 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from qa.generation import contains_ambiguous_reference
-
 ALLOWED_QUESTION_TYPES = {"简答题", "单选题", "判断题", "计算题"}
 ALLOWED_DIFFICULTY_LEVELS = {"简单", "中等", "困难"}
 ALLOWED_CORRECT_OPTIONS = {"A", "B", "C", "D"}
@@ -340,15 +338,6 @@ def validate_and_normalize_item_with_reason(
         answer = normalized
     if not answer:
         return None, "missing_answer"
-
-    if contains_ambiguous_reference(question, language_code=language_code):
-        return None, "ambiguous_reference_question"
-    if contains_ambiguous_reference(answer, language_code=language_code):
-        return None, "ambiguous_reference_answer"
-    if contains_ambiguous_reference(answer_explanation, language_code=language_code):
-        return None, "ambiguous_reference_answer_explanation"
-    if contains_ambiguous_reference(source_fact_text, language_code=language_code):
-        return None, "ambiguous_reference_source_fact_text"
 
     fixed_kc = str(fixed_knowledge_category or "").strip()
     if fixed_kc:

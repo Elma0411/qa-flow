@@ -27,9 +27,9 @@ file and add or update focused contract tests in the same change.
 - Document processing owns document extraction, OCR models, input adapters, watermark removal,
   image replacement, OCR-compatible text integration, image understanding, and
   VLM-specific parsing behavior.
-- QA generation owns QA chunking, question generation, grounding, validation,
-  evaluation, storage, Milvus search, admin workflows, and normal batch
-  pipeline execution.
+- QA generation owns QA chunking, question/answer generation, structural
+  normalization, evaluation, storage, Milvus search, admin workflows, and
+  normal batch pipeline execution.
 - Shared ownership applies to `app/services/integrated_pipeline/`, integrated
   route parameters, cross-pipeline file records, chunk metadata handoff,
   deployment dependencies, model paths, and runtime configuration that affects
@@ -440,6 +440,17 @@ Rules:
   section units, routes long structured chunks to virtual-parent units, and
   keeps remaining usable chunks as leaf units. `qa_detail_mode=auto` resolves
   to `summary` for section/virtual-parent units and `point` for leaf units.
+- After the candidate-question and answer LLM calls, generation performs only
+  structural normalization: required JSON fields, supported question types,
+  valid multiple-choice options/correct option, valid judgment answers, and
+  exact-question deduplication. It does not discard an otherwise structured QA
+  item through ambiguous-reference, question-shape, source-fact segment,
+  grounding, or source-anchor heuristics. Quality acceptance belongs to the
+  downstream evaluation stage.
+- In `qa_detail_mode=summary`, each generated item contains one standalone
+  question with one central intent. The answer may summarize multiple related
+  facts from one paragraph or a tightly connected passage group; unrelated
+  questions must be emitted as separate items rather than concatenated.
 - `qa_total_limit_scope=per_file` applies the total main-QA cap to each file.
   `qa_total_limit_scope=batch` pre-allocates the cap across successful files
   before concurrent generation so the final batch output does not exceed the
@@ -545,6 +556,9 @@ Stable fields for primary QA items:
 
 Rules:
 
+- Primary QA item production does not imply a quality-pass decision. Consumers
+  that need acceptance/filtering must use the evaluation fields and policies;
+  generation-time structural validity alone is not a quality score.
 - `source` should be normalized to the stable `chunk_id` when chunk metadata is
   available.
 - Evaluation should prefer `qa_generation_unit_text` as source context when it

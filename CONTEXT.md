@@ -7,7 +7,8 @@ generation and service pipeline.
 
 **Processing Stage**:
 A cohesive step in the QA pipeline with a clear responsibility, such as
-chunking, generation, grounding, validation, evaluation, storage, or search.
+chunking, question/answer generation, structural normalization, evaluation,
+storage, or search.
 _Avoid_: Misc module, utility bucket, file group
 
 **Full Pipeline**:

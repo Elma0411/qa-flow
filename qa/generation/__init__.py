@@ -1,5 +1,5 @@
 # 文件作用：作为问答生成能力的公共 facade。
-# 关联说明：聚合 qa_generation_flow、evidence_units、text_quality_filters 给 pipeline 使用。
+# 关联说明：聚合 qa_generation_flow、evidence_units 和 structure_units 给 pipeline 使用。
 
 """Public facade for one-step QA generation capabilities."""
 
@@ -14,7 +14,6 @@ _EXPORTS = {
     "call_candidate_question_llm": ".qa_generation_flow",
     "call_evidence_answer_llm": ".qa_generation_flow",
     "ChunkQuality": ".structure_units",
-    "contains_ambiguous_reference": ".text_quality_filters",
     "DEFAULT_MAX_UNIT_CHARS": ".evidence_units",
     "DEFAULT_HYBRID_WEIGHT_DENSE": ".evidence_units",
     "DEFAULT_HYBRID_WEIGHT_LEXICAL": ".evidence_units",

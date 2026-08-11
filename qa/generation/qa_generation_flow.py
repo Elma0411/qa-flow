@@ -1,5 +1,5 @@
 # 文件作用：调用大模型生成候选问题和最终问答条目。
-# 关联说明：依赖 prompts、evidence_units、text_quality_filters，是生成阶段的 LLM 调用层。
+# 关联说明：依赖 prompts、evidence_units 和 validation，是生成阶段的 LLM 调用层。
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import hashlib
 import json
 import math
 import random
-import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from qa.common import (
@@ -15,17 +14,11 @@ from qa.common import (
     detect_language,
     safe_response_dump,
 )
-from qa.grounding import (
-    normalize_grounding_text,
-    split_summary_grounding_segments,
-    validate_source_fact_grounding,
-)
 from qa.prompts.qa_generation_prompts import (
     build_candidate_question_system_prompt,
     build_evidence_answer_system_prompt,
 )
 from qa.prompts.category_templates import resolve_category_prompt_template_key
-from qa.generation import contains_ambiguous_reference
 from qa.validation import normalize_difficulty_level, normalize_question_type
 
 ALLOWED_QUESTION_TYPES = {"简答题", "单选题", "判断题", "计算题"}
@@ -198,9 +191,7 @@ def _parse_json_items(raw: str) -> List[Dict[str, Any]]:
 def _normalize_candidate_question(
     item: Dict[str, Any],
     *,
-    language_code: str,
     expected_question_type: Optional[str],
-    source_chunk_text: str,
 ) -> Tuple[Optional[Dict[str, Any]], str]:
     question = str(item.get("question") or item.get("q") or "").strip()
     source_anchor_text = str(
@@ -213,17 +204,6 @@ def _normalize_candidate_question(
         return None, "missing_question"
     if not source_anchor_text:
         return None, "missing_source_anchor_text"
-    if contains_ambiguous_reference(question, language_code=language_code):
-        return None, "ambiguous_reference_question"
-
-    grounded, grounding_reason = validate_source_fact_grounding(
-        source_anchor_text,
-        chunk_text=source_chunk_text,
-        qa_detail_mode="summary",
-        language_code=language_code,
-    )
-    if not grounded:
-        return None, grounding_reason
 
     question_type = normalize_question_type(
         item.get("question_type") or item.get("type"),
@@ -273,100 +253,6 @@ def _normalize_candidate_question(
         },
         "ok",
     )
-
-
-def _is_source_anchored(
-    *,
-    source_fact_text: str,
-    source_anchor_text: str,
-    source_chunk_text: str,
-) -> bool:
-    fact = normalize_grounding_text(source_fact_text)
-    anchor = normalize_grounding_text(source_anchor_text)
-    source = normalize_grounding_text(source_chunk_text)
-    if not fact or not source:
-        return False
-    if fact in source:
-        return True
-    for segment in split_summary_grounding_segments(source_fact_text):
-        normalized_segment = normalize_grounding_text(segment)
-        if not normalized_segment:
-            continue
-        if normalized_segment in source:
-            return True
-        if anchor and (anchor in normalized_segment or normalized_segment in anchor):
-            return True
-    if anchor and len(anchor) >= 8:
-        grams = [anchor[index : index + 3] for index in range(max(0, len(anchor) - 2))]
-        if grams:
-            matched = sum(1 for gram in grams if gram in fact)
-            return (matched / len(grams)) >= 0.55
-    return False
-
-
-def _summary_question_shape_reason(question: str, *, language_code: str) -> str:
-    text = str(question or "").strip().lower()
-    if not text:
-        return "missing_question"
-    if language_code == "zh":
-        generic_list_subjects = (
-            "内容",
-            "条目",
-            "事项",
-            "项目",
-            "对象",
-            "选项",
-            "字段",
-            "名称",
-            "标签",
-            "数值",
-            "东西",
-            "方面",
-            "部分",
-        )
-        generic_list_pattern = re.compile(
-            r"(有哪些|哪几种|哪几项|哪些|列出|列举)[^？?]{0,24}"
-            r"("
-            + "|".join(re.escape(subject) for subject in generic_list_subjects)
-            + r")[^？?]{0,8}[？?]?$"
-        )
-        if generic_list_pattern.search(text):
-            return "summary_question_too_shallow_list"
-        return ""
-
-    generic_list_subjects = (
-        "item",
-        "items",
-        "thing",
-        "things",
-        "content",
-        "contents",
-        "field",
-        "fields",
-        "option",
-        "options",
-        "name",
-        "names",
-        "label",
-        "labels",
-        "value",
-        "values",
-        "object",
-        "objects",
-        "part",
-        "parts",
-        "aspect",
-        "aspects",
-    )
-    generic_list_pattern = re.compile(
-        r"\b(what|which|list)\b.{0,50}\b("
-        + "|".join(re.escape(subject) for subject in generic_list_subjects)
-        + r")\b.{0,16}\??$",
-        flags=re.IGNORECASE,
-    )
-    if generic_list_pattern.search(text):
-        return "summary_question_too_shallow_list"
-    return ""
 
 
 def _resolve_generation_language(prompt_language: str, text: str) -> Tuple[str, str]:
@@ -466,22 +352,12 @@ def call_candidate_question_llm(
         expected = question_type_plan[index] if index < len(question_type_plan) else None
         candidate, reason = _normalize_candidate_question(
             item,
-            language_code=language_code,
             expected_question_type=expected,
-            source_chunk_text=source_chunk_text,
         )
         if not candidate:
             dropped_reasons[reason] = dropped_reasons.get(reason, 0) + 1
             continue
-        if (qa_detail_mode or "point").strip().lower() == "summary":
-            shape_reason = _summary_question_shape_reason(
-                str(candidate.get("question") or ""),
-                language_code=language_code,
-            )
-            if shape_reason:
-                dropped_reasons[shape_reason] = dropped_reasons.get(shape_reason, 0) + 1
-                continue
-        key = normalize_grounding_text(str(candidate.get("question") or ""))
+        key = " ".join(str(candidate.get("question") or "").split()).casefold()
         if key in seen_questions:
             dropped_reasons["duplicate_question"] = dropped_reasons.get("duplicate_question", 0) + 1
             continue
@@ -523,8 +399,6 @@ def call_evidence_answer_llm(
     prompt_language: str,
     request_timeout: int,
     item_normalizer_with_reason: Callable[..., Tuple[Optional[Dict[str, Any]], str]],
-    source_fact_detail_validator: Callable[..., Tuple[bool, str]],
-    source_fact_grounding_validator: Callable[..., Tuple[bool, str]],
     source_override_handler: Callable[..., None],
     fixed_knowledge_category: Optional[str] = None,
     fixed_knowledge_category_confidence: Optional[float] = None,
@@ -644,37 +518,6 @@ def call_evidence_answer_llm(
                 normalized_item["evidence_usage"] = [
                     entry for entry in evidence_usage if isinstance(entry, dict)
                 ][:12]
-    if normalized_item:
-        if str(normalized_item.get("question") or "").strip() != candidate_question:
-            dropped_reason = "question_mismatch"
-            normalized_item = None
-    if normalized_item:
-        ok, detail_reason = source_fact_detail_validator(
-            str(normalized_item.get("source_fact_text") or ""),
-            qa_detail_mode=qa_detail_mode,
-            language_code=language_code,
-        )
-        if not ok:
-            dropped_reason = detail_reason
-            normalized_item = None
-    if normalized_item:
-        grounded, grounding_reason = source_fact_grounding_validator(
-            str(normalized_item.get("source_fact_text") or ""),
-            chunk_text=unit_text,
-            qa_detail_mode=qa_detail_mode,
-            language_code=language_code,
-        )
-        if not grounded:
-            dropped_reason = grounding_reason
-            normalized_item = None
-    if normalized_item and not _is_source_anchored(
-        source_fact_text=str(normalized_item.get("source_fact_text") or ""),
-        source_anchor_text=source_anchor_text,
-        source_chunk_text=source_unit_text or source_chunk_text,
-    ):
-        dropped_reason = "source_fact_not_anchored_to_source_chunk"
-        normalized_item = None
-
     if normalized_item:
         source_override_handler(
             normalized_item,

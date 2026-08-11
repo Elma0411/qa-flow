@@ -100,7 +100,10 @@ POST /batch-upload-complete-pipeline-with-evaluation
 - `qa_total_limit`：主问答总数上限，前端默认 `20`。
 - `qa_total_limit_scope`：题数上限范围，支持 `per_file` 和 `batch`。
 - `qa_detail_mode`：问答粒度，支持 `auto`、`point` 和 `summary`。
-  `auto` 会按 generation unit 类型自动选择 point/summary。
+  `auto` 会按 generation unit 类型自动选择 point/summary。`summary` 的每条
+  item 仍只包含一个中心问题，答案可以归纳同一相关段落中的多项事实；不会把
+  多个独立问题拼进一个 question。生成阶段只做必要结构校验，质量筛选由后续
+  评价阶段负责。
 - `qa_per_chunk`：兼容旧调用方；未传 `qa_total_limit` 时才用于估算题量。
 - `prompt_language`：提示词语言，支持 `auto`、`zh`、`en`。
 - `question_type_mode`：题型模式，支持 `fixed` 和 `mixed`。

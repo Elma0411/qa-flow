@@ -461,8 +461,6 @@ def run_one_step_chunk_worker(
     client: Any,
     debug_writer: Optional[Callable[[Dict[str, Any]], None]],
     item_normalizer_with_reason: Callable[..., Tuple[Optional[Dict[str, Any]], str]],
-    source_fact_detail_validator: Callable[..., Tuple[bool, str]],
-    source_fact_grounding_validator: Callable[..., Tuple[bool, str]],
     source_override_handler: Callable[..., None],
 ) -> Dict[str, Any]:
     target = max(1, int(runtime.qa_per_chunk))
@@ -635,8 +633,6 @@ def run_one_step_chunk_worker(
                 prompt_language=runtime.prompt_language,
                 request_timeout=runtime.request_timeout,
                 item_normalizer_with_reason=item_normalizer_with_reason,
-                source_fact_detail_validator=source_fact_detail_validator,
-                source_fact_grounding_validator=source_fact_grounding_validator,
                 source_override_handler=source_override_handler,
                 fixed_knowledge_category=runtime.fixed_knowledge_category,
                 fixed_knowledge_category_confidence=runtime.fixed_knowledge_category_confidence,
@@ -730,8 +726,6 @@ def run_one_step_unit_worker(
     client: Any,
     debug_writer: Optional[Callable[[Dict[str, Any]], None]],
     item_normalizer_with_reason: Callable[..., Tuple[Optional[Dict[str, Any]], str]],
-    source_fact_detail_validator: Callable[..., Tuple[bool, str]],
-    source_fact_grounding_validator: Callable[..., Tuple[bool, str]],
     source_override_handler: Callable[..., None],
 ) -> Dict[str, Any]:
     if int(unit.qa_budget or 0) <= 0:
@@ -766,8 +760,6 @@ def run_one_step_unit_worker(
         client=client,
         debug_writer=debug_writer,
         item_normalizer_with_reason=item_normalizer_with_reason,
-        source_fact_detail_validator=source_fact_detail_validator,
-        source_fact_grounding_validator=source_fact_grounding_validator,
         source_override_handler=source_override_handler,
     )
     payload.update(

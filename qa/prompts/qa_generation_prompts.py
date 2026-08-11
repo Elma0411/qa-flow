@@ -46,13 +46,11 @@ def _candidate_detail_mode_section(*, qa_detail_mode: str, language_code: str) -
         if mode == "summary":
             return """## Detail mode contract: summary
 - qa_detail_mode=summary.
-- Generate only questions that naturally require two or more related facts from the source chunk to answer.
-- Prefer questions that require explaining relationships among facts: composition, sequence, conditions, cause/effect, comparison, purpose, constraints, exceptions, dependencies, or trade-offs.
-- The question wording must explicitly ask for a relationship-aware answer, not just a bag of names.
-- Do not generate shallow list questions that only ask to enumerate isolated items, labels, values, fields, options, or names. If the source only supports such a flat list, skip it.
-- Acceptable summary questions should ask how multiple facts work together, such as how parts form a whole, how stages connect, when different branches apply, why a constraint matters, or how alternatives differ.
-- Do not ask a single condition-action question such as "what should be done if X happens" unless the expected answer contains multiple required actions or branches.
-- Do not create a summary question by loosely combining unrelated facts.
+- Each item must contain exactly one standalone question sentence about one coherent topic. Do not place two or more independent questions in the same `question` field.
+- Use at most one question mark. Never concatenate questions in forms such as "Who is responsible? What is the ratio?" or "What is X, and how should an unrelated Y be handled?".
+- Design the question from one relevant paragraph or one tightly connected passage group. If the source contains unrelated topics, generate separate items instead of combining them.
+- "Summary" describes the expected answer: it may synthesize the related rules, steps, conditions, roles, or conclusions needed to answer that single question.
+- Ask one umbrella question with one clear answer direction. Multiple related facts may support the answer, but they must all serve the same question intent.
 - source_anchor_text must still be copied from the main source chunk and must prove the central topic of the summary question.
 - retrieval_query should connect the shared topic with the key facets that must be checked.
 - must_have_terms should cover the shared topic plus the main facets of the expected answer.
@@ -72,13 +70,11 @@ def _candidate_detail_mode_section(*, qa_detail_mode: str, language_code: str) -
     if mode == "summary":
         return """## 粒度模式契约：总结型
 - qa_detail_mode=summary。
-- 只生成天然需要 2 个以上相关事实共同回答的问题。
-- 优先生成需要解释多个事实之间关系的问题：组成关系、顺序关系、条件关系、因果关系、对比关系、作用关系、约束关系、例外关系、依赖关系或取舍关系。
-- 问题表述必须明确要求“关系型答案”，而不是只罗列一组名称。
-- 不要生成只列孤立条目的浅层清单题，例如只问有哪些条目、名称、标签、数值、字段、选项或对象。如果原文只支持这种平面清单题，应跳过。
-- 合格的总结题应当问多个事实如何共同构成整体、如何前后衔接、不同分支何时适用、某个约束为什么成立，或多个方案/对象之间有什么差异。
-- 不要生成“如果发生 X 应采取什么措施”这类单一条件-动作问题，除非预期答案确实包含多个必须动作或多个分支。
-- 不要把彼此松散无关的事实强行拼成总结题。
+- 每个 item 的 question 只能包含一个完整问句，并且只围绕一个明确主题；禁止把两个或多个独立问题塞进同一个 question 字段。
+- 每题最多使用一个问号。禁止写成“费用由谁承担？比例由谁规定？”或“X 如何处理，同时另一个无关的 Y 怎么办？”这类拼接问题。
+- 应针对一个相关段落或一组紧密衔接的段落自行设计问题；原文包含多个无关主题时，应拆成不同 item，不能合并提问。
+- “总结型”描述的是答案组织方式：答案可以归纳回答该单一问题所需的相关规则、步骤、条件、职责或结论。
+- 问题必须只有一个清晰的回答方向；多个相关事实可以共同支撑答案，但必须服务于同一个提问意图。
 - source_anchor_text 仍必须逐字摘自主来源块，并能证明总结题的中心主题来自当前块。
 - retrieval_query 应连接共同主题和需要核对的关键侧面。
 - must_have_terms 应覆盖共同主题以及预期答案中的主要侧面。
@@ -102,15 +98,12 @@ def _answer_detail_mode_section(*, qa_detail_mode: str, language_code: str) -> s
         if mode == "summary":
             return """## Detail mode contract: summary
 - qa_detail_mode=summary.
-- Keep the question unchanged, but answer it as a grouped, evidence-grounded summary.
+- Keep the single candidate question unchanged and answer only that question.
 - The final answer may use short bullets or clauses when that makes the grouped facts clearer.
-- source_fact_text must contain at least two evidence segments copied from qa_generation_unit_text, separated by semicolons or new lines.
-- At least one source_fact_text segment must come from the main source chunk or include source_anchor_text.
+- Summarize the related facts from the relevant paragraph or tightly connected passages; do not introduce a second question or an unrelated topic.
+- source_fact_text should contain the direct evidence segments needed for the answer and may use semicolons or new lines.
 - Every key fact in the answer must be represented in source_fact_text and evidence_usage.
 - answer_explanation must map each answer point to concrete evidence directly; do not write meta explanations such as "this answer is based on the main source chunk".
-- Reject the item if the evidence segments do not form one coherent answer to the candidate question.
-- Reject the item if candidate_question can be fully answered by one person, one time limit, one amount, one material, or one condition-action fact.
-- Reject the item if candidate_question is only a shallow list of isolated items, labels, values, fields, options, or names without asking about composition, sequence, condition, cause/effect, comparison, purpose, constraint, exception, dependency, or trade-off relationships.
 """
         return """## Detail mode contract: point
 - qa_detail_mode=point.
@@ -119,21 +112,17 @@ def _answer_detail_mode_section(*, qa_detail_mode: str, language_code: str) -> s
 - source_fact_text must be one atomic, standalone fact copied from qa_generation_unit_text.
 - Do not use semicolons, line breaks, or multiple sentences in source_fact_text.
 - Retrieved context may clarify a local reference, but it must not become the main answer basis.
-- Reject the item if the candidate question needs a list, procedure, comparison, or multi-fact synthesis.
 """
 
     if mode == "summary":
         return """## 粒度模式契约：总结型
 - qa_detail_mode=summary。
-- question 必须保持不变，但答案应以有证据支撑的归纳方式回答。
+- 保持这一个候选问题不变，答案只能回答该问题。
 - 如果更清晰，答案可以使用简短分点、步骤或并列短句。
-- source_fact_text 必须包含至少 2 个摘自 qa_generation_unit_text 的证据片段，使用分号或换行分隔。
-- 至少 1 个 source_fact_text 片段必须来自【主来源块】或包含 source_anchor_text。
+- 归纳相关段落或紧密衔接段落中的事实，不要在答案中引入第二个问题或无关主题。
+- source_fact_text 应包含回答所需的直接证据片段，可以使用分号或换行分隔。
 - 答案里的每个关键事实都必须在 source_fact_text 和 evidence_usage 中有对应证据。
 - answer_explanation 必须直接说明“哪个事实支撑哪个结论”，不要写“这个答案基于主来源块/其中提到”这类元叙述。
-- 如果这些证据片段不能组成对候选问题的同一个连贯回答，输出 {"items":[]}。
-- 如果 candidate_question 只需要回答一个主体、一个时限、一个金额、一个材料或一个条件-动作事实即可完整成立，输出 {"items":[]}。
-- 如果 candidate_question 只是浅层列举孤立条目、名称、标签、数值、字段、选项或对象，且没有询问组成、顺序、条件、因果、对比、作用、约束、例外、依赖或取舍关系，输出 {"items":[]}。
 """
     return """## 粒度模式契约：单点
 - qa_detail_mode=point。
@@ -142,7 +131,6 @@ def _answer_detail_mode_section(*, qa_detail_mode: str, language_code: str) -> s
 - source_fact_text 必须是从 qa_generation_unit_text 摘取的单点、可独立成立的事实。
 - source_fact_text 不得包含分号、换行或多个句子。
 - 检索上下文只能帮助消除局部指代或定义缺失，不能成为答案主体。
-- 如果候选问题需要清单、流程、对比或多事实归纳，输出 {"items":[]}。
 """
 
 
@@ -369,25 +357,21 @@ def build_evidence_answer_system_prompt(
 - qa_generation_unit_text with 【主来源块】, optional 【同章节上下文】, and optional 【相关补充】
 
 ## Workflow
-1. Confirm whether candidate_question is specific, answerable, and valuable.
+1. Generate the best evidence-grounded answer for candidate_question. The candidate has already been selected; do not re-filter or reject it.
 2. Apply evidence priority strictly:
    - First: 【主来源块】
    - Second: 【同章节上下文】 only when the main source has unresolved reference, omitted subject, definition, or direct local dependency
    - Third: 【相关补充】 only when answer_scope is "cross_chunk" and the retrieved evidence directly supports the missing fact
-3. If answer_scope is "source_primary", reject the item when the core answer is not stated or clearly implied by 【主来源块】.
+3. If answer_scope is "source_primary", rely on 【主来源块】. If a requested detail is not specified, state that limitation in the answer instead of returning an empty item.
 4. If answer_scope is "same_section" or "cross_chunk", you may use selected evidence, but source_fact_text must still include source_anchor_text or a direct snippet from 【主来源块】.
 5. Produce a direct, natural answer without saying "according to the text/reference/document".
 6. Fill evidence_usage with the chunk_id and short snippet for every evidence chunk that materially supports the answer.
 
 {detail_mode_section}
 
-## Rejection rules
-- If the candidate question is broad, generic, meta-level, duplicate-like, or only asks about document purpose/importance/impact/role/meaning, output {{"items":[]}}.
-- If answer_scope is "source_primary" and the answer mainly depends on supplemental evidence rather than 【主来源块】, output {{"items":[]}}.
-- If answer_scope is "same_section" or "cross_chunk" but retrieved evidence does not directly support the missing fact, output {{"items":[]}}.
-- If source_fact_text cannot be copied from qa_generation_unit_text, output {{"items":[]}}.
-- If the candidate uses vague references that cannot be made clear without changing the question, output {{"items":[]}}.
-- If the candidate can be answered only as a generic management slogan, output {{"items":[]}}.
+## Retention contract
+- Always return one QA item for candidate_question. Do not output an empty items list as a quality decision.
+- Express uncertainty or missing detail explicitly in the answer when needed; downstream evaluation, not this generation call, decides whether the item is retained.
 
 ## Constraints
 1. Keep question exactly the same as candidate_question.
@@ -420,14 +404,14 @@ def build_evidence_answer_system_prompt(
 - For non-choice questions, options and correct_option must be null.
 
 ## Output format
-Output ONLY raw JSON: {{"items":[{{...}}]}} or {{"items":[]}}.
+Output ONLY raw JSON with exactly one item: {{"items":[{{...}}]}}.
 qa_detail_mode={qa_detail_mode}
 """
 
     return f"""# 角色：微调数据集问答生成专家
 ## Profile
 - 你负责根据已经组织好的问答生成单元，生成 1 条最终问答。
-- 候选问题已经来自主来源块；你的任务是判断它是否值得保留，并生成准确答案。
+- 候选问题已经由上一步选定；不要再次筛选或丢弃，只需生成准确答案。
 - 答案必须准确、相关、信息充分、适合训练数据使用，不能带“参考/依据/文中提到”等引用式表达。
 
 ## 语言要求
@@ -443,25 +427,21 @@ qa_detail_mode={qa_detail_mode}
 - qa_generation_unit_text，其中包含【主来源块】、可能存在的【同章节上下文】和【相关补充】
 
 ## 工作流程
-1. 判断 candidate_question 是否具体、可回答、有训练价值。
+1. 为 candidate_question 生成当前证据能够支持的最佳答案，不要再次判断是否保留该题。
 2. 严格按以下证据优先级定位答案依据：
    - 第一优先：【主来源块】
    - 第二优先：【同章节上下文】；仅在主来源块存在定义缺失、主语省略、局部指代、前后条款直接依赖时使用
    - 第三优先：【相关补充】；仅当 answer_scope 为 "cross_chunk" 且检索证据直接支撑缺失事实时使用
-3. 如果 answer_scope 为 "source_primary"，且答案核心不在【主来源块】中，直接丢弃该题。
+3. 如果 answer_scope 为 "source_primary"，以【主来源块】为准；若问题要求的某个细节没有说明，应在答案中明确说明未给出，而不是返回空列表。
 4. 如果 answer_scope 为 "same_section" 或 "cross_chunk"，可以使用选中的检索证据，但 source_fact_text 仍必须包含 source_anchor_text 或【主来源块】直接片段。
 5. 生成直接、自然的答案，不要写“根据原文/根据通知/文中提到”。
 6. 填写 evidence_usage，列出每个真正支撑答案的 chunk_id、短片段和用途。
 
 {detail_mode_section}
 
-## 丢弃规则
-- 如果候选问题宽泛、泛化、元信息化、疑似重复，或只是询问文件目的、意义、作用、影响、重要性，输出 {{"items":[]}}。
-- 如果 answer_scope 为 "source_primary" 且答案主要依赖补充证据，而不是【主来源块】，输出 {{"items":[]}}。
-- 如果 answer_scope 为 "same_section" 或 "cross_chunk"，但检索证据不能直接支撑缺失事实，输出 {{"items":[]}}。
-- 如果 source_fact_text 无法从 qa_generation_unit_text 中摘取，输出 {{"items":[]}}。
-- 如果候选问题存在无法在不改写问题的情况下消除的指代不明，输出 {{"items":[]}}。
-- 如果该题最终只能回答成“加强管理、提高效率、降低风险、形成闭环”这类空泛管理话术，输出 {{"items":[]}}。
+## 保留契约
+- 必须为 candidate_question 返回 1 条问答，不得基于质量判断输出空 items。
+- 证据存在不确定或缺失细节时，在答案中如实说明；是否保留该问答由后续评价阶段决定，不由本次生成调用决定。
 
 ## 约束
 1. question 必须与 candidate_question 完全一致。
@@ -494,7 +474,7 @@ qa_detail_mode={qa_detail_mode}
 - 非单选题的 options 和 correct_option 必须为 null。
 
 ## 输出格式
-只输出纯 JSON：{{"items":[{{...}}]}} 或 {{"items":[]}}。
+只输出包含 1 个 item 的纯 JSON：{{"items":[{{...}}]}}。
 qa_detail_mode={qa_detail_mode}
 """
 

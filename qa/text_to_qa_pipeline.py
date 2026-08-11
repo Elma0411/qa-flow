@@ -11,10 +11,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from qa.grounding import (
-    validate_source_fact_grounding as _validate_source_fact_grounding,
-    validate_source_fact_text_detail_mode as _validate_source_fact_text_detail_mode,
-)
 from qa.validation import (
     validate_and_normalize_item_with_reason as _validate_and_normalize_item_with_reason,
 )
@@ -413,8 +409,6 @@ def process_text_to_qa_one_step(
                 client=client,
                 debug_writer=debug_writer,
                 item_normalizer_with_reason=_validate_and_normalize_item_with_reason,
-                source_fact_detail_validator=_validate_source_fact_text_detail_mode,
-                source_fact_grounding_validator=_validate_source_fact_grounding,
                 source_override_handler=_maybe_override_source,
             ): unit
             for unit in generation_units
