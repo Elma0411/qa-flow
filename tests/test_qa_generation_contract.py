@@ -48,6 +48,79 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertIn('"Summary" describes the expected answer', en_prompt)
         self.assertNotIn("source_anchor_text", en_prompt)
 
+    def test_candidate_prompt_requires_natural_user_questions(self):
+        zh_prompt = build_candidate_question_system_prompt(
+            language_code="zh",
+            language_instruction="请使用中文。",
+            candidate_count=1,
+            question_type_plan=["简答题"],
+            few_shot_examples=None,
+            knowledge_category="法律法规/婚姻登记",
+            qa_detail_mode="point",
+        )
+        en_prompt = build_candidate_question_system_prompt(
+            language_code="en",
+            language_instruction="Use English.",
+            candidate_count=1,
+            question_type_plan=["简答题"],
+            few_shot_examples=None,
+            knowledge_category="法律法规/婚姻登记",
+            qa_detail_mode="point",
+        )
+
+        self.assertIn("真实用户关心的对象", zh_prompt)
+        self.assertIn("标题路径只用于内部消歧和检索语境", zh_prompt)
+        self.assertIn("不得以“根据……规定”式引入", zh_prompt)
+        self.assertIn("脱离原文后，真实用户会自然地这样提问吗", zh_prompt)
+        self.assertIn("默认提问者：办事人", zh_prompt)
+        self.assertIn("practical consultation question", en_prompt)
+        self.assertIn("hidden disambiguation and retrieval context", en_prompt)
+        self.assertIn("Would a real user naturally ask this", en_prompt)
+        self.assertIn("Default questioner: An applicant", en_prompt)
+
+    def test_candidate_input_marks_title_path_as_internal_context(self):
+        class RecordingClient:
+            def __init__(self):
+                self.messages = []
+
+            def create_chat_completion_text(self, **kwargs):
+                self.messages = kwargs["messages"]
+                return json.dumps(
+                    {
+                        "items": [
+                            {
+                                "question": "婚前医学检查费用如何承担？",
+                                "retrieval_query": "婚前医学检查 结婚登记 费用 承担",
+                                "must_have_terms": ["婚前医学检查", "费用"],
+                                "answer_scope_hint": "source_primary",
+                                "question_type": "简答题",
+                                "difficulty_level": "中等",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+
+        client = RecordingClient()
+        call_candidate_question_llm(
+            client=client,
+            model="test-model",
+            source_chunk_text="结婚登记前参加婚前医学检查的费用按规定承担。",
+            source_chunk_meta={
+                "chunk_id": "chunk-1",
+                "title_path": "婚姻登记 > 婚前医学检查",
+            },
+            candidate_count=1,
+            prompt_language="zh",
+            question_type_plan=["简答题"],
+            few_shot_examples=None,
+            request_timeout=10,
+            knowledge_category="法律法规/婚姻登记",
+            qa_detail_mode="point",
+        )
+
+        self.assertIn("不得直接照搬进 question", client.messages[1]["content"])
+
     def test_answer_prompt_does_not_reject_candidate_as_quality_decision(self):
         zh_prompt = build_evidence_answer_system_prompt(
             language_code="zh",

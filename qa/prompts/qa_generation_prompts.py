@@ -170,16 +170,17 @@ def build_candidate_question_system_prompt(
 
 ## Workflow
 1. Parse the source chunk and identify concrete entities, requirements, actions, conditions, scopes, responsibilities, deadlines, procedures, lists, exceptions, risks, thresholds, prohibitions, or measurable conclusions.
-2. Use the title path only as disambiguation context. The real answer basis must still come from the source chunk itself.
-3. Select only the most useful question angles for training data. Prefer points a real reader would need to understand, execute, remember, or verify.
-4. Prioritize questions about:
+2. Internally determine the question intent before writing: the real user's subject, the information they need, and the minimum conditions that would change the answer.
+3. Use the title path only as hidden disambiguation and retrieval context. The real answer basis must still come from the source chunk itself.
+4. Select only the most useful question angles for training data. Prefer points a real reader would need to understand, execute, remember, or verify.
+5. Prioritize questions about:
    - who must do what
    - when or under what conditions something applies
    - what materials, records, approvals, or steps are required
    - what is prohibited, restricted, required, or exempted
    - what consequence, deadline, threshold, or handling rule is stated
-5. De-prioritize or reject narrative-only background and management rhetoric.
-6. Check every candidate:
+6. De-prioritize or reject narrative-only background and management rhetoric.
+7. Check every candidate:
    - The answer must be directly supported by the source chunk.
    - The question must have a clear answer direction.
    - The question must not duplicate another candidate.
@@ -195,6 +196,15 @@ def build_candidate_question_system_prompt(
 6. If the chunk mainly contains advocacy, principles, background interpretation, or high-level rationale without operational details, return fewer items or an empty list.
 7. Only generate a multiple-choice candidate when the source chunk contains a stable, discriminative fact that can support one clearly correct option.
 8. Prefer practical, concrete questions about who must do what, under what conditions, by which process, with which records, or with what consequences.
+9. Write a natural user information need, not a paraphrase of the source sentence. Keep only the minimum context needed to make the answer unambiguous; do not mechanically copy a full legal predicate, procedural precondition, or qualifying clause into the question.
+10. Do not start or frame a question with source metadata or citation language, including "according to", "under Article", "the document states", document titles, section titles, or clause numbers. Mention a named regulation, standard, paper, or policy only when omitting its name would make the question's subject ambiguous.
+11. Keep source-specific wording needed for exact retrieval in retrieval_query and must_have_terms, rather than overloading question with it.
+12. Before outputting, silently ask: "Would a real user naturally ask this without seeing the source text?" If not, rewrite it as a direct question about the user's information need.
+13. Style examples:
+   - Bad: "According to Article 2 of the regulation, what does it provide?"
+   - Better: "What matters does this regulation cover?"
+   - Bad: "For couples who have registered for marriage and completed a premarital examination before registration, how are the costs handled?"
+   - Better: "How are premarital examination costs handled before marriage registration?"
 
 {detail_mode_section}
 
@@ -242,16 +252,17 @@ Output ONLY raw JSON: {{"items":[...]}}.
 
 ## 工作流程
 1. 通读主来源块，识别具体的主体、要求、动作、条件、范围、职责、时限、流程、清单、例外、风险、阈值、禁止项或可验证结论。
-2. 标题路径只用于帮助你判断语境，不是问题答案的主要依据；真正的答案必须仍然直接来自主来源块正文。
-3. 按信息密度和实用价值选择提问切入点，优先选择读者真正需要理解、执行、记忆或核对的内容。
-4. 优先选择以下类型的信息出题：
+2. 先在内部确定提问意图：真实用户关心的对象、想获得的信息，以及去掉后会改变答案的最小必要条件。
+3. 标题路径只用于内部消歧和检索语境，不是问题答案的主要依据；真正的答案必须仍然直接来自主来源块正文。
+4. 按信息密度和实用价值选择提问切入点，优先选择读者真正需要理解、执行、记忆或核对的内容。
+5. 优先选择以下类型的信息出题：
    - 谁负责做什么
    - 在什么条件下适用或不适用
    - 需要哪些材料、记录、审批、步骤
    - 明确的禁止、限制、要求、例外
    - 明确的时限、后果、阈值、处理规则
-5. 对只有背景铺垫、原则倡导、价值表述、管理话术的内容，优先少出题或不出题。
-6. 逐条检查候选问题：
+6. 对只有背景铺垫、原则倡导、价值表述、管理话术的内容，优先少出题或不出题。
+7. 逐条检查候选问题：
    - 答案必须能在主来源块中直接找到依据。
    - 问题必须有明确答案指向。
    - 问题之间不能重复主题或角度。
@@ -267,6 +278,15 @@ Output ONLY raw JSON: {{"items":[...]}}.
 6. 如果当前块主要是背景说明、原则要求、倡议表态、长段论述，但缺少可执行细节，可以输出空列表。
 7. 只有当当前块存在稳定、可区分、可验证的事实点时，才生成单选题候选；不要为了凑题型硬出单选题。
 8. 优先设计关于“谁需要做什么、在什么条件下做、按什么流程做、留下什么记录、产生什么后果”的具体问题。
+9. 问题必须表达自然的用户信息需求，不能只是原文句子的改写。只保留确保答案不歧义的最小上下文；不要把完整的法规前提、程序性修饰语或限定从句机械搬进问题。
+10. 禁止用来源元信息或引用式语言开头或组织问题，包括“根据/依据”“第 X 条”“文件/通知/本文指出”、文件标题、章节标题、条号。只有不写名称会使提问对象混淆时，才可写法规、标准、论文或制度名称，但不得以“根据……规定”式引入。
+11. 用于精确检索的来源术语、完整条件和专有名称，应优先放进 retrieval_query 与 must_have_terms，而不是堆进 question。
+12. 输出前静默检查：“脱离原文后，真实用户会自然地这样提问吗？”如果不会，改写为直接询问信息需求的问句。
+13. 风格示例：
+   - 不好：“根据某条例第二条，该条例规定了什么？”
+   - 更好：“该条例适用于哪些事项？”
+   - 不好：“依法办理结婚登记且在登记前参加婚前医学检查的夫妻，费用如何处理？”
+   - 更好：“办理结婚登记前参加婚前医学检查，费用如何承担？”
 
 {detail_mode_section}
 

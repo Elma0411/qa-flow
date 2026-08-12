@@ -288,7 +288,7 @@ def call_candidate_question_llm(
     prompt_template_key = resolve_category_prompt_template_key(knowledge_category)
     title_path = str(source_chunk_meta.get("title_path") or "").strip()
     user_content = (
-        "主来源块信息：\n"
+        "内部消歧和检索信息（不得直接照搬进 question）：\n"
         f"chunk_id: {source_chunk_meta.get('chunk_id') or ''}\n"
         f"title_path: {title_path}\n\n"
         f"knowledge_category: {knowledge_category or ''}\n\n"
