@@ -194,16 +194,8 @@ def _normalize_candidate_question(
     expected_question_type: Optional[str],
 ) -> Tuple[Optional[Dict[str, Any]], str]:
     question = str(item.get("question") or item.get("q") or "").strip()
-    source_anchor_text = str(
-        item.get("source_anchor_text")
-        or item.get("anchor_text")
-        or item.get("source_fact_text")
-        or ""
-    ).strip()
     if not question:
         return None, "missing_question"
-    if not source_anchor_text:
-        return None, "missing_source_anchor_text"
 
     question_type = normalize_question_type(
         item.get("question_type") or item.get("type"),
@@ -239,7 +231,6 @@ def _normalize_candidate_question(
     return (
         {
             "question": question,
-            "source_anchor_text": source_anchor_text,
             "retrieval_query": retrieval_query,
             "must_have_terms": must_have_terms[:8],
             "answer_scope_hint": answer_scope_hint,
@@ -428,7 +419,6 @@ def call_evidence_answer_llm(
     )
     prompt_template_key = resolve_category_prompt_template_key(prompt_template_category)
     candidate_question = str(candidate.get("question") or "").strip()
-    source_anchor_text = str(candidate.get("source_anchor_text") or "").strip()
     retrieval_query = str(candidate.get("retrieval_query") or "").strip()
     must_have_terms = candidate.get("must_have_terms") if isinstance(candidate.get("must_have_terms"), list) else []
     answer_scope = str(candidate.get("answer_scope") or "source_primary").strip().lower()
@@ -440,7 +430,6 @@ def call_evidence_answer_llm(
     question_type = str(candidate.get("question_type") or "简答题").strip() or "简答题"
     user_content = (
         f"candidate_question: {candidate_question}\n"
-        f"source_anchor_text: {source_anchor_text}\n"
         f"retrieval_query: {retrieval_query}\n"
         f"must_have_terms: {json.dumps(must_have_terms, ensure_ascii=False)}\n"
         f"answer_scope: {answer_scope}\n"
@@ -525,7 +514,6 @@ def call_evidence_answer_llm(
             language_code=language_code,
         )
         normalized_item["question"] = candidate_question
-        normalized_item["source_anchor_text"] = source_anchor_text
         normalized_item["retrieval_query"] = retrieval_query
         normalized_item["must_have_terms"] = must_have_terms
         normalized_item["answer_scope_hint"] = answer_scope_hint

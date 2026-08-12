@@ -597,7 +597,6 @@ function buildQaDetailCard(item, options = {}) {
       ['source_chunk_index', item.source_chunk_index != null ? `#${item.source_chunk_index}` : ''],
       ['source_chunk_title_path', item.source_chunk_title_path],
       ['source', item.source],
-      ['source_anchor_text', item.source_anchor_text],
       ['qa_generation_unit_id', item.qa_generation_unit_id],
       ['创建时间', fmtDebugTs(item.created_at)],
     ]),

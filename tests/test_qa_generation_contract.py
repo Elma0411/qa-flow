@@ -42,9 +42,11 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertIn("question 只能包含一个完整问句", zh_prompt)
         self.assertIn("每题最多使用一个问号", zh_prompt)
         self.assertIn("“总结型”描述的是答案组织方式", zh_prompt)
+        self.assertNotIn("source_anchor_text", zh_prompt)
         self.assertIn("exactly one standalone question sentence", en_prompt)
         self.assertIn("Use at most one question mark", en_prompt)
         self.assertIn('"Summary" describes the expected answer', en_prompt)
+        self.assertNotIn("source_anchor_text", en_prompt)
 
     def test_answer_prompt_does_not_reject_candidate_as_quality_decision(self):
         zh_prompt = build_evidence_answer_system_prompt(
@@ -65,13 +67,13 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertIn("exactly one item", en_prompt)
         self.assertNotIn('{"items":[]}', en_prompt)
 
-    def test_candidate_semantic_rules_do_not_drop_generated_question(self):
+    def test_candidate_generation_discards_source_anchor_text(self):
         client = _StaticChatClient(
             {
                 "items": [
                     {
                         "question": "其中应当如何处理？",
-                        "source_anchor_text": "这段锚点并未出现在输入块中",
+                        "source_anchor_text": "旧字段不应进入候选题结果。",
                         "retrieval_query": "处理方式",
                         "must_have_terms": ["处理"],
                         "answer_scope_hint": "source_primary",
@@ -97,6 +99,7 @@ class QAGenerationContractTests(unittest.TestCase):
 
         self.assertEqual(1, len(items))
         self.assertEqual("其中应当如何处理？", items[0]["question"])
+        self.assertNotIn("source_anchor_text", items[0])
 
     def test_answer_semantic_rules_do_not_drop_normalized_item(self):
         client = _StaticChatClient(
@@ -121,7 +124,7 @@ class QAGenerationContractTests(unittest.TestCase):
             model="test-model",
             candidate={
                 "question": candidate_question,
-                "source_anchor_text": "费用由责任主体承担。",
+                "source_anchor_text": "旧字段不应进入答案生成输入。",
                 "retrieval_query": "费用承担",
                 "must_have_terms": ["费用", "承担"],
                 "answer_scope": "source_primary",
@@ -136,7 +139,7 @@ class QAGenerationContractTests(unittest.TestCase):
                 },
                 "source_unit_text": "费用由责任主体承担。",
                 "qa_generation_unit_text": "【主来源块】费用由责任主体承担。",
-                "evidence_chunk_ids": ["chunk-1"],
+                "evidence_chunk_ids": [],
                 "qa_generation_unit_id": "unit-1",
             },
             qa_detail_mode="summary",
@@ -150,6 +153,7 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertIsNotNone(item)
         self.assertEqual(candidate_question, item["question"])
         self.assertEqual("这条事实并未出现在证据中。", item["source_fact_text"])
+        self.assertNotIn("source_anchor_text", item)
 
 
 if __name__ == "__main__":

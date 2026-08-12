@@ -563,6 +563,9 @@ Rules:
   available.
 - Evaluation should prefer `qa_generation_unit_text` as source context when it
   exists.
+- Candidate-question generation emits a question plus retrieval planning fields;
+  it does not emit a separate source anchor. `source_fact_text` is produced only
+  by final answer generation as the QA item's direct fact evidence.
 - `answer_scope_hint` is the model-generated, non-authoritative evidence range
   suggestion. It is kept for diagnostics and should not be treated as final
   permission to use supplemental evidence.

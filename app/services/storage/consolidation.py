@@ -345,7 +345,6 @@ def build_consolidated_entry(
             "source": source,
             "source_fact_id": fact_info.get("fact_id"),
             "source_fact_text": source_fact_text,
-            "source_anchor_text": merged.get("source_anchor_text"),
             "source_chunk_id": merged.get("source_chunk_id"),
             "source_chunk_index": merged.get("source_chunk_index"),
             "source_chunk_title_path": merged.get("source_chunk_title_path"),

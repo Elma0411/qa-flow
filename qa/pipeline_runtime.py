@@ -437,7 +437,6 @@ def _candidate_retrieval_query(candidate: Dict[str, Any], source_chunk_meta: Dic
         return explicit
     parts = [
         str(candidate.get("question") or "").strip(),
-        str(candidate.get("source_anchor_text") or "").strip(),
         str(source_chunk_meta.get("title_path") or "").strip(),
     ]
     terms = candidate.get("must_have_terms")
@@ -598,7 +597,6 @@ def run_one_step_chunk_worker(
                 if isinstance(source_chunk_meta.get("_qa_source_unit"), dict)
                 else None,
                 question=question_key,
-                source_anchor_text=str(candidate_for_answer.get("source_anchor_text") or ""),
                 retrieval_query=retrieval_query,
                 must_have_terms=candidate_for_answer.get("must_have_terms") or [],
                 answer_scope=effective_answer_scope,

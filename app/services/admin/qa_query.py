@@ -356,7 +356,6 @@ def get_qa_item(qa_id: str) -> Dict[str, Any]:
         "is_augmented": row.get("is_augmented"),
         "variant_of": row.get("variant_of"),
         "similar_questions": similar_questions,
-        "source_anchor_text": debug_payload.get("source_anchor_text"),
         "source_chunk_id": debug_payload.get("source_chunk_id"),
         "source_chunk_index": debug_payload.get("source_chunk_index"),
         "source_chunk_title_path": debug_payload.get("source_chunk_title_path"),

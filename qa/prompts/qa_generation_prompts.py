@@ -51,7 +51,6 @@ def _candidate_detail_mode_section(*, qa_detail_mode: str, language_code: str) -
 - Design the question from one relevant paragraph or one tightly connected passage group. If the source contains unrelated topics, generate separate items instead of combining them.
 - "Summary" describes the expected answer: it may synthesize the related rules, steps, conditions, roles, or conclusions needed to answer that single question.
 - Ask one umbrella question with one clear answer direction. Multiple related facts may support the answer, but they must all serve the same question intent.
-- source_anchor_text must still be copied from the main source chunk and must prove the central topic of the summary question.
 - retrieval_query should connect the shared topic with the key facets that must be checked.
 - must_have_terms should cover the shared topic plus the main facets of the expected answer.
 - answer_scope_hint may be "same_section" or "cross_chunk" only when the summary cannot be completed from the source chunk alone; it is still only a hint.
@@ -61,7 +60,6 @@ def _candidate_detail_mode_section(*, qa_detail_mode: str, language_code: str) -
 - Generate only questions with one clear answer direction and one core fact.
 - Prefer one entity/action/condition/deadline/material/threshold/prohibition/exception at a time.
 - Do not generate procedure, checklist, comparison, responsibility-split, condition-set, or chapter-summary questions.
-- source_anchor_text must be a short, sufficient span copied from the main source chunk.
 - retrieval_query should find evidence for the same single fact, not broaden the question.
 - must_have_terms should focus on the single entity/action/condition that proves the answer.
 - answer_scope_hint should normally be "source_primary"; use wider hints only for unresolved local reference or definition.
@@ -75,7 +73,6 @@ def _candidate_detail_mode_section(*, qa_detail_mode: str, language_code: str) -
 - 应针对一个相关段落或一组紧密衔接的段落自行设计问题；原文包含多个无关主题时，应拆成不同 item，不能合并提问。
 - “总结型”描述的是答案组织方式：答案可以归纳回答该单一问题所需的相关规则、步骤、条件、职责或结论。
 - 问题必须只有一个清晰的回答方向；多个相关事实可以共同支撑答案，但必须服务于同一个提问意图。
-- source_anchor_text 仍必须逐字摘自主来源块，并能证明总结题的中心主题来自当前块。
 - retrieval_query 应连接共同主题和需要核对的关键侧面。
 - must_have_terms 应覆盖共同主题以及预期答案中的主要侧面。
 - answer_scope_hint 只有在主来源块不足以完成总结时才可建议 "same_section" 或 "cross_chunk"；它仍只是系统裁决前的建议。
@@ -85,7 +82,6 @@ def _candidate_detail_mode_section(*, qa_detail_mode: str, language_code: str) -
 - 只生成答案方向单一、核心事实单一的问题。
 - 每题只问一个主体、动作、条件、时限、材料、阈值、禁止项或例外。
 - 不要生成流程题、清单题、对比题、职责分工题、条件集合题或章节总结题。
-- source_anchor_text 必须是短而充分的主来源块原文片段。
 - retrieval_query 只用于寻找同一个单点事实的证据，不要扩大问题范围。
 - must_have_terms 应聚焦证明答案所需的单个实体、动作或条件。
 - answer_scope_hint 通常应为 "source_primary"；只有主来源块存在局部指代或定义缺失时才建议更宽范围。
@@ -204,12 +200,6 @@ def build_candidate_question_system_prompt(
 
 {category_section}
 
-## Source anchor requirements
-- source_anchor_text must be copied verbatim from the source chunk.
-- source_anchor_text must contain enough concrete information to prove that the question belongs to this chunk.
-- Do not use the title path alone as source_anchor_text.
-- source_anchor_text should be the shortest sufficient span, not a random long excerpt.
-
 ## Retrieval planning fields
 - retrieval_query: a concise search query for finding same-document evidence. Combine the concrete subject, action/condition, key terms, and title context. Do not use a generic restatement of the question.
 - must_have_terms: 1 to 6 important entity/action/condition terms that should appear in useful evidence.
@@ -223,7 +213,6 @@ def build_candidate_question_system_prompt(
 
 ## Required item fields
 - question: string
-- source_anchor_text: string copied from the source chunk
 - retrieval_query: string
 - must_have_terms: string[]
 - answer_scope_hint: "source_primary" | "same_section" | "cross_chunk"
@@ -283,12 +272,6 @@ Output ONLY raw JSON: {{"items":[...]}}.
 
 {category_section}
 
-## 原文锚点要求
-- source_anchor_text 必须逐字摘自主来源块。
-- source_anchor_text 必须包含足够具体的信息，能够证明该问题确实归属于当前主来源块。
-- 不要只把标题路径作为 source_anchor_text。
-- source_anchor_text 应尽量短而足够，不要随意摘一大段无关内容。
-
 ## 检索规划字段
 - retrieval_query：用于检索同文档证据的短查询，必须包含具体对象、动作/条件、关键术语和必要标题语境；不要只是机械复述问题。
 - must_have_terms：1 到 6 个关键实体、动作、条件或术语，用于帮助检索筛选证据。
@@ -302,7 +285,6 @@ Output ONLY raw JSON: {{"items":[...]}}.
 
 ## 每条 item 必须包含
 - question: string
-- source_anchor_text: string（直接摘自主来源块）
 - retrieval_query: string
 - must_have_terms: string[]
 - answer_scope_hint: "source_primary" | "same_section" | "cross_chunk"
@@ -349,7 +331,6 @@ def build_evidence_answer_system_prompt(
 
 ## Input
 - candidate_question
-- source_anchor_text
 - retrieval_query
 - must_have_terms
 - answer_scope
@@ -363,7 +344,7 @@ def build_evidence_answer_system_prompt(
    - Second: 【同章节上下文】 only when the main source has unresolved reference, omitted subject, definition, or direct local dependency
    - Third: 【相关补充】 only when answer_scope is "cross_chunk" and the retrieved evidence directly supports the missing fact
 3. If answer_scope is "source_primary", rely on 【主来源块】. If a requested detail is not specified, state that limitation in the answer instead of returning an empty item.
-4. If answer_scope is "same_section" or "cross_chunk", you may use selected evidence, but source_fact_text must still include source_anchor_text or a direct snippet from 【主来源块】.
+4. If answer_scope is "same_section" or "cross_chunk", you may use selected evidence, but source_fact_text must still include a direct snippet from 【主来源块】.
 5. Produce a direct, natural answer without saying "according to the text/reference/document".
 6. Fill evidence_usage with the chunk_id and short snippet for every evidence chunk that materially supports the answer.
 
@@ -376,7 +357,7 @@ def build_evidence_answer_system_prompt(
 ## Constraints
 1. Keep question exactly the same as candidate_question.
 2. The topic must remain centered on 【主来源块】.
-3. source_fact_text must be copied from qa_generation_unit_text. It must contain a direct snippet from 【主来源块】 or source_anchor_text. Add retrieved context snippets only when answer_scope permits it and they are necessary.
+3. source_fact_text must be copied from qa_generation_unit_text. It must contain a direct snippet from 【主来源块】. Add retrieved context snippets only when answer_scope permits it and they are necessary.
 4. qa_detail_mode=point: source_fact_text must be one atomic, standalone fact.
 5. qa_detail_mode=summary: source_fact_text may combine related snippets, but the first and most important supporting snippet must come from 【主来源块】, and every extra snippet must be necessary.
 6. answer_explanation must explain why the answer is supported with concrete subjects and facts, not repeat vague rhetoric.
@@ -419,7 +400,6 @@ qa_detail_mode={qa_detail_mode}
 
 ## 输入内容
 - candidate_question
-- source_anchor_text
 - retrieval_query
 - must_have_terms
 - answer_scope
@@ -433,7 +413,7 @@ qa_detail_mode={qa_detail_mode}
    - 第二优先：【同章节上下文】；仅在主来源块存在定义缺失、主语省略、局部指代、前后条款直接依赖时使用
    - 第三优先：【相关补充】；仅当 answer_scope 为 "cross_chunk" 且检索证据直接支撑缺失事实时使用
 3. 如果 answer_scope 为 "source_primary"，以【主来源块】为准；若问题要求的某个细节没有说明，应在答案中明确说明未给出，而不是返回空列表。
-4. 如果 answer_scope 为 "same_section" 或 "cross_chunk"，可以使用选中的检索证据，但 source_fact_text 仍必须包含 source_anchor_text 或【主来源块】直接片段。
+4. 如果 answer_scope 为 "same_section" 或 "cross_chunk"，可以使用选中的检索证据，但 source_fact_text 仍必须包含【主来源块】直接片段。
 5. 生成直接、自然的答案，不要写“根据原文/根据通知/文中提到”。
 6. 填写 evidence_usage，列出每个真正支撑答案的 chunk_id、短片段和用途。
 
@@ -446,7 +426,7 @@ qa_detail_mode={qa_detail_mode}
 ## 约束
 1. question 必须与 candidate_question 完全一致。
 2. 问题主题必须围绕【主来源块】。
-3. source_fact_text 必须摘自 qa_generation_unit_text，并且必须包含来自【主来源块】的直接证据或 source_anchor_text；只有 answer_scope 允许且严格必要时才补充检索上下文片段。
+3. source_fact_text 必须摘自 qa_generation_unit_text，并且必须包含来自【主来源块】的直接证据；只有 answer_scope 允许且严格必要时才补充检索上下文片段。
 4. qa_detail_mode=point 时，source_fact_text 必须是单点、可独立成立的事实。
 5. qa_detail_mode=summary 时，source_fact_text 可以合并相关片段，但第一条、最核心的证据必须来自【主来源块】，其余片段必须确实参与了答案成立。
 6. answer_explanation 必须用具体主体和事实解释“为什么答案成立”，而不是重复空泛套话。

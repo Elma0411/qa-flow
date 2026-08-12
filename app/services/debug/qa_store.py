@@ -109,7 +109,6 @@ def _build_debug_payload(item: Dict[str, Any]) -> Dict[str, Any]:
         "source": item.get("source"),
         "source_fact_id": item.get("source_fact_id"),
         "source_fact_text": item.get("source_fact_text"),
-        "source_anchor_text": item.get("source_anchor_text"),
         "source_chunk_id": item.get("source_chunk_id") or item.get("source"),
         "source_chunk_index": item.get("source_chunk_index"),
         "source_chunk_title_path": item.get("source_chunk_title_path"),

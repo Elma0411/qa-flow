@@ -1,57 +1,65 @@
 # 最新变更指南
 
-更新时间：2026-08-11（Asia/Shanghai）
+更新时间：2026-08-12（Asia/Shanghai）
 
 ## Objective
 
-取消问答生成完成后的语义硬过滤，避免规则误杀已经生成的 QA；同时修正总结型
-候选问题的生成契约，使每个 item 只包含一个中心问题，答案再对相关段落事实
-进行归纳。
+收敛同文档证据问答生成的来源字段：删除候选问题阶段的
+`source_anchor_text`，保留最终 QA 阶段生成的 `source_fact_text` 作为直接
+事实证据，避免两套相近来源摘录并存。
 
 ## What Changed
 
-- `qa/generation/qa_generation_flow.py`
-  - 删除候选问题的指代词、总结题形态和来源锚点 grounding 硬过滤。
-  - 删除答案阶段的问题文本一致性、source fact 粒度、grounding 和主来源块
-    锚定硬过滤；答案模型回写的问题最终统一覆盖为候选问题。
-  - 保留缺少必要字段、无效题型结构和精确重复问题等结构处理。
-- `qa/validation/qa_item.py`
-  - 删除问题、答案、答案解释及 source fact 的指代词正则拒绝。
-  - 保留必填字段、单选题四选项/正确项和判断题答案格式归一。
-- 删除不再使用的 `qa/generation/text_quality_filters.py` 和
-  `qa/grounding/` 生成后硬过滤模块，并移除跨层 validator 参数传递。
 - `qa/prompts/qa_generation_prompts.py`
-  - 总结模式要求每个 item 只有一个完整问句、一个问号和一个中心意图。
-  - “总结型”现在描述答案组织方式：答案可归纳一个相关段落或紧密相关段落组
-    中的多个事实，但不能把多个独立问题拼接成一题。
-  - 答案阶段不再自行输出空 items 进行二次质量筛选；证据细节不足时应如实说明，
-    最终质量接纳交给后续评价阶段。
-- `static/app.js` 删除不再可能产生的语义硬过滤 reason 文案，`static/index.html`
-  更新资源版本以避免浏览器继续使用旧脚本。
-- `tests/test_qa_generation_contract.py` 覆盖单问题总结契约及无语义硬过滤行为。
+  - 候选问题 prompt 只要求输出问题和检索规划字段：`retrieval_query`、
+    `must_have_terms`、`answer_scope_hint`。
+  - 答案 prompt 不再接收或引用 `source_anchor_text`。
+  - 最终 QA 的 `source_fact_text` 必须摘自 `qa_generation_unit_text`，并包含
+    主来源块的直接证据；使用补充证据时由 `evidence_usage` 说明具体块、片段和用途。
+- `qa/generation/qa_generation_flow.py`
+  - 候选题归一化不读取或输出 `source_anchor_text`。
+  - 答案生成调用不再传递或回写该字段。
+- `qa/pipeline_runtime.py` 与 `qa/generation/evidence_units.py`
+  - 检索查询回退由问题、标题路径和 `must_have_terms` 组成。
+  - 问答生成单元不再保存候选题原文锚点。
+- 存储、调试、管理接口和审阅界面删除该字段；Milvus 本身没有此列，因此不需要数据库迁移。
+- `INTEGRATION_CONTRACT.md` 与契约测试同步为新的字段职责。
 
 ## Expected Behavior
 
-- 结构完整的候选问题和答案不会因为指代词、固定题形正则、source fact 分段数、
-  文本相似度或主块锚定阈值而被丢弃。
-- 无法解析的 JSON、缺少问题/答案/答案解释/source fact、单选题结构无效、判断题
-  答案无效及精确重复问题仍会被结构处理。
-- 总结型问题不会再出现“问题一？问题二？问题三？”的拼接形式；如果来源包含
-  多个无关主题，应输出为不同 item。
-- 生成结果只代表结构有效，不代表质量通过；需要筛选时使用后续评价体系。
+生成链路为：
+
+```text
+主来源块 -> LLM 生成 question + 检索规划
+        -> 检索并组装 evidence
+        -> LLM 生成 answer + source_fact_text + evidence_usage
+```
+
+- 候选题模型无需复制主来源块文本，减少无效输出负担。
+- `source_fact_text` 只在最终答案阶段产生，供人工审阅、存储兼容和后续评价使用。
+- `source_chunk_id` 仍定位主来源块；`qa_generation_unit_text` 是实际证据上下文；
+  `evidence_chunk_ids` 与 `evidence_usage` 记录补充证据及其用途。
+- 该变更不改变 Milvus 表结构，也不会对旧已存储记录做兼容读取或改写。
 
 ## Validation
 
 ```bash
 cd /data2/hjk/qa-flow
+
 python -m unittest tests.test_qa_generation_contract
-python -m compileall qa app
-node --check static/app.js
+python -m py_compile \
+  qa/generation/qa_generation_flow.py \
+  qa/generation/evidence_units.py \
+  qa/pipeline_runtime.py \
+  qa/prompts/qa_generation_prompts.py \
+  app/services/storage/consolidation.py \
+  app/services/debug/qa_store.py \
+  app/services/admin/qa_query.py \
+  app/routers/doc_chunks.py
+node --check static/app_query.js
 git diff --check
 
 docker exec qa-flow-runtime bash -lc \
   'cd /app && python -m unittest tests.test_qa_generation_contract'
-docker exec qa-flow-runtime bash -lc \
-  'cd /app && python -m compileall qa app'
 curl http://localhost:12000/test-connection
 ```

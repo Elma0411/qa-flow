@@ -323,7 +323,6 @@ async def chunk_debug(
         merged = dict(item)
         merged.update(
             {
-                "source_anchor_text": debug_detail.get("source_anchor_text"),
                 "source_chunk_id": debug_detail.get("source_chunk_id"),
                 "source_chunk_index": debug_detail.get("source_chunk_index"),
                 "source_chunk_title_path": debug_detail.get("source_chunk_title_path"),
