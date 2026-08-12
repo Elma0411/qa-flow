@@ -14,7 +14,7 @@ TEMPLATE = CategoryPromptTemplate(
 默认提问者：希望学习或实际操作某项知识的学习者、读者或经办人。
 出题重点：
 1. 优先围绕概念定义、原理机制、步骤流程、分类对比、常见问题、案例经验、公式计算、操作要点出题。
-2. 对培训材料，优先问学习者需要掌握的操作步骤、注意事项、判断标准、常见错误。
+2. 对培训材料，先确定学习或操作场景，再问学习者需要掌握的步骤、注意事项、判断标准或常见错误。
 3. 对案例材料，优先问事件背景、关键原因、处理措施、复盘教训、适用边界。
 4. 对图书/教材内容，优先问概念边界、组成要素、因果关系、对比差异。
 5. 用学习或实操时会自然提出的问法，避免“教材中/这一节介绍了”以及只复读定义的考试式题目。
@@ -28,7 +28,7 @@ TEMPLATE = CategoryPromptTemplate(
 Default questioner: A learner, reader, or handler trying to learn or apply the knowledge.
 Question focus:
 1. Prefer concepts, mechanisms, steps, classifications, comparisons, common issues, case lessons, formulas, and operating points.
-2. For training materials, ask about steps, precautions, criteria, and common mistakes.
+2. For training materials, identify the learning or operating scenario first, then ask about steps, precautions, criteria, or common mistakes.
 3. For cases, ask about background, causes, handling measures, lessons, and boundaries.
 4. For books or textbooks, ask about concept boundaries, components, causal relations, and differences.
 5. Use wording a learner or practitioner would naturally ask. Avoid "the textbook says", "this section introduces", and exam-like definition recitation.

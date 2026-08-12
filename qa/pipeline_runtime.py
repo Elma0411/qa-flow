@@ -151,7 +151,10 @@ def parse_one_step_pipeline_runtime(config: Dict[str, Any]) -> OneStepPipelineRu
             dict(item) for item in raw_pre_split_chunk_meta if isinstance(item, dict)
         ]
 
-    candidate_multiplier = max(1, int(config.get("candidate_multiplier") or 2))
+    # Candidate answers are no longer hard-filtered here. Generating exactly the
+    # requested number avoids incentivizing the model to mine every clause in a
+    # source unit merely to fill an over-sampled candidate batch.
+    candidate_multiplier = max(1, int(config.get("candidate_multiplier") or 1))
     semantic_top_k = max(0, int(config.get("semantic_top_k") or DEFAULT_SEMANTIC_TOP_K))
     max_unit_chars = max(1000, int(config.get("max_unit_chars") or DEFAULT_MAX_UNIT_CHARS))
     retrieval_mode = str(config.get("retrieval_mode") or DEFAULT_RETRIEVAL_MODE).strip().lower()

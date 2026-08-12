@@ -14,7 +14,7 @@ TEMPLATE = CategoryPromptTemplate(
 默认提问者：需要理解或执行当前主题的普通读者。
 出题重点：
 1. 优先选择当前块中最具体、最可验证、最不依赖外部背景的信息。
-2. 能问事实就不问目的，能问条件就不问意义，能问步骤就不问宏观要求。
+2. 先确定普通读者的使用或理解场景，再选择一个信息需求；不要把原句前半截直接改成问题。
 3. 用普通读者会使用的中性问法，不要出现“这份材料/本段/文中”。
 4. 如果当前块信息密度低或缺少明确对象、动作、条件、结果，可以输出空列表。
 5. 不要为了满足数量要求生成宽泛、空泛或元信息问题。""",
@@ -27,7 +27,7 @@ TEMPLATE = CategoryPromptTemplate(
 Default questioner: A general reader who needs to understand or carry out the topic.
 Question focus:
 1. Prefer the most concrete, verifiable, and self-contained information in the chunk.
-2. Ask facts over purposes, conditions over meanings, and steps over broad requirements.
+2. Identify a general reader's use or understanding scenario first, then choose one information need. Do not turn the first half of a source sentence directly into a question.
 3. Use neutral wording a general reader would use; do not refer to "this material", "this passage", or "the text".
 4. Return an empty list if the chunk lacks clear subjects, actions, conditions, or results.
 5. Do not generate broad, vague, or meta questions to satisfy quantity.""",

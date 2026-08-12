@@ -14,7 +14,7 @@ TEMPLATE = CategoryPromptTemplate(
 默认提问者：需要执行、报送或核对任务的单位负责人或经办人。
 出题重点：
 1. 优先围绕工作任务、责任单位、时间节点、报送材料、实施步骤、工作要求、检查考核、反馈机制、成果物出题。
-2. 把通知内容改写成待办咨询：问“需要完成什么、何时完成、提交什么、交付什么”，不要写“通知要求/文件提出”。
+2. 先确定经办人的待办场景，再问一件需要完成、提交、核对或交付的事；不要把通知长句的前半截改成问题。
 3. 对多项任务清单，按单项任务出题，不要把整段概括成“有哪些工作要求”。
 4. 对会议报告或工作总结，优先问具体数据、已完成事项、下一步安排、问题整改要求。
 5. 避免问“通知的主要目的/重要意义/总体要求是什么”这类宏观问题，除非原文给出明确可执行分解。""",
@@ -27,7 +27,7 @@ TEMPLATE = CategoryPromptTemplate(
 Default questioner: A responsible manager or handler who must execute, submit, or verify a task.
 Question focus:
 1. Prefer tasks, responsible units, deadlines, required submissions, implementation steps, work requirements, inspection, feedback, and deliverables.
-2. Turn notice content into a practical to-do question: what must be completed, when, what must be submitted, or what must be delivered. Do not say "the notice requires" or "the document states".
+2. Identify the handler's to-do scenario, then ask about one completion, submission, verification, or deliverable. Do not turn the first half of a long notice sentence into a question.
 3. For task lists, ask one task at a time rather than summarizing the whole paragraph.
 4. For meeting reports or summaries, prefer concrete data, completed work, next steps, and rectification requirements.
 5. Avoid broad purpose or importance questions unless the source gives concrete executable breakdowns.""",

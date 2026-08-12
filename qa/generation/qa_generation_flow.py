@@ -292,7 +292,7 @@ def call_candidate_question_llm(
         f"chunk_id: {source_chunk_meta.get('chunk_id') or ''}\n"
         f"title_path: {title_path}\n\n"
         f"knowledge_category: {knowledge_category or ''}\n\n"
-        "主来源块正文：\n"
+        "主来源单元正文：\n"
         f"{source_chunk_text}"
     )
 

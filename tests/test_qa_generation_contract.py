@@ -5,6 +5,7 @@ from qa.generation.qa_generation_flow import (
     call_candidate_question_llm,
     call_evidence_answer_llm,
 )
+from qa.pipeline_runtime import parse_one_step_pipeline_runtime
 from qa.prompts.qa_generation_prompts import (
     build_candidate_question_system_prompt,
     build_evidence_answer_system_prompt,
@@ -39,13 +40,11 @@ class QAGenerationContractTests(unittest.TestCase):
             qa_detail_mode="summary",
         )
 
-        self.assertIn("question 只能包含一个完整问句", zh_prompt)
-        self.assertIn("每题最多使用一个问号", zh_prompt)
-        self.assertIn("“总结型”描述的是答案组织方式", zh_prompt)
+        self.assertIn("每个 item 只写一个围绕同一读者需求的完整问句", zh_prompt)
+        self.assertIn("“总结”是答案可以组织多个相关事实", zh_prompt)
         self.assertNotIn("source_anchor_text", zh_prompt)
-        self.assertIn("exactly one standalone question sentence", en_prompt)
-        self.assertIn("Use at most one question mark", en_prompt)
-        self.assertIn('"Summary" describes the expected answer', en_prompt)
+        self.assertIn("one standalone question around one coherent reader need", en_prompt)
+        self.assertIn("Summary means the answer may organize related facts", en_prompt)
         self.assertNotIn("source_anchor_text", en_prompt)
 
     def test_candidate_prompt_requires_natural_user_questions(self):
@@ -68,14 +67,16 @@ class QAGenerationContractTests(unittest.TestCase):
             qa_detail_mode="point",
         )
 
-        self.assertIn("真实用户关心的对象", zh_prompt)
-        self.assertIn("标题路径只用于内部消歧和检索语境", zh_prompt)
-        self.assertIn("不得以“根据……规定”式引入", zh_prompt)
-        self.assertIn("脱离原文后，真实用户会自然地这样提问吗", zh_prompt)
+        self.assertIn("先在内部确定一个读者场景和一个信息需求", zh_prompt)
+        self.assertIn("请使用中文。", zh_prompt)
+        self.assertIn("不要把原文条款的前半句改成问题", zh_prompt)
+        self.assertIn("语义压缩示例", zh_prompt)
+        self.assertIn("农村独生子女或双女户家庭参加医保有什么优惠", zh_prompt)
         self.assertIn("默认提问者：办事人", zh_prompt)
-        self.assertIn("practical consultation question", en_prompt)
-        self.assertIn("hidden disambiguation and retrieval context", en_prompt)
-        self.assertIn("Would a real user naturally ask this", en_prompt)
+        self.assertIn("identify one reader scenario and one information need", en_prompt)
+        self.assertIn("Use English.", en_prompt)
+        self.assertIn("Do not copy a source clause", en_prompt)
+        self.assertIn("semantic compression", en_prompt)
         self.assertIn("Default questioner: An applicant", en_prompt)
 
     def test_candidate_input_marks_title_path_as_internal_context(self):
@@ -120,6 +121,7 @@ class QAGenerationContractTests(unittest.TestCase):
         )
 
         self.assertIn("不得直接照搬进 question", client.messages[1]["content"])
+        self.assertIn("主来源单元正文", client.messages[1]["content"])
 
     def test_answer_prompt_does_not_reject_candidate_as_quality_decision(self):
         zh_prompt = build_evidence_answer_system_prompt(
@@ -139,6 +141,39 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertIn("Do not output an empty items list as a quality decision", en_prompt)
         self.assertIn("exactly one item", en_prompt)
         self.assertNotIn('{"items":[]}', en_prompt)
+
+    def test_answer_prompt_requires_standalone_reader_explanation(self):
+        zh_prompt = build_evidence_answer_system_prompt(
+            language_code="zh",
+            language_instruction="请使用中文。",
+            qa_detail_mode="summary",
+        )
+        en_prompt = build_evidence_answer_system_prompt(
+            language_code="en",
+            language_instruction="Use English.",
+            qa_detail_mode="summary",
+        )
+
+        self.assertIn("1 到 2 句完整、面向读者的说明", zh_prompt)
+        self.assertIn("不是证据追踪，也不是原文句子的后半截", zh_prompt)
+        self.assertIn("source_fact_text 和 evidence_usage 完成", zh_prompt)
+        self.assertIn("不要以“该优惠、该答案、此项、上述、其中、它”等指代词开头", zh_prompt)
+        self.assertIn("农村独生子女或双女户父母参加新型农村合作医疗时", zh_prompt)
+        self.assertIn("办理流程、申请手续、主管机关或期限不得自行补全", zh_prompt)
+        self.assertIn("complete, reader-facing clarification", en_prompt)
+        self.assertIn("not a citation trace or a continuation of a source sentence", en_prompt)
+        self.assertIn('not a deictic phrase such as "this benefit"', en_prompt)
+        self.assertIn("Eligible rural one-child or two-daughter families", en_prompt)
+        self.assertIn("Do not invent an amount, ratio, procedure", en_prompt)
+
+    def test_default_candidate_count_matches_requested_output_count(self):
+        runtime = parse_one_step_pipeline_runtime({"qa_per_chunk": 1})
+        configured_runtime = parse_one_step_pipeline_runtime(
+            {"qa_per_chunk": 1, "candidate_multiplier": 3}
+        )
+
+        self.assertEqual(1, runtime.candidate_multiplier)
+        self.assertEqual(3, configured_runtime.candidate_multiplier)
 
     def test_candidate_generation_discards_source_anchor_text(self):
         client = _StaticChatClient(

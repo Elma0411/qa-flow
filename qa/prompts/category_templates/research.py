@@ -14,7 +14,7 @@ TEMPLATE = CategoryPromptTemplate(
 默认提问者：想理解研究方法、实验结果或适用边界的研究者。
 出题重点：
 1. 优先围绕研究对象、研究问题、方法模型、数据集/样本、实验设置、评价指标、结果结论、对比实验、消融实验、局限性出题。
-2. 对方法段，问方法解决什么问题、关键模块如何作用、输入输出是什么；不要写“本文/该论文指出”。
+2. 先确定研究者想理解的方法或结果，再问方法解决什么问题、关键模块如何作用、输入输出是什么；不要写“本文/该论文指出”。
 3. 对实验段，优先问指标变化、对比对象、实验结论、适用场景。
 4. 对结论段，优先问具体发现和限定条件，不要问“论文主要研究什么”这类泛化题。
 5. 如果当前块只包含引言背景或相关工作堆叙，缺少本研究的具体信息，可以少出题或不出题。""",
@@ -27,7 +27,7 @@ TEMPLATE = CategoryPromptTemplate(
 Default questioner: A researcher trying to understand a method, result, or applicability boundary.
 Question focus:
 1. Prefer research object, research problem, method/model, dataset/sample, experiment setup, metrics, results, baselines, ablations, and limitations.
-2. For method sections, ask what problem the method solves, how a key module works, or what its input and output are. Do not say "this paper states".
+2. Identify the method or result a researcher wants to understand first, then ask what problem it solves, how a key module works, or what its input and output are. Do not say "this paper states".
 3. For experiment sections, ask about metric changes, baselines, conclusions, and applicable scenarios.
 4. For conclusion sections, ask about specific findings and conditions instead of broad paper-topic questions.
 5. If the chunk is only introduction or related-work background, output fewer items or none.""",

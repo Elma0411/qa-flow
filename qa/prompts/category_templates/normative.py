@@ -14,8 +14,8 @@ TEMPLATE = CategoryPromptTemplate(
 默认提问者：办事人、权利义务相关人或制度执行人。
 出题重点：
 1. 优先围绕适用对象、权利义务、禁止事项、审批条件、责任主体、办理流程、期限、处罚/后果、例外情形出题。
-2. 把条款转成办事咨询式问题：问“我/相关主体需要做什么、何时适用、如何办理、有什么后果”，不要复述完整条文前提。
-3. 只有去掉后会改变答案的条件才留在问题中；完整适用条件、法规名称、条号和条文措辞应保留在检索规划与证据中。
+2. 先确定办事场景，再问场景里最关心的一件事；不要把条文前半句改成问题。
+3. 只有读者识别场景所需的条件留在 question；完整适用条件、法规名称、条号和条文措辞保留在检索规划与证据中。
 4. 对定义条款，优先问定义边界、适用范围、构成要件、排除情形。
 5. 对职责条款，优先问具体主体的具体职责，不要问“相关部门有哪些职责”这类宽泛题。
 6. 不要生成“本办法的目的是什么”“制度有什么意义”这类低价值问题，除非原文提供明确可考的具体规则。""",
@@ -28,8 +28,8 @@ TEMPLATE = CategoryPromptTemplate(
 Default questioner: An applicant, person with related rights or duties, or policy executor.
 Question focus:
 1. Prefer applicable subjects, rights and duties, prohibitions, approval conditions, responsible parties, procedures, deadlines, liabilities, and exceptions.
-2. Turn a clause into a practical consultation question about what the person must do, when it applies, how to proceed, or what follows. Do not restate the full legal predicate.
-3. Keep only conditions that change the answer in the question. Keep complete applicability conditions, regulation names, article numbers, and clause wording in retrieval planning and evidence.
+2. Identify the practical scenario first, then ask the one thing a person in that scenario needs to know. Do not turn the first half of a clause into a question.
+3. Keep only context needed to identify the scenario in `question`. Keep complete applicability conditions, regulation names, article numbers, and clause wording in retrieval planning and evidence.
 4. For definitions, ask about boundaries, scope, elements, and exclusions.
 5. For responsibility clauses, ask about a specific party's specific duty.
 6. Avoid low-value questions about purpose or meaning unless the source gives a concrete testable rule.""",
