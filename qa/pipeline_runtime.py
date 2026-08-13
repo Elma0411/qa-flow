@@ -11,12 +11,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from qa.generation import (
     DEFAULT_EVIDENCE_TOKEN_BUDGET,
     DEFAULT_FINAL_EVIDENCE_K,
-    DEFAULT_MAX_UNIT_CHARS,
     GenerationUnit,
     QADocumentEvidenceIndex,
     build_question_type_plan,
     call_candidate_question_llm,
     call_evidence_answer_llm,
+    call_question_editor_llm,
     normalize_question_type_mode,
     normalize_question_type_weights,
     normalize_question_types,
@@ -47,10 +47,8 @@ class OneStepPipelineRuntime:
     strict_max_attempts: int
     pre_split_chunks: Optional[List[str]]
     pre_split_chunk_meta: Optional[List[Dict[str, Any]]]
-    candidate_multiplier: int
     final_evidence_k: int
     evidence_token_budget: int
-    max_unit_chars: int
 
 
 def parse_one_step_pipeline_runtime(config: Dict[str, Any]) -> OneStepPipelineRuntime:
@@ -142,10 +140,6 @@ def parse_one_step_pipeline_runtime(config: Dict[str, Any]) -> OneStepPipelineRu
             dict(item) for item in raw_pre_split_chunk_meta if isinstance(item, dict)
         ]
 
-    # Candidate answers are no longer hard-filtered here. Generating exactly the
-    # requested number avoids incentivizing the model to mine every clause in a
-    # source unit merely to fill an over-sampled candidate batch.
-    candidate_multiplier = max(1, int(config.get("candidate_multiplier") or 1))
     final_evidence_k_value = config.get("final_evidence_k")
     final_evidence_k = max(
         0,
@@ -164,7 +158,6 @@ def parse_one_step_pipeline_runtime(config: Dict[str, Any]) -> OneStepPipelineRu
             else evidence_token_budget_value
         ),
     )
-    max_unit_chars = max(1000, int(config.get("max_unit_chars") or DEFAULT_MAX_UNIT_CHARS))
 
     return OneStepPipelineRuntime(
         chunk_size=chunk_size,
@@ -189,10 +182,8 @@ def parse_one_step_pipeline_runtime(config: Dict[str, Any]) -> OneStepPipelineRu
         strict_max_attempts=strict_max_attempts,
         pre_split_chunks=pre_split_chunks,
         pre_split_chunk_meta=pre_split_chunk_meta,
-        candidate_multiplier=candidate_multiplier,
         final_evidence_k=final_evidence_k,
         evidence_token_budget=evidence_token_budget,
-        max_unit_chars=max_unit_chars,
     )
 
 
@@ -268,7 +259,10 @@ def run_one_step_chunk_worker(
     target = max(1, int(runtime.qa_per_chunk))
     effective_qa_detail_mode = _effective_qa_detail_mode(runtime.qa_detail_mode)
     max_attempts = max(1, int(runtime.strict_max_attempts))
-    candidate_count = max(target, target * max(1, int(runtime.candidate_multiplier)))
+    # A planned scenario is already the semantic candidate. One LLM draft plus
+    # one editor decision per attempt prevents the model from mining several
+    # questions from the same scenario merely because an old multiplier is set.
+    candidate_count = 1
     plan_full = build_question_type_plan(
         question_type_mode=runtime.question_type_mode,
         question_types=runtime.question_types,
@@ -284,6 +278,7 @@ def run_one_step_chunk_worker(
     chunk_started_at = time.perf_counter()
     wall_intervals: List[Dict[str, Any]] = []
     candidate_question_seconds = 0.0
+    question_editor_seconds = 0.0
     retrieval_embedding_seconds = 0.0
     retrieval_ranking_seconds = 0.0
     retrieval_unit_seconds = 0.0
@@ -322,13 +317,47 @@ def run_one_step_chunk_worker(
             candidate_ended_at,
         )
         candidate_questions_total += len(candidates)
-        retrieval_timing: Dict[str, float] = {}
-        retrieval_started_at = time.perf_counter()
+        edited_candidates: List[Dict[str, Any]] = []
+        editor_drop_reasons: Dict[str, int] = {}
         source_unit_payload = (
             source_chunk_meta.get("_qa_source_unit")
             if isinstance(source_chunk_meta.get("_qa_source_unit"), dict)
             else {}
         )
+        for candidate in candidates:
+            editor_started_at = time.perf_counter()
+            edited_candidate, editor_status = call_question_editor_llm(
+                client=client,
+                model=runtime.model,
+                candidate=candidate,
+                source_material=chunk_text,
+                scenario_intent=str(source_unit_payload.get("scenario_intent") or ""),
+                reader_need=str(source_unit_payload.get("reader_need") or ""),
+                qa_detail_mode=effective_qa_detail_mode,
+                prompt_language=runtime.prompt_language,
+                request_timeout=runtime.request_timeout,
+                chunk_index=chunk_index,
+                debug_writer=debug_writer,
+            )
+            editor_ended_at = time.perf_counter()
+            question_editor_seconds += editor_ended_at - editor_started_at
+            _append_wall_interval(
+                wall_intervals,
+                "question_editor",
+                editor_started_at,
+                editor_ended_at,
+            )
+            if edited_candidate:
+                edited_candidates.append(edited_candidate)
+            else:
+                editor_drop_reasons[editor_status] = editor_drop_reasons.get(editor_status, 0) + 1
+        candidates = edited_candidates
+        for reason, count in editor_drop_reasons.items():
+            dropped_answer_reasons[f"question_editor_{reason}"] = (
+                dropped_answer_reasons.get(f"question_editor_{reason}", 0) + count
+            )
+        retrieval_timing: Dict[str, float] = {}
+        retrieval_started_at = time.perf_counter()
         source_indexes = [
             int(value)
             for value in source_unit_payload.get("source_chunk_indexes") or [chunk_index]
@@ -459,7 +488,10 @@ def run_one_step_chunk_worker(
         retrieval_embedding_seconds + retrieval_ranking_seconds + retrieval_unit_seconds
     )
     measured_seconds = (
-        candidate_question_seconds + retrieval_seconds + answer_generation_seconds
+        candidate_question_seconds
+        + question_editor_seconds
+        + retrieval_seconds
+        + answer_generation_seconds
     )
     validation_and_bookkeeping_seconds = max(0.0, chunk_total_seconds - measured_seconds)
     dropped_reason_stats = dict(dropped_answer_reasons)
@@ -484,6 +516,7 @@ def run_one_step_chunk_worker(
         "timing": {
             "chunk_total_seconds": chunk_total_seconds,
             "candidate_question_seconds": candidate_question_seconds,
+            "question_editor_seconds": question_editor_seconds,
             "retrieval_seconds": retrieval_seconds,
             "retrieval_embedding_seconds": retrieval_embedding_seconds,
             "retrieval_ranking_seconds": retrieval_ranking_seconds,
@@ -522,7 +555,7 @@ def run_one_step_unit_worker(
 
     unit_runtime = replace(
         runtime,
-        qa_per_chunk=max(1, int(unit.qa_budget)),
+        qa_per_chunk=1,
         qa_detail_mode=_effective_qa_detail_mode(unit.qa_mode),
     )
     source_chunk_meta = dict(unit.source_chunk_meta)
@@ -560,6 +593,9 @@ def run_one_step_unit_worker(
             item["qa_generation_unit_index"] = unit.unit_index
             item["qa_generation_unit_type"] = unit.unit_type
             item["qa_generation_unit_mode"] = unit.qa_mode
+            item["qa_generation_scenario_intent"] = unit.scenario_intent
+            item["qa_generation_reader_need"] = unit.reader_need
+            item["qa_generation_material_ids"] = list(unit.material_ids)
             item["qa_generation_unit_source_chunk_indexes"] = list(unit.source_chunk_indexes)
             item["qa_generation_unit_section_path"] = unit.section_path
             item["qa_generation_unit_quality_child_coverage"] = unit.quality_child_coverage

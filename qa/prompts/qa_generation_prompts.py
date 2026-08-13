@@ -108,6 +108,130 @@ def _answer_detail_mode_section(*, qa_detail_mode: str, language_code: str) -> s
 """
 
 
+def build_scenario_planner_system_prompt(
+    *,
+    language_code: str,
+    language_instruction: str,
+    requested_count: int,
+    qa_detail_mode: str,
+) -> str:
+    """Build typed, evidence-bound scenarios before any question is written."""
+    mode = str(qa_detail_mode or "auto").strip().lower()
+    allowed = (
+        "point only" if mode == "point" else "summary only" if mode == "summary" else "point and summary"
+    )
+    if language_code == "en":
+        return f"""# Role: QA scenario planner
+
+Plan at most {max(0, int(requested_count))} useful QA scenarios from logical section materials. Do not write questions or answers.
+
+## Language
+{language_instruction.strip()}
+
+## Material contract
+- Each material is one logical section. Its body fragments, text, and accepted image descriptions have already been combined.
+- Never merge materials merely because they share a chapter or parent heading.
+- Use only the supplied material_id values and never invent one.
+
+## Scenario contract
+- point: exactly one material and one atomic fact need; one fact can fully answer the future question.
+- In point-only planning, cover different useful materials before proposing another point scenario from the same material.
+- summary: one coherent reader need requiring at least two distinct related facts. It may use one material containing a real list or multiple materials that genuinely serve the same reader need.
+- Related location is not enough for summary. Skip a summary scenario when the facts do not belong in one answer.
+- A material may appear in both a point and a summary scenario when the intents differ.
+- Allowed scenario types: {allowed}.
+- Prefer distinct, practical reader needs and output fewer scenarios when evidence is insufficient.
+
+## Required JSON fields
+Each item must contain `scenario_type`, `intent`, `reader_need`, and `material_ids`.
+
+Output ONLY raw JSON: {{"items":[...]}}.
+"""
+    return f"""# 角色：问答出题场景规划器
+
+请根据逻辑 section 材料规划最多 {max(0, int(requested_count))} 个有价值的出题场景。不要生成问题或答案。
+
+## 语言要求
+{language_instruction.strip()}
+
+## 材料契约
+- 每份材料就是一个逻辑 section；其正文、物理 fragment 和已接受的图片描述已经合并。
+- 不得仅因为材料同属一章或同一父标题就把它们合并。
+- 只能引用输入给出的 material_id，不得编造 ID。
+
+## 场景契约
+- point：只绑定一份材料，围绕一个原子事实需求；未来问题用一个事实即可完整回答。
+- 仅规划 point 时，应先覆盖不同的有价值材料，再考虑从同一材料提出第二个场景。
+- summary：围绕一个连贯的读者需求，必须综合至少两个不同且相关的信息点。它既可以来自同一材料中的真实枚举，也可以绑定多份确实共同服务于该需求的材料。
+- 位置相邻或同属一章不等于相关；若多个事实不适合放进同一个答案，就不得生成总结场景。
+- 同一材料在意图不同的情况下，可以同时参与 point 和 summary 场景。
+- 允许的场景类型：{allowed}。
+- 优先选择真实读者会关心且互不重复的需求；证据不足时少生成，不要凑数。
+
+## 每条 JSON 必填字段
+`scenario_type`、`intent`、`reader_need`、`material_ids`。
+
+只输出纯 JSON：{{"items":[...]}}。
+"""
+
+
+def build_question_editor_system_prompt(
+    *,
+    language_code: str,
+    language_instruction: str,
+    qa_detail_mode: str,
+) -> str:
+    """Edit one generated question without changing its evidence-bound intent."""
+    mode = _normalize_qa_detail_mode(qa_detail_mode)
+    if language_code == "en":
+        return f"""# Role: final question editor
+
+Review one generated {mode} question against its scenario and source material.
+
+## Language
+{language_instruction.strip()}
+
+Return exactly one decision:
+- keep: already natural, standalone, focused, and directly answerable.
+- rewrite: preserve the exact intent and answer boundary while making it sound like a real reader question.
+- drop: no faithful natural rewrite is possible from the supplied material.
+
+Remove copied clause syntax, source-sentence prefixes, vague references, source/document viewpoints, and joined independent asks. Do not add a condition, subject, fact, or scope not present in the scenario. A summary question must still require all bound materials; a point question must still ask one fact. Keep question_type unchanged.
+
+## Strict rewrite examples
+- Source-shaped: "For employees who lawfully give birth, how many additional days beyond statutory maternity leave may be taken?"
+  Rewrite: "How many additional days of maternity leave can an employee take after giving birth?"
+- Source-shaped: "Where application materials are complete and accepted, within how many working days shall review be completed?"
+  Rewrite: "How long does the review take after a complete application is accepted?"
+- A question is not natural merely because it is grammatical or directly answerable. If it copies a source precondition followed by a comma or conditional clause, choose rewrite unless that condition is indispensable to distinguish the rule.
+
+Output ONLY raw JSON: {{"decision":"keep|rewrite|drop","question":"...","reason":"..."}}.
+"""
+    return f"""# 角色：最终问题编辑器
+
+请结合场景和来源材料，审校一条已经生成的 {mode} 问题。
+
+## 语言要求
+{language_instruction.strip()}
+
+只能作出一个决定：
+- keep：问题已经自然、独立、聚焦且能由材料直接回答。
+- rewrite：严格保持原意和答案边界，只把表达改成真实读者会问的自然问句。
+- drop：无法在不改变事实或范围的前提下合理改写。
+
+需要消除条文照搬、原句前半段式问法、模糊指代、文件/原文视角和多个独立事项拼问。不得新增场景中没有的条件、主体、事实或范围。总结题改写后仍必须需要全部绑定材料；单点题仍只能问一个事实。question_type 不得改变。
+
+## 严格改写示例
+- 条文式：“女职工合法生育子女的，在法定产假之外可以增加多少天产假？”
+  改写：“女职工生育后，可以额外休多少天产假？”
+- 条文式：“申请材料齐全并受理后，应当在多少个工作日内完成审核？”
+  改写：“材料齐全的申请获受理后，审核需要多长时间？”
+- 语法通顺、能够作答，不等于自然。凡是把原文的条件从句直接搬到逗号前，再把后半句改成疑问的，原则上必须 rewrite；只有该条件用于区分不同规则时才保留最少必要部分。
+
+只输出纯 JSON：{{"decision":"keep|rewrite|drop","question":"...","reason":"..."}}。
+"""
+
+
 def build_candidate_question_system_prompt(
     *,
     language_code: str,
@@ -139,12 +263,12 @@ Generate at most {max_candidates} training-data questions from the supplied sour
 {language_instruction.strip()}
 
 ## Internal method; do not expose it
-1. Read the material and choose one concrete information focus that matters to a plausible reader.
-2. Identify one reader scenario and one information need. Write the question that reader would actually ask.
+1. Follow the supplied scenario_intent and reader_need; do not choose a different information focus.
+2. Write the one question that this reader would actually ask.
 3. Silently test the wording: it must be answerable from the material, standalone, and natural without the reader having seen the source. Rewrite or skip it when it sounds clause-shaped.
 
 ## Question rules
-- Write one complete question about one coherent need. Keep only the context needed to identify the scenario.
+- Write one complete question about the supplied coherent need. Keep only the context needed to identify the scenario.
 - Do not convert the first half of a source sentence into a question, carry every legal predicate into the question, or imitate source syntax.
 - Do not mention sources, documents, sections, article numbers, titles, "according to", or vague references.
 - Prefer a practical rule, amount, step, condition, responsibility, prohibition, deadline, exception, mechanism, or comparison over background or slogans.
@@ -172,12 +296,12 @@ Output ONLY raw JSON: {{"items":[...]}}.
 {language_instruction.strip()}
 
 ## 内部工作法，不要写进问题
-1. 通读材料，先选择一个对真实读者有用的具体信息焦点。
-2. 在内部确定一个读者场景和一个信息需求，再写出这个读者实际会问的一句话。
+1. 严格遵循输入给出的 scenario_intent 和 reader_need，不得另选信息焦点。
+2. 写出这个读者针对该需求实际会问的一句话。
 3. 静默自检：问题能由材料回答、脱离材料也意思完整，而且读者没看过材料时仍会自然地这样问；不自然就改写或跳过。
 
 ## 问题规则
-- 每条只问一个完整、连贯的信息需求；只保留识别场景所需的最少上下文。
+- 每条只问输入场景所规定的完整、连贯信息需求；只保留识别场景所需的最少上下文。
 - 不要把原文一句话的前半句改成问题，也不要把完整法规前提、原文句式或检索细节搬进问题。
 - 不要出现“根据/依据”、条号、文件名、章节名、“文中指出”等来源视角，也不要使用指代不明的词。
 - 优先问实际会关心的规则、金额、步骤、条件、责任、禁止、期限、例外、机制或对比；跳过背景、口号和空泛管理表述。
@@ -242,6 +366,7 @@ def build_evidence_answer_system_prompt(
 5. Produce a direct, natural answer without saying "according to the text/reference/document".
 6. Fill evidence_usage with `evidence_ref`, a short snippet, and usage for every material section that supports the answer. Do not invent or output chunk IDs.
 7. Treat labels such as `主材料-1` and `检索证据-1` as bookkeeping only; never copy them into question, answer, answer_explanation, or source_fact_text.
+8. For a summary question, cite every primary material required by the question. Do not answer only the first half of a multi-fact scenario.
 
 {detail_mode_section}
 
@@ -310,6 +435,7 @@ qa_detail_mode={qa_detail_mode}
 5. 生成直接、自然的答案，不要写“根据原文/根据通知/文中提到”。
 6. 填写 evidence_usage，列出每段真正支撑答案的 `evidence_ref`、短片段和用途；不得编造或输出 chunk_id。
 7. `主材料-1`、`检索证据-1` 等标签仅用于证据追踪，不得写进 question、answer、answer_explanation 或 source_fact_text。
+8. 总结题必须引用回答该问题所必需的每份主材料，不得只回答多事实场景的前半部分。
 
 {detail_mode_section}
 
@@ -360,4 +486,6 @@ qa_detail_mode={qa_detail_mode}
 __all__ = [
     "build_candidate_question_system_prompt",
     "build_evidence_answer_system_prompt",
+    "build_question_editor_system_prompt",
+    "build_scenario_planner_system_prompt",
 ]

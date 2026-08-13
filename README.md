@@ -100,10 +100,11 @@ POST /batch-upload-complete-pipeline-with-evaluation
 - `qa_total_limit`：主问答总数上限，前端默认 `20`。
 - `qa_total_limit_scope`：题数上限范围，支持 `per_file` 和 `batch`。
 - `qa_detail_mode`：问答粒度，支持 `auto`、`point` 和 `summary`。
-  `auto` 会按 generation unit 类型自动选择 point/summary。`summary` 的每条
-  item 仍只包含一个中心问题，答案可以归纳同一相关段落中的多项事实；不会把
-  多个独立问题拼进一个 question。生成阶段只做必要结构校验，质量筛选由后续
-  评价阶段负责。
+  系统先把同一逻辑 section 的 fragment、正文和关联图片整理成一份材料，再由
+  LLM 建立 PointScenario 与 SummaryScenario 候选池。`auto` 目标为 35% 总结题，
+  总结场景不足时额度自动让给单点题。每个场景只生成一道题，并统一经过一次
+  LLM `keep/rewrite/drop` 编辑；不会靠硬编码语言规则判断自然度。长文档由后端
+  按内部字符预算分批规划，最终题型配额和问题去重仍在文档级统一完成。
 - `qa_per_chunk`：兼容旧调用方；未传 `qa_total_limit` 时才用于估算题量。
 - `prompt_language`：提示词语言，支持 `auto`、`zh`、`en`。
 - `question_type_mode`：题型模式，支持 `fixed` 和 `mixed`。
@@ -118,7 +119,8 @@ POST /batch-upload-complete-pipeline-with-evaluation
 - `enable_vector_storage`：是否写入问答向量库。
 - `enable_chunk_storage`：是否写入文档块树。
 - `final_evidence_k`：最终保留的检索证据窗口数，默认 `5`；设为 `0`
-  时答案只使用当前 generation unit 的主材料。
+  时答案只使用当前 generation unit 的主材料。它表示上限而不是必须填满；BGE
+  相关性准入后可能保留 0 组补充证据。
 - `evidence_token_budget`：检索证据窗口的近似 token 总预算，默认 `4000`。
 - `chunking_split_type`：切分方式，支持 `markdown`、`text`、`token`、
   `recursive`、`code`、`custom`。
@@ -174,15 +176,17 @@ Milvus 查询结果，而不是继续依赖已过期的 JSON 或 CSV 文件。
 切块元数据把“章节节点”“内容 chunk”“物理 fragment”分开：内部章节可以有
 自己的正文，空父章节不会制造重复正文，长章节的 `Part N/M` 只记录为 fragment，
 不会成为假章节。检索固定使用 BM25 + BGE-M3 dense、RRF、本地
-`bge-reranker-v2-m3` 原子块重排、结构窗口补全和窗口二次重排；模型缺失会明确
-报错，不会退回旧手工排序。
+`bge-reranker-v2-m3` 原子块重排、相关性准入、结构窗口补全和窗口二次重排；
+窗口还要通过第二次相关性准入，模型缺失会明确报错，不会退回旧手工排序。
+准入同时比较问题与真实主材料的 BGE 得分，补充块明显弱于主材料时直接丢弃；
+`scripts/calibrate_bge_relevance.py` 可复现实测阈值。
 
 默认模型目录为 `${APP_MODELS_DIR}/bge-reranker-v2-m3`；Docker 正式与调试
 入口都可通过 `QA_RERANKER_MODEL_PATH`、`QA_RERANKER_DEVICE`、
 `QA_RERANKER_BATCH_SIZE`、`QA_RERANKER_MAX_LENGTH` 覆盖。
 
-文档块 v2 存在 `doc_content_chunks_v2` 集合，旧 `doc_tree_chunks` 保留但不作为
-查询回退。块级溯源使用以下接口：
+文档块只使用 `doc_content_chunks_v2`（schema v2）集合；旧
+`doc_tree_chunks` 集合及其兼容路径已经移除。块级溯源使用以下接口：
 
 - `GET /doc-chunks/by-task/{task_id}`
 - `GET /doc-chunks/tree`

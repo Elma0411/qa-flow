@@ -19,7 +19,12 @@ from qa.pipeline_runtime import (
     resolve_one_step_chunks,
     run_one_step_unit_worker,
 )
-from qa.generation import QADocumentEvidenceIndex, build_document_chunks, plan_generation_units
+from qa.generation import (
+    QADocumentEvidenceIndex,
+    build_document_chunks,
+    call_scenario_planner_llm,
+    plan_generation_units,
+)
 
 DEFAULT_SOURCE_BY_LANGUAGE = {"zh": "文本内容", "en": "text content"}
 GENERIC_SOURCE_LABELS_BY_LANGUAGE = {
@@ -157,15 +162,37 @@ def _build_jsonl_debug_writer(path: Optional[str]) -> Optional[Callable[[Dict[st
     return _write
 
 
+def _question_identity(value: Any) -> str:
+    return re.sub(r"[\s\W_]+", "", str(value or "")).casefold()
+
+
+def _deduplicate_document_questions(items: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int]:
+    deduped: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    dropped = 0
+    for item in items:
+        key = _question_identity(item.get("question"))
+        if not key or key in seen:
+            dropped += 1
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped, dropped
+
+
 _GENERATION_WALL_STAGE_TO_FIELD = {
+    "scenario_planning": "scenario_planning_seconds",
     "candidate_question": "candidate_question_seconds",
+    "question_editor": "question_editor_seconds",
     "retrieval": "retrieval_seconds",
     "answer_generation": "answer_generation_seconds",
     "validation_and_bookkeeping": "validation_and_bookkeeping_seconds",
 }
 
 _GENERATION_WALL_FIELDS = (
+    "scenario_planning_seconds",
     "candidate_question_seconds",
+    "question_editor_seconds",
     "retrieval_seconds",
     "answer_generation_seconds",
     "validation_and_bookkeeping_seconds",
@@ -282,20 +309,32 @@ def process_text_to_qa_one_step(
     raw_chunks = resolve_one_step_chunks(text, runtime)
     if not raw_chunks:
         return []
-    document_chunks = build_document_chunks(
-        raw_chunks,
-        runtime.pre_split_chunk_meta,
-    )
+    document_chunks = build_document_chunks(raw_chunks, runtime.pre_split_chunk_meta)
     if not document_chunks:
         return []
+    scenario_planning_started_at = time.perf_counter()
+
+    def _scenario_planner(materials: Any, requested_count: int, mode: str) -> List[Dict[str, Any]]:
+        return call_scenario_planner_llm(
+            client=client,
+            model=runtime.model,
+            section_materials=list(materials),
+            requested_count=requested_count,
+            qa_detail_mode=mode,
+            prompt_language=runtime.prompt_language,
+            request_timeout=runtime.request_timeout,
+            debug_writer=debug_writer,
+        )
+
     unit_plan = plan_generation_units(
         document_chunks,
         qa_total_limit=runtime.qa_total_limit,
         qa_per_chunk=runtime.qa_per_chunk,
         qa_detail_mode=runtime.qa_detail_mode,
         chunk_size=runtime.chunk_size,
-        max_unit_chars=runtime.max_unit_chars,
+        scenario_planner=_scenario_planner,
     )
+    scenario_planning_seconds = time.perf_counter() - scenario_planning_started_at
     generation_units = list(unit_plan.units)
     total_chunks = len(document_chunks)
     total_generation_units = len(generation_units)
@@ -316,7 +355,10 @@ def process_text_to_qa_one_step(
                             quality.to_dict()
                             for _, quality in sorted(unit_plan.chunk_quality.items())
                         ],
-                        "timing": {"index_build_seconds": 0.0},
+                        "timing": {
+                            "index_build_seconds": 0.0,
+                            "scenario_planning_seconds": scenario_planning_seconds,
+                        },
                     }
                 )
                 progress_callback(
@@ -335,7 +377,10 @@ def process_text_to_qa_one_step(
                         "generation_unit_details": [],
                         "chunk_details": [],
                         "timing": _generation_timing_with_metadata(
-                            {"document_total_seconds": time.perf_counter() - document_started_at},
+                            {
+                                "document_total_seconds": time.perf_counter() - document_started_at,
+                                "scenario_planning_seconds": scenario_planning_seconds,
+                            },
                             index_seconds=0.0,
                             total_chunks=total_chunks,
                             chunks_completed=0,
@@ -373,8 +418,12 @@ def process_text_to_qa_one_step(
                     "generation_unit_plan": [
                         unit.to_debug_dict() for unit in generation_units
                     ],
+                    "section_material_plan": [
+                        material.to_debug_dict() for material in unit_plan.section_materials
+                    ],
                     "timing": {
                         "index_build_seconds": index_seconds,
+                        "scenario_planning_seconds": scenario_planning_seconds,
                     },
                 }
             )
@@ -387,9 +436,17 @@ def process_text_to_qa_one_step(
     unit_items_by_index: Dict[int, List[Dict[str, Any]]] = {}
     unit_errors: List[str] = []
     generation_unit_debug_details: List[Dict[str, Any]] = []
-    generation_wall_intervals: List[Dict[str, Any]] = []
+    generation_wall_intervals: List[Dict[str, Any]] = [
+        {
+            "stage": "scenario_planning",
+            "start": scenario_planning_started_at,
+            "end": scenario_planning_started_at + scenario_planning_seconds,
+            "seconds": scenario_planning_seconds,
+        }
+    ]
     generation_accumulator: Dict[str, float] = {
         "candidate_question_seconds": 0.0,
+        "question_editor_seconds": 0.0,
         "retrieval_seconds": 0.0,
         "retrieval_embedding_seconds": 0.0,
         "retrieval_ranking_seconds": 0.0,
@@ -527,6 +584,7 @@ def process_text_to_qa_one_step(
         for item in items_list:
             if isinstance(item, dict):
                 results.append(item)
+    results, duplicate_questions_dropped = _deduplicate_document_questions(results)
     if runtime.qa_total_limit is not None:
         results = results[: max(0, int(runtime.qa_total_limit))]
     if progress_callback:
@@ -536,6 +594,7 @@ def process_text_to_qa_one_step(
             generation_cumulative_detail = _generation_timing_with_metadata(
                 {
                     **generation_accumulator,
+                    "scenario_planning_seconds": scenario_planning_seconds,
                     "document_total_seconds": document_total_seconds,
                 },
                 index_seconds=index_seconds,
@@ -571,6 +630,10 @@ def process_text_to_qa_one_step(
                     quality.to_dict()
                     for _, quality in sorted(unit_plan.chunk_quality.items())
                 ],
+                "section_material_plan": [
+                    material.to_debug_dict() for material in unit_plan.section_materials
+                ],
+                "duplicate_questions_dropped": duplicate_questions_dropped,
             }
             progress_callback(
                 {
@@ -583,6 +646,7 @@ def process_text_to_qa_one_step(
                     "qa_total_limit": runtime.qa_total_limit,
                     "qa_total_limit_scope": runtime.qa_total_limit_scope,
                     "unit_plan_summary": unit_plan.summary(),
+                    "duplicate_questions_dropped": duplicate_questions_dropped,
                     "chunk_quality_details": [
                         quality.to_dict()
                         for _, quality in sorted(unit_plan.chunk_quality.items())

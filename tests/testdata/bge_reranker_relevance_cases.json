@@ -1,0 +1,116 @@
+{
+  "model": "BAAI/bge-reranker-v2-m3",
+  "revision": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+  "minimum_logit": -1.0,
+  "maximum_primary_source_drop": 1.0,
+  "cases": [
+    {
+      "id": "zh_materials",
+      "label": "relevant",
+      "query": "办理申请需要提交哪些材料？",
+      "passage": "申请人应提交身份证明、填写完整的申请表和授权委托书。"
+    },
+    {
+      "id": "zh_deadline",
+      "label": "relevant",
+      "query": "申请提交后多久可以办结？",
+      "passage": "受理后应当在五个工作日内完成审核并告知结果。"
+    },
+    {
+      "id": "zh_maternity",
+      "label": "relevant",
+      "query": "女职工生育后可以额外休多少天产假？",
+      "passage": "女职工合法生育子女的，在法定产假基础上增加产假六十天。"
+    },
+    {
+      "id": "zh_wage",
+      "label": "relevant",
+      "query": "工资总额是否包括奖金？",
+      "passage": "工资总额由计时工资、计件工资、奖金、津贴和补贴等组成。"
+    },
+    {
+      "id": "zh_insurance",
+      "label": "relevant",
+      "query": "符合条件的农村家庭参加合作医疗有什么缴费优惠？",
+      "passage": "农村独生子女户和双女户父母参加新型农村合作医疗时，个人缴费部分予以减免。"
+    },
+    {
+      "id": "en_refund",
+      "label": "relevant",
+      "query": "How long does a customer have to request a refund?",
+      "passage": "A refund request must be submitted within 30 days after the purchase date."
+    },
+    {
+      "id": "en_password",
+      "label": "relevant",
+      "query": "How can a user reset a forgotten password?",
+      "passage": "Select Forgot Password and use the reset link sent to the registered email address."
+    },
+    {
+      "id": "en_safety",
+      "label": "relevant",
+      "query": "What must be checked before holiday shutdown?",
+      "passage": "Before the holiday, each department must inspect electrical equipment, fire exits, and hazardous storage areas."
+    },
+    {
+      "id": "hard_material_time",
+      "label": "hard_negative",
+      "query": "办理申请需要提交哪些材料？",
+      "passage": "申请受理后应当在五个工作日内完成审核。"
+    },
+    {
+      "id": "hard_deadline_fee",
+      "label": "hard_negative",
+      "query": "申请提交后多久可以办结？",
+      "passage": "该项申请不收取任何办理费用。"
+    },
+    {
+      "id": "hard_maternity_spouse",
+      "label": "hard_negative",
+      "query": "女职工生育后可以额外休多少天产假？",
+      "passage": "职工配偶生育的，男方可以享受十五天护理假。"
+    },
+    {
+      "id": "hard_wage_exclusion",
+      "label": "hard_negative",
+      "query": "工资总额是否包括奖金？",
+      "passage": "劳动保护支出和出差伙食补助费不列入工资总额。"
+    },
+    {
+      "id": "hard_insurance_eligibility",
+      "label": "hard_negative",
+      "query": "符合条件的农村家庭参加合作医疗有什么缴费优惠？",
+      "passage": "申请家庭应当提交户口簿和子女出生证明进行资格核验。"
+    },
+    {
+      "id": "hard_refund_method",
+      "label": "hard_negative",
+      "query": "How long does a customer have to request a refund?",
+      "passage": "Approved refunds are returned to the original payment method."
+    },
+    {
+      "id": "hard_password_rule",
+      "label": "hard_negative",
+      "query": "How can a user reset a forgotten password?",
+      "passage": "Passwords must contain at least twelve characters, a number, and a symbol."
+    },
+    {
+      "id": "hard_safety_records",
+      "label": "hard_negative",
+      "query": "What must be checked before holiday shutdown?",
+      "passage": "Departments must archive the annual safety-training attendance records."
+    },
+    {
+      "id": "unrelated_weather",
+      "label": "unrelated",
+      "query": "办理申请需要提交哪些材料？",
+      "passage": "明天多云转晴，最高气温二十六摄氏度。"
+    },
+    {
+      "id": "unrelated_recipe",
+      "label": "unrelated",
+      "query": "How can a user reset a forgotten password?",
+      "passage": "Bake the bread at 200 degrees for twenty minutes."
+    }
+  ]
+}

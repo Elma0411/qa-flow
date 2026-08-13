@@ -85,6 +85,19 @@ atomic reranking. It has no persisted fake chunk ID; attribution remains on
 the member `chunk_id` values.
 _Avoid_: Persisted aggregate parent text
 
+**Section Material**:
+The atomic source material used for question planning. It contains the body,
+physical fragments, and accepted image descriptions belonging to one exact
+`section_path`; it never means all children under a chapter.
+_Avoid_: Parent-chapter aggregate, arbitrary chunk group
+
+**Question Scenario**:
+An evidence-bound reader need selected before wording a question.
+`PointScenario` requires one atomic fact from one Section Material;
+`SummaryScenario` requires multiple related facts from one real enumeration or
+several materials that jointly answer one coherent need.
+_Avoid_: A generated question, a fixed section type, forced question quota
+
 **Shared Boundary**:
 A module, field set, endpoint, runtime variable, or deployment asset that both
 `dw` and `hao` work depends on.

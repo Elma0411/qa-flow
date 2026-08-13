@@ -11,7 +11,6 @@ from qa.retrieval import EvidenceChunk, EvidenceRetrievalPipeline
 
 DEFAULT_FINAL_EVIDENCE_K = 5
 DEFAULT_EVIDENCE_TOKEN_BUDGET = 4000
-DEFAULT_MAX_UNIT_CHARS = 12000
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -190,6 +189,7 @@ class QADocumentEvidenceIndex:
             ref_map[label] = {
                 "chunk_id": chunk.get("chunk_id"),
                 "chunk_index": chunk.get("chunk_index"),
+                "title_path": chunk.get("title_path"),
                 "role": "primary_source",
             }
         if evidence_chunks:
@@ -204,6 +204,7 @@ class QADocumentEvidenceIndex:
                 ref_map[label] = {
                     "chunk_id": chunk.get("chunk_id"),
                     "chunk_index": chunk.get("chunk_index"),
+                    "title_path": chunk.get("title_path"),
                     "role": "retrieved_evidence",
                 }
 
@@ -243,7 +244,6 @@ class QADocumentEvidenceIndex:
 __all__ = [
     "DEFAULT_EVIDENCE_TOKEN_BUDGET",
     "DEFAULT_FINAL_EVIDENCE_K",
-    "DEFAULT_MAX_UNIT_CHARS",
     "QADocumentEvidenceIndex",
     "build_document_chunks",
 ]

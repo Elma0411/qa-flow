@@ -152,7 +152,7 @@ async def batch_upload_complete_pipeline_with_evaluation(
     qa_total_limit_scope: str = Form("per_file", description="题数上限范围：per_file / batch"),
     qa_detail_mode: str = Form(
         "auto",
-        description="问答粒度: 'auto'=按 generation unit 自动选择, 'point'=单点事实直答, 'summary'=总结/对比/推理",
+        description="出题场景: 'auto'=Point/Summary 双池分配, 'point'=单点事实直答, 'summary'=多事实总结",
     ),
     prompt_language: str = Form(
         "auto",
@@ -213,7 +213,7 @@ async def batch_upload_complete_pipeline_with_evaluation(
     filter_by_threshold: bool = Form(False, description="是否按平均分阈值过滤问答对"),
     score_threshold: float = Form(0.7, description="平均分阈值"),
     enable_vector_storage: bool = Form(True, description="是否自动入库 QA 到向量库"),
-    enable_chunk_storage: bool = Form(True, description="是否保存 chunk 溯源索引 doc_tree_chunks"),
+    enable_chunk_storage: bool = Form(True, description="是否保存 chunk 溯源索引 doc_content_chunks_v2"),
     chunk_storage_fail_fast: bool = Form(False, description="溯源索引失败时是否终止任务（默认 False）"),
     chunking_prefix_max_depth: int = Form(4, description="前缀使用的上级标题层数（0~12）"),
     chunking_split_type: Optional[str] = Form(

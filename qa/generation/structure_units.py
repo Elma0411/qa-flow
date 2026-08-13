@@ -1,5 +1,4 @@
-# 文件作用：基于文档结构规划 QA generation unit，并执行轻量 chunk 质量门控。
-# 关联说明：被 text_to_qa_pipeline 调用，把 leaf chunk 转成更适合出题的 generation unit。
+"""Plan LLM-backed QA scenarios from logical document sections."""
 
 from __future__ import annotations
 
@@ -7,27 +6,23 @@ import hashlib
 import re
 from collections import defaultdict
 from dataclasses import dataclass, replace
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 QUALITY_STATUS_USABLE = "usable"
 QUALITY_STATUS_CONTEXT_ONLY = "context_only"
 QUALITY_STATUS_DROP = "drop"
 
-UNIT_TYPE_LEAF = "leaf"
-UNIT_TYPE_SECTION = "section"
-UNIT_TYPE_VIRTUAL_PARENT = "virtual_parent"
+UNIT_TYPE_POINT_SCENARIO = "point_scenario"
+UNIT_TYPE_SUMMARY_SCENARIO = "summary_scenario"
+SCENARIO_TYPE_POINT = "point"
+SCENARIO_TYPE_SUMMARY = "summary"
+DEFAULT_AUTO_SUMMARY_RATIO = 0.35
+DEFAULT_SCENARIO_PLANNING_BATCH_CHARS = 24000
 
 
 def _safe_text(value: Any) -> str:
     return str(value or "").strip()
-
-
-def _safe_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value)
-    except Exception:
-        return default
 
 
 def _collapse_text(text: str) -> str:
@@ -45,17 +40,15 @@ def _token_set(text: str) -> set[str]:
         if re.fullmatch(r"[a-z0-9_]+", segment):
             if len(segment) >= 2:
                 tokens.add(segment)
-            continue
-        if len(segment) <= 2:
+        elif len(segment) <= 2:
             tokens.add(segment)
-            continue
-        tokens.update(segment[index : index + 2] for index in range(len(segment) - 1))
+        else:
+            tokens.update(segment[index : index + 2] for index in range(len(segment) - 1))
     return tokens
 
 
 def _jaccard(left: Iterable[str], right: Iterable[str]) -> float:
-    left_set = set(left)
-    right_set = set(right)
+    left_set, right_set = set(left), set(right)
     if not left_set or not right_set:
         return 0.0
     return len(left_set & right_set) / max(1, len(left_set | right_set))
@@ -66,9 +59,9 @@ def _line_texts(text: str) -> List[str]:
 
 
 def _has_sentence_signal(text: str) -> bool:
-    if re.search(r"[。！？!?；;:：]", text):
-        return True
-    return bool(re.search(r"\b(is|are|means|includes|shall|must|should|requires?)\b", text, re.I))
+    return bool(re.search(r"[。！？!?；;:：]", text)) or bool(
+        re.search(r"\b(is|are|means|includes|shall|must|should|requires?)\b", text, re.I)
+    )
 
 
 def _has_list_signal(text: str) -> bool:
@@ -85,25 +78,28 @@ def _has_fact_signal(text: str) -> bool:
         return False
     if _has_sentence_signal(text) or _has_list_signal(text):
         return True
-    if re.search(r"\d{4}[-年/]\d{1,2}|[0-9]+(?:\.[0-9]+)?\s*(?:%|元|万|小时|天|kg|km|m|GB|MB)", text, re.I):
-        return True
-    if re.search(r"(定义为|是指|包括|包含|适用于|应当|必须|不得|要求|标准|条件|流程|步骤|范围)", text):
-        return True
-    return bool(re.search(r"\b(define[sd]?|include[sd]?|require[sd]?|applies to|condition|process|step|standard)\b", text, re.I))
+    return bool(
+        re.search(
+            r"(定义为|是指|包括|包含|适用于|应当|必须|不得|要求|标准|条件|流程|步骤|范围|"
+            r"\bdefine[sd]?\b|\binclude[sd]?\b|\brequire[sd]?\b|applies to)",
+            text,
+            re.I,
+        )
+    )
 
 
 def _looks_placeholder(text: str) -> bool:
     clean = _collapse_text(text)
     if not clean:
         return True
-    placeholder_hit = bool(
+    hit = bool(
         re.search(
             r"(图片|图像|图示|截图|附件|二维码|扫描件|占位|见图|见附件|image|figure|attachment|placeholder)",
             clean,
             re.I,
         )
     )
-    return placeholder_hit and len(clean) <= 160 and not _has_fact_signal(clean)
+    return hit and len(clean) <= 160 and not _has_fact_signal(clean)
 
 
 def _looks_title_only(text: str, title_path: str) -> bool:
@@ -113,30 +109,31 @@ def _looks_title_only(text: str, title_path: str) -> bool:
     lines = _line_texts(text)
     if len(lines) > 2:
         return False
-    title_tail = ""
-    if title_path:
-        title_tail = title_path.replace("＞", ">").split(">")[-1].strip()
+    title_tail = title_path.replace("＞", ">").split(">")[-1].strip() if title_path else ""
     if title_tail and clean == title_tail:
         return True
     if len(clean) <= 48 and not _has_sentence_signal(clean) and not _has_list_signal(clean):
         return True
-    return bool(re.fullmatch(r"(第?[一二三四五六七八九十0-9]+[章节条部分篇].{0,40}|[0-9.、\s]{1,12}\S{0,40})", clean))
+    return bool(
+        re.fullmatch(
+            r"(第?[一二三四五六七八九十0-9]+[章节条部分篇].{0,40}|[0-9.、\s]{1,12}\S{0,40})",
+            clean,
+        )
+    )
 
 
 def _looks_table_fragment(text: str) -> bool:
     lines = _line_texts(text)
     if not lines:
         return False
-    tableish_lines = 0
-    for line in lines:
-        if "|" in line or "\t" in line:
-            tableish_lines += 1
-            continue
-        if len(re.split(r"\s{2,}|,|，", line)) >= 3 and not _has_sentence_signal(line):
-            tableish_lines += 1
-    if tableish_lines < max(1, len(lines) // 2):
-        return False
-    return not _has_fact_signal(text)
+    tableish = sum(
+        1
+        for line in lines
+        if "|" in line
+        or "\t" in line
+        or (len(re.split(r"\s{2,}|,|，", line)) >= 3 and not _has_sentence_signal(line))
+    )
+    return tableish >= max(1, len(lines) // 2) and not _has_fact_signal(text)
 
 
 def _symbol_digit_ratio(text: str) -> float:
@@ -154,27 +151,12 @@ def _symbol_digit_ratio(text: str) -> float:
 def _structure_signal(text: str) -> bool:
     return bool(
         re.search(
-            r"(流程|步骤|条件|材料|范围|规则|标准|要求|对比|分类|组成|清单|目录|适用|定义|process|step|condition|rule|standard|requirement|compare|category|definition)",
+            r"(流程|步骤|条件|材料|范围|规则|标准|要求|对比|分类|组成|清单|目录|适用|定义|"
+            r"process|step|condition|rule|standard|requirement|compare|category|definition)",
             text,
             re.I,
         )
     )
-
-
-def _adjacent_duplicate_ratio(
-    chunk: Dict[str, Any],
-    previous_chunk: Optional[Dict[str, Any]],
-    next_chunk: Optional[Dict[str, Any]],
-) -> float:
-    tokens = _token_set(_text_for_quality(chunk))
-    if not tokens:
-        return 0.0
-    ratios = []
-    for neighbor in (previous_chunk, next_chunk):
-        if not neighbor:
-            continue
-        ratios.append(_jaccard(tokens, _token_set(_text_for_quality(neighbor))))
-    return max(ratios or [0.0])
 
 
 @dataclass(frozen=True)
@@ -216,11 +198,48 @@ class StructureGraph:
         return {
             "chunk_count": self.chunk_count,
             "parent_group_count": len(self.children_by_parent),
-            "parent_groups": {
-                key: list(value)
-                for key, value in self.children_by_parent.items()
-                if key
-            },
+            "parent_groups": {key: list(value) for key, value in self.children_by_parent.items() if key},
+        }
+
+
+@dataclass(frozen=True)
+class SectionMaterial:
+    material_id: str
+    material_index: int
+    section_path: str
+    section_parent_path: str
+    section_level: int
+    title_path: str
+    source_chunk_indexes: List[int]
+    source_chunk_ids: List[str]
+    content_kinds: List[str]
+    source_asset_ids: List[str]
+    material_text: str
+    usable: bool
+    quality_score: float
+
+    def to_prompt_dict(self) -> Dict[str, Any]:
+        return {
+            "material_id": self.material_id,
+            "title": self.title_path,
+            "content": self.material_text,
+        }
+
+    def to_debug_dict(self) -> Dict[str, Any]:
+        return {
+            "material_id": self.material_id,
+            "material_index": self.material_index,
+            "section_path": self.section_path,
+            "section_parent_path": self.section_parent_path,
+            "section_level": self.section_level,
+            "title_path": self.title_path,
+            "source_chunk_indexes": list(self.source_chunk_indexes),
+            "source_chunk_ids": list(self.source_chunk_ids),
+            "content_kinds": list(self.content_kinds),
+            "source_asset_ids": list(self.source_asset_ids),
+            "material_char_count": len(self.material_text),
+            "usable": self.usable,
+            "quality_score": round(float(self.quality_score), 4),
         }
 
 
@@ -230,6 +249,10 @@ class GenerationUnit:
     unit_index: int
     unit_type: str
     qa_mode: str
+    scenario_intent: str
+    reader_need: str
+    material_ids: List[str]
+    material_source_chunk_indexes: Dict[str, List[int]]
     anchor_chunk_index: int
     source_chunk_indexes: List[int]
     section_path: str
@@ -251,40 +274,36 @@ class GenerationUnit:
             "unit_index": self.unit_index,
             "unit_type": self.unit_type,
             "qa_mode": self.qa_mode,
+            "scenario_intent": self.scenario_intent,
+            "reader_need": self.reader_need,
+            "material_ids": list(self.material_ids),
+            "material_source_chunk_indexes": {
+                key: list(value)
+                for key, value in self.material_source_chunk_indexes.items()
+            },
             "anchor_chunk_index": self.anchor_chunk_index,
             "source_chunk_indexes": list(self.source_chunk_indexes),
             "section_path": self.section_path,
             "title_path": self.title_path,
             "unit_text": self.unit_text,
             "qa_budget": self.qa_budget,
-            "child_count": self.child_count,
-            "usable_child_count": self.usable_child_count,
-            "quality_child_coverage": self.quality_child_coverage,
             "debug": dict(self.debug),
         }
 
     def to_debug_dict(self) -> Dict[str, Any]:
         return {
-            "unit_id": self.unit_id,
-            "unit_index": self.unit_index,
-            "unit_type": self.unit_type,
-            "qa_mode": self.qa_mode,
-            "anchor_chunk_index": self.anchor_chunk_index,
-            "source_chunk_indexes": list(self.source_chunk_indexes),
-            "section_path": self.section_path,
-            "title_path": self.title_path,
-            "qa_budget": self.qa_budget,
+            **self.to_source_unit(),
             "child_count": self.child_count,
             "usable_child_count": self.usable_child_count,
             "quality_child_coverage": round(float(self.quality_child_coverage), 4),
             "unit_char_count": len(self.unit_text),
-            "debug": dict(self.debug),
         }
 
 
 @dataclass(frozen=True)
 class GenerationUnitPlan:
     units: List[GenerationUnit]
+    section_materials: List[SectionMaterial]
     chunk_quality: Dict[int, ChunkQuality]
     graph: StructureGraph
     requested_total_qa: int
@@ -293,18 +312,18 @@ class GenerationUnitPlan:
     qa_detail_mode: str
     qa_per_chunk_fallback: int
     dropped_unit_count_by_budget: int
+    scenario_candidates_by_type: Dict[str, int]
+    scenario_selected_by_type: Dict[str, int]
+    scenario_planner_calls_by_type: Dict[str, int]
+    scenario_planner_batches_by_type: Dict[str, List[int]]
 
     def summary(self) -> Dict[str, Any]:
         quality_counts: Dict[str, int] = defaultdict(int)
         for quality in self.chunk_quality.values():
             quality_counts[quality.status] += 1
-        unit_type_counts: Dict[str, int] = defaultdict(int)
-        mode_counts: Dict[str, int] = defaultdict(int)
-        for unit in self.units:
-            unit_type_counts[unit.unit_type] += 1
-            mode_counts[unit.qa_mode] += 1
         return {
             "chunks_total": self.graph.chunk_count,
+            "section_materials_total": len(self.section_materials),
             "generation_units_total": len(self.units),
             "requested_total_qa": self.requested_total_qa,
             "effective_total_qa": self.effective_total_qa,
@@ -313,32 +332,31 @@ class GenerationUnitPlan:
             "qa_per_chunk_fallback": self.qa_per_chunk_fallback,
             "dropped_unit_count_by_budget": self.dropped_unit_count_by_budget,
             "quality_counts": dict(quality_counts),
-            "unit_type_counts": dict(unit_type_counts),
-            "mode_counts": dict(mode_counts),
+            "scenario_candidates_by_type": dict(self.scenario_candidates_by_type),
+            "scenario_selected_by_type": dict(self.scenario_selected_by_type),
+            "scenario_planner_calls_by_type": dict(self.scenario_planner_calls_by_type),
+            "scenario_planner_batches_by_type": {
+                key: list(value)
+                for key, value in self.scenario_planner_batches_by_type.items()
+            },
         }
 
 
 def build_structure_graph(document_chunks: Sequence[Dict[str, Any]]) -> StructureGraph:
-    ordered = [
-        int(chunk.get("chunk_index") or index)
-        for index, chunk in enumerate(document_chunks, start=1)
-    ]
+    ordered = [int(chunk.get("chunk_index") or index) for index, chunk in enumerate(document_chunks, 1)]
     previous_by_index: Dict[int, Optional[int]] = {}
     next_by_index: Dict[int, Optional[int]] = {}
-    for pos, chunk_index in enumerate(ordered):
-        previous_by_index[chunk_index] = ordered[pos - 1] if pos > 0 else None
-        next_by_index[chunk_index] = ordered[pos + 1] if pos + 1 < len(ordered) else None
-
+    for position, chunk_index in enumerate(ordered):
+        previous_by_index[chunk_index] = ordered[position - 1] if position > 0 else None
+        next_by_index[chunk_index] = ordered[position + 1] if position + 1 < len(ordered) else None
     children_by_parent: Dict[str, List[int]] = defaultdict(list)
     for chunk in document_chunks:
-        chunk_index = int(chunk.get("chunk_index") or 0)
-        parent_key = _safe_text(chunk.get("section_parent_path"))
-        if not parent_key:
-            continue
-        children_by_parent[parent_key].append(chunk_index)
+        parent = _safe_text(chunk.get("section_parent_path"))
+        if parent:
+            children_by_parent[parent].append(int(chunk.get("chunk_index") or 0))
     return StructureGraph(
         chunk_count=len(document_chunks),
-        children_by_parent={key: value for key, value in children_by_parent.items()},
+        children_by_parent=dict(children_by_parent),
         previous_by_index=previous_by_index,
         next_by_index=next_by_index,
     )
@@ -352,20 +370,25 @@ def evaluate_chunk_quality(
 ) -> ChunkQuality:
     text = _text_for_quality(chunk)
     clean = _collapse_text(text)
-    char_count = len(clean)
+    tokens = _token_set(text)
+    duplicate_ratio = max(
+        [
+            _jaccard(tokens, _token_set(_text_for_quality(neighbor)))
+            for neighbor in (previous_chunk, next_chunk)
+            if neighbor
+        ]
+        or [0.0]
+    )
     title_path = _safe_text(chunk.get("title_path"))
-    has_title_path = bool(title_path)
     has_fact_signal = _has_fact_signal(text)
     has_structure_signal = _structure_signal(text) or _structure_signal(title_path)
     title_only = _looks_title_only(text, title_path)
     placeholder = _looks_placeholder(text)
     table_fragment = _looks_table_fragment(text)
-    duplicate_ratio = _adjacent_duplicate_ratio(chunk, previous_chunk, next_chunk)
     noisy_ratio = _symbol_digit_ratio(text)
-
     score = 1.0
     reasons: List[str] = []
-    if char_count < 80 and not has_title_path and not _has_list_signal(text):
+    if len(clean) < 80 and not title_path and not _has_list_signal(text):
         score -= 0.35
         reasons.append("short_without_structure")
     if title_only:
@@ -380,16 +403,13 @@ def evaluate_chunk_quality(
     if duplicate_ratio >= 0.84:
         score -= 0.20
         reasons.append("high_adjacent_duplicate")
-    if noisy_ratio >= 0.48 and char_count < 320:
+    if noisy_ratio >= 0.48 and len(clean) < 320:
         score -= 0.15
         reasons.append("symbol_digit_ratio_abnormal")
-    if has_title_path:
+    if title_path:
         score += 0.10
     if has_structure_signal or has_fact_signal:
         score += 0.10
-    if 0.18 <= duplicate_ratio <= 0.72 and has_title_path:
-        score += 0.10
-
     score = max(0.0, min(1.0, score))
     if not clean or placeholder or (title_only and not has_fact_signal):
         status = QUALITY_STATUS_DROP
@@ -397,205 +417,395 @@ def evaluate_chunk_quality(
         status = QUALITY_STATUS_CONTEXT_ONLY
     else:
         status = QUALITY_STATUS_USABLE
-
     return ChunkQuality(
         chunk_index=int(chunk.get("chunk_index") or 0),
         status=status,
         score=score,
         reasons=reasons,
-        char_count=char_count,
+        char_count=len(clean),
         duplicate_ratio=duplicate_ratio,
-        has_title_path=has_title_path,
+        has_title_path=bool(title_path),
         has_structure_signal=has_structure_signal,
         has_fact_signal=has_fact_signal,
         symbol_digit_ratio=noisy_ratio,
     )
 
 
-def _render_unit_text(chunks: Sequence[Dict[str, Any]], *, max_chars: int) -> str:
-    parts: List[str] = []
-    remaining = max(1000, int(max_chars))
-    for chunk in chunks:
-        text = _text_for_quality(chunk)
-        rendered = text.strip()
-        if len(rendered) > remaining and not parts:
-            parts.append(rendered[:remaining].rstrip())
-            break
-        if len(rendered) > remaining:
-            break
-        parts.append(rendered)
-        remaining -= len(rendered)
-    return "\n\n".join(parts).strip()
+_MARKDOWN_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+\S")
 
 
-def _make_unit_id(unit_type: str, chunks: Sequence[Dict[str, Any]]) -> str:
-    raw = unit_type + "|||" + "|||".join(
-        f"{chunk.get('chunk_id') or ''}:{chunk.get('chunk_index') or ''}"
-        for chunk in chunks
+def _strip_repeated_fragment_heading(text: str) -> str:
+    """Remove the splitter-repeated heading from non-first physical fragments."""
+    lines = str(text or "").splitlines()
+    first_content_index = next(
+        (index for index, line in enumerate(lines) if line.strip()),
+        None,
     )
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+    if first_content_index is None or not _MARKDOWN_HEADING_RE.match(lines[first_content_index]):
+        return str(text or "").strip()
+    return "\n".join(lines[first_content_index + 1 :]).strip()
 
 
-def _resolve_unit_mode(requested_mode: str, unit_type: str) -> str:
-    mode = _safe_text(requested_mode).lower() or "point"
-    if mode in {"point", "summary"}:
-        return mode
-    if unit_type in {UNIT_TYPE_SECTION, UNIT_TYPE_VIRTUAL_PARENT}:
-        return "summary"
-    return "point"
+def _render_material_text(chunks: Sequence[Dict[str, Any]]) -> str:
+    pieces: List[str] = []
+    for chunk in sorted(chunks, key=lambda item: int(item.get("chunk_index") or 0)):
+        text = _text_for_quality(chunk).strip()
+        if int(chunk.get("fragment_index") or 1) > 1:
+            text = _strip_repeated_fragment_heading(text)
+        if not text:
+            continue
+        if pieces and text == pieces[-1]:
+            continue
+        pieces.append(text)
+    return "\n\n".join(pieces).strip()
 
 
-def _source_meta_for_unit(
-    anchor_chunk: Dict[str, Any],
+def _batch_section_materials(
+    materials: Sequence[SectionMaterial],
     *,
-    unit_id: str,
-    unit_type: str,
-    qa_mode: str,
-    source_chunk_indexes: Sequence[int],
-    unit_text: str,
-) -> Dict[str, Any]:
-    meta = dict(anchor_chunk)
-    meta["qa_generation_unit_id"] = unit_id
-    meta["qa_generation_unit_type"] = unit_type
-    meta["qa_generation_unit_mode"] = qa_mode
-    meta["qa_generation_unit_source_chunk_indexes"] = list(source_chunk_indexes)
-    meta["qa_generation_unit_text"] = unit_text
-    return meta
+    max_batch_chars: int,
+    preserve_parent_neighborhood: bool,
+) -> List[List[SectionMaterial]]:
+    """Pack complete logical sections without truncating or splitting a material."""
+    ordered = sorted(materials, key=lambda material: material.material_index)
+    if not ordered:
+        return []
+    budget = max(1000, int(max_batch_chars))
+    groups: List[List[SectionMaterial]] = []
+    if preserve_parent_neighborhood:
+        current_group: List[SectionMaterial] = []
+        current_key: Optional[Tuple[str, str]] = None
+        for material in ordered:
+            group_key = (
+                material.section_parent_path or material.section_path,
+                material.section_path.split(".")[0],
+            )
+            if current_group and group_key != current_key:
+                groups.append(current_group)
+                current_group = []
+            current_group.append(material)
+            current_key = group_key
+        if current_group:
+            groups.append(current_group)
+    else:
+        groups = [[material] for material in ordered]
+
+    batches: List[List[SectionMaterial]] = []
+    current: List[SectionMaterial] = []
+    current_chars = 0
+    for group in groups:
+        group_chars = sum(len(material.material_text) + len(material.title_path) + 160 for material in group)
+        if current and current_chars + group_chars > budget:
+            batches.append(current)
+            current = []
+            current_chars = 0
+        if group_chars <= budget:
+            current.extend(group)
+            current_chars += group_chars
+            continue
+        for material in group:
+            material_chars = len(material.material_text) + len(material.title_path) + 160
+            if current and current_chars + material_chars > budget:
+                batches.append(current)
+                current = []
+                current_chars = 0
+            current.append(material)
+            current_chars += material_chars
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _allocate_planning_counts(
+    batches: Sequence[Sequence[SectionMaterial]],
+    requested_count: int,
+) -> List[int]:
+    """Allocate an integer scenario cap across batches without exceeding the total."""
+    total = max(0, int(requested_count))
+    if total == 0 or not batches:
+        return [0] * len(batches)
+    weights = [max(1, len(batch)) for batch in batches]
+    weight_total = sum(weights)
+    exact = [total * weight / weight_total for weight in weights]
+    counts = [int(value) for value in exact]
+    for index in sorted(
+        range(len(batches)),
+        key=lambda item: (-(exact[item] - counts[item]), item),
+    )[: total - sum(counts)]:
+        counts[index] += 1
+    return counts
+
+
+def _plan_scenario_pool(
+    materials: Sequence[SectionMaterial],
+    *,
+    scenario_type: str,
+    requested_count: int,
+    scenario_planner: Callable[[Sequence[SectionMaterial], int, str], Sequence[Dict[str, Any]]],
+    max_batch_chars: int,
+) -> List[Dict[str, Any]]:
+    batches = _batch_section_materials(
+        materials,
+        max_batch_chars=max_batch_chars,
+        preserve_parent_neighborhood=scenario_type == SCENARIO_TYPE_SUMMARY,
+    )
+    counts = _allocate_planning_counts(batches, requested_count)
+    planned: List[Dict[str, Any]] = []
+    for batch, count in zip(batches, counts):
+        if count <= 0:
+            continue
+        planned.extend(
+            item
+            for item in scenario_planner(batch, count, scenario_type)
+            if isinstance(item, dict)
+        )
+    return planned
+
+
+def build_section_materials(
+    document_chunks: Sequence[Dict[str, Any]],
+    chunk_quality: Dict[int, ChunkQuality],
+) -> List[SectionMaterial]:
+    grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for chunk in document_chunks:
+        section_path = _safe_text(chunk.get("section_path"))
+        if section_path:
+            grouped[section_path].append(dict(chunk))
+    ordered_groups = sorted(
+        grouped.items(),
+        key=lambda item: min(int(chunk.get("chunk_index") or 0) for chunk in item[1]),
+    )
+    materials: List[SectionMaterial] = []
+    for material_index, (section_path, chunks) in enumerate(ordered_groups, start=1):
+        chunks = sorted(chunks, key=lambda item: int(item.get("chunk_index") or 0))
+        retained = [
+            chunk
+            for chunk in chunks
+            if chunk_quality.get(int(chunk.get("chunk_index") or 0), None)
+            and chunk_quality[int(chunk.get("chunk_index") or 0)].status != QUALITY_STATUS_DROP
+        ]
+        if not retained:
+            continue
+        indexes = [int(chunk.get("chunk_index") or 0) for chunk in retained]
+        ids = [_safe_text(chunk.get("chunk_id")) for chunk in retained]
+        usable_count = sum(
+            chunk_quality[index].status == QUALITY_STATUS_USABLE for index in indexes
+        )
+        assets: List[str] = []
+        content_kinds: List[str] = []
+        for chunk in retained:
+            kind = _safe_text(chunk.get("content_kind")) or "text"
+            if kind not in content_kinds:
+                content_kinds.append(kind)
+            for asset in chunk.get("source_asset_ids") or []:
+                value = _safe_text(asset)
+                if value and value not in assets:
+                    assets.append(value)
+        material_id = f"section-{material_index}"
+        materials.append(
+            SectionMaterial(
+                material_id=material_id,
+                material_index=material_index,
+                section_path=section_path,
+                section_parent_path=_safe_text(retained[0].get("section_parent_path")),
+                section_level=max(1, int(retained[0].get("section_level") or 1)),
+                title_path=_safe_text(retained[0].get("title_path")),
+                source_chunk_indexes=indexes,
+                source_chunk_ids=ids,
+                content_kinds=content_kinds,
+                source_asset_ids=assets,
+                material_text=_render_material_text(retained),
+                usable=usable_count > 0,
+                quality_score=sum(chunk_quality[index].score for index in indexes) / max(1, len(indexes)),
+            )
+        )
+    return materials
+
+
+def _normalize_scenario_type(value: Any) -> str:
+    normalized = _safe_text(value).lower()
+    if normalized in {"point", "single", "single_hop", "单点", "单点题"}:
+        return SCENARIO_TYPE_POINT
+    if normalized in {"summary", "multi", "multi_hop", "总结", "总结题"}:
+        return SCENARIO_TYPE_SUMMARY
+    return ""
 
 
 def _build_generation_unit(
+    raw: Dict[str, Any],
     *,
-    unit_type: str,
-    chunks: Sequence[Dict[str, Any]],
-    chunk_quality: Dict[int, ChunkQuality],
-    requested_mode: str,
-    max_unit_chars: int,
-    reason: str,
-    virtual_child_count: Optional[int] = None,
-) -> GenerationUnit:
-    ordered_chunks = sorted(chunks, key=lambda item: int(item.get("chunk_index") or 0))
-    anchor_chunk = next(
-        (
-            chunk
-            for chunk in ordered_chunks
-            if chunk_quality.get(int(chunk.get("chunk_index") or 0), None)
-            and chunk_quality[int(chunk.get("chunk_index") or 0)].status == QUALITY_STATUS_USABLE
-        ),
-        ordered_chunks[0],
+    materials_by_id: Dict[str, SectionMaterial],
+    chunks_by_index: Dict[int, Dict[str, Any]],
+) -> Optional[GenerationUnit]:
+    scenario_type = _normalize_scenario_type(raw.get("scenario_type") or raw.get("type"))
+    intent = _safe_text(raw.get("intent"))
+    reader_need = _safe_text(raw.get("reader_need")) or intent
+    material_ids = []
+    for raw_id in raw.get("material_ids") or []:
+        material_id = _safe_text(raw_id)
+        if material_id in materials_by_id and material_id not in material_ids:
+            material_ids.append(material_id)
+    if not scenario_type or not intent or not reader_need or not material_ids:
+        return None
+    if scenario_type == SCENARIO_TYPE_POINT and len(material_ids) != 1:
+        return None
+    materials = [materials_by_id[material_id] for material_id in material_ids]
+    if scenario_type == SCENARIO_TYPE_SUMMARY and len(materials) == 1:
+        material = materials[0]
+        if len(material.source_chunk_indexes) < 2 and not _has_list_signal(material.material_text):
+            return None
+    source_indexes: List[int] = []
+    for material in materials:
+        for index in material.source_chunk_indexes:
+            if index not in source_indexes:
+                source_indexes.append(index)
+    source_indexes.sort()
+    if not source_indexes:
+        return None
+    anchor_chunk = chunks_by_index[source_indexes[0]]
+    unit_type = (
+        UNIT_TYPE_POINT_SCENARIO
+        if scenario_type == SCENARIO_TYPE_POINT
+        else UNIT_TYPE_SUMMARY_SCENARIO
     )
-    source_indexes = [int(chunk.get("chunk_index") or 0) for chunk in ordered_chunks]
-    unit_id = _make_unit_id(unit_type, ordered_chunks)
-    qa_mode = _resolve_unit_mode(requested_mode, unit_type)
-    unit_text = _render_unit_text(ordered_chunks, max_chars=max_unit_chars)
-    usable_child_count = sum(
-        1
-        for chunk in ordered_chunks
-        if chunk_quality.get(int(chunk.get("chunk_index") or 0))
-        and chunk_quality[int(chunk.get("chunk_index") or 0)].status == QUALITY_STATUS_USABLE
-    )
-    child_count = int(virtual_child_count or len(ordered_chunks))
-    quality_child_coverage = usable_child_count / max(1, len(ordered_chunks))
-    title_path = _safe_text(anchor_chunk.get("title_path"))
-    section_paths = {
-        _safe_text(chunk.get("section_path")) for chunk in ordered_chunks
-    }
-    section_paths.discard("")
-    section_path = (
-        next(iter(section_paths))
-        if len(section_paths) == 1
-        else _safe_text(anchor_chunk.get("section_parent_path"))
-    )
-    source_meta = _source_meta_for_unit(
-        anchor_chunk,
-        unit_id=unit_id,
-        unit_type=unit_type,
-        qa_mode=qa_mode,
-        source_chunk_indexes=source_indexes,
-        unit_text=unit_text,
+    raw_id = f"{scenario_type}|||{intent}|||{'|'.join(material_ids)}"
+    unit_id = hashlib.sha1(raw_id.encode("utf-8")).hexdigest()
+    unit_text = "\n\n".join(material.material_text for material in materials).strip()
+    section_paths = {material.section_path for material in materials}
+    section_path = materials[0].section_path if len(section_paths) == 1 else ""
+    source_meta = dict(anchor_chunk)
+    source_meta.update(
+        {
+            "qa_generation_unit_id": unit_id,
+            "qa_generation_unit_type": unit_type,
+            "qa_generation_unit_mode": scenario_type,
+            "qa_generation_unit_source_chunk_indexes": source_indexes,
+            "qa_generation_unit_material_ids": material_ids,
+            "qa_generation_unit_material_source_chunk_indexes": {
+                material.material_id: list(material.source_chunk_indexes)
+                for material in materials
+            },
+            "qa_generation_unit_scenario_intent": intent,
+            "qa_generation_unit_reader_need": reader_need,
+            "qa_generation_unit_text": unit_text,
+        }
     )
     return GenerationUnit(
         unit_id=unit_id,
         unit_index=0,
         unit_type=unit_type,
-        qa_mode=qa_mode,
-        anchor_chunk_index=int(anchor_chunk.get("chunk_index") or 0),
+        qa_mode=scenario_type,
+        scenario_intent=intent,
+        reader_need=reader_need,
+        material_ids=material_ids,
+        material_source_chunk_indexes={
+            material.material_id: list(material.source_chunk_indexes)
+            for material in materials
+        },
+        anchor_chunk_index=source_indexes[0],
         source_chunk_indexes=source_indexes,
         section_path=section_path,
-        title_path=title_path,
+        title_path=materials[0].title_path,
         unit_text=unit_text,
-        qa_budget=0,
-        child_count=child_count,
-        usable_child_count=usable_child_count,
-        quality_child_coverage=quality_child_coverage,
-        debug={
-            "planner_reason": reason,
-            "source_chunk_quality": {
-                int(chunk.get("chunk_index") or 0): chunk_quality[int(chunk.get("chunk_index") or 0)].to_dict()
-                for chunk in ordered_chunks
-                if int(chunk.get("chunk_index") or 0) in chunk_quality
-            },
-        },
+        qa_budget=1,
+        child_count=len(materials),
+        usable_child_count=sum(material.usable for material in materials),
+        quality_child_coverage=sum(material.usable for material in materials) / len(materials),
+        debug={"planner_reason": "llm_scenario", "raw_scenario": dict(raw)},
         source_chunk_meta=source_meta,
     )
 
 
-def _count_virtual_children(text: str) -> int:
-    lines = _line_texts(text)
-    structured = [
-        line
-        for line in lines
-        if re.match(r"^\s*(?:[-*•]|\d+[.)、]|[一二三四五六七八九十]+[、.])\s*\S+", line)
-    ]
-    paragraph_count = len([part for part in re.split(r"\n\s*\n", text) if part.strip()])
-    return max(len(structured), paragraph_count)
-
-
-def _unit_potential(unit: GenerationUnit) -> int:
-    if unit.unit_type == UNIT_TYPE_SECTION:
-        return max(1, min(3, unit.usable_child_count or unit.child_count))
-    if unit.unit_type == UNIT_TYPE_VIRTUAL_PARENT:
-        return 2 if unit.child_count >= 2 else 1
-    return 1
-
-
-def _allocate_budget(
-    units: Sequence[GenerationUnit],
-    requested_total: int,
-) -> Tuple[List[GenerationUnit], int, int]:
-    if requested_total <= 0 or not units:
-        return [], 0, len(units)
-
-    ordered_units = sorted(units, key=lambda unit: (unit.anchor_chunk_index, unit.unit_type))
-    selected = list(ordered_units[:requested_total])
-    dropped = max(0, len(ordered_units) - len(selected))
-    budgets = {unit.unit_id: 1 for unit in selected}
-    remaining = max(0, requested_total - len(selected))
-
-    while remaining > 0:
-        changed = False
-        for unit in sorted(
-            selected,
-            key=lambda item: (
-                0 if item.unit_type in {UNIT_TYPE_SECTION, UNIT_TYPE_VIRTUAL_PARENT} else 1,
-                item.anchor_chunk_index,
-            ),
-        ):
-            if budgets[unit.unit_id] >= _unit_potential(unit):
-                continue
-            budgets[unit.unit_id] += 1
-            remaining -= 1
-            changed = True
-            if remaining <= 0:
-                break
-        if not changed:
+def _fallback_point_units(
+    materials: Sequence[SectionMaterial],
+    *,
+    chunks_by_index: Dict[int, Dict[str, Any]],
+    existing_units: Sequence[GenerationUnit],
+    requested_count: int,
+) -> List[GenerationUnit]:
+    """Create evidence-bound point intents when the planner underfills its pool."""
+    if requested_count <= 0:
+        return []
+    existing_material_ids = {
+        unit.material_ids[0]
+        for unit in existing_units
+        if unit.qa_mode == SCENARIO_TYPE_POINT and len(unit.material_ids) == 1
+    }
+    fallback: List[GenerationUnit] = []
+    for material in materials:
+        if material.material_id in existing_material_ids:
+            continue
+        reader_need = f"了解{material.title_path or '本节'}的一个具体事实"
+        raw = {
+            "scenario_type": SCENARIO_TYPE_POINT,
+            "intent": reader_need,
+            "reader_need": reader_need,
+            "material_ids": [material.material_id],
+            "fallback_reason": "llm_point_pool_underfilled",
+        }
+        unit = _build_generation_unit(
+            raw,
+            materials_by_id={material.material_id: material},
+            chunks_by_index=chunks_by_index,
+        )
+        if unit is not None:
+            fallback.append(unit)
+        if len(fallback) >= requested_count:
             break
+    return fallback
 
-    planned = [
-        unit.with_index_and_budget(index, budgets.get(unit.unit_id, 0))
-        for index, unit in enumerate(selected, start=1)
-    ]
-    effective_total = sum(max(0, int(unit.qa_budget)) for unit in planned)
-    return planned, effective_total, dropped
+
+def _select_scenarios(
+    candidates: Sequence[GenerationUnit],
+    *,
+    requested_mode: str,
+    requested_total: int,
+    auto_summary_ratio: float,
+) -> Tuple[List[GenerationUnit], Dict[str, int], Dict[str, int], int]:
+    deduped: List[GenerationUnit] = []
+    seen: set[Tuple[str, str, Tuple[str, ...]]] = set()
+    for unit in candidates:
+        key = (
+            unit.qa_mode,
+            _collapse_text(unit.scenario_intent).casefold(),
+            tuple(unit.material_ids),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(unit)
+    pools = {
+        SCENARIO_TYPE_POINT: [unit for unit in deduped if unit.qa_mode == SCENARIO_TYPE_POINT],
+        SCENARIO_TYPE_SUMMARY: [unit for unit in deduped if unit.qa_mode == SCENARIO_TYPE_SUMMARY],
+    }
+    candidate_counts = {key: len(value) for key, value in pools.items()}
+    total = max(0, int(requested_total))
+    mode = _safe_text(requested_mode).lower() or "auto"
+    if mode == SCENARIO_TYPE_POINT:
+        selected = pools[SCENARIO_TYPE_POINT][:total]
+    elif mode == SCENARIO_TYPE_SUMMARY:
+        selected = pools[SCENARIO_TYPE_SUMMARY][:total]
+    else:
+        summary_target = min(total, max(0, round(total * max(0.0, min(1.0, auto_summary_ratio)))))
+        point_target = max(0, total - summary_target)
+        selected_summary = pools[SCENARIO_TYPE_SUMMARY][:summary_target]
+        selected_point = pools[SCENARIO_TYPE_POINT][:point_target]
+        remaining = total - len(selected_summary) - len(selected_point)
+        if remaining > 0:
+            selected_point.extend(pools[SCENARIO_TYPE_POINT][len(selected_point) : len(selected_point) + remaining])
+            remaining = total - len(selected_summary) - len(selected_point)
+        if remaining > 0:
+            selected_summary.extend(
+                pools[SCENARIO_TYPE_SUMMARY][len(selected_summary) : len(selected_summary) + remaining]
+            )
+        selected = selected_point + selected_summary
+    selected.sort(key=lambda unit: (unit.anchor_chunk_index, unit.qa_mode, unit.unit_id))
+    selected = [unit.with_index_and_budget(index, 1) for index, unit in enumerate(selected, 1)]
+    selected_counts = {
+        SCENARIO_TYPE_POINT: sum(unit.qa_mode == SCENARIO_TYPE_POINT for unit in selected),
+        SCENARIO_TYPE_SUMMARY: sum(unit.qa_mode == SCENARIO_TYPE_SUMMARY for unit in selected),
+    }
+    return selected, candidate_counts, selected_counts, max(0, len(deduped) - len(selected))
 
 
 def plan_generation_units(
@@ -605,172 +815,146 @@ def plan_generation_units(
     qa_per_chunk: int,
     qa_detail_mode: str,
     chunk_size: int,
-    max_unit_chars: int,
+    scenario_planner: Callable[[Sequence[SectionMaterial], int, str], Sequence[Dict[str, Any]]],
+    auto_summary_ratio: float = DEFAULT_AUTO_SUMMARY_RATIO,
+    scenario_planning_batch_chars: int = DEFAULT_SCENARIO_PLANNING_BATCH_CHARS,
 ) -> GenerationUnitPlan:
+    del chunk_size
     chunks = [dict(chunk) for chunk in document_chunks if _text_for_quality(chunk)]
     graph = build_structure_graph(chunks)
-    chunks_by_index = {
-        int(chunk.get("chunk_index") or 0): chunk
-        for chunk in chunks
-        if int(chunk.get("chunk_index") or 0) > 0
-    }
-
+    chunks_by_index = {int(chunk.get("chunk_index") or 0): chunk for chunk in chunks}
     quality: Dict[int, ChunkQuality] = {}
     for chunk in chunks:
-        chunk_index = int(chunk.get("chunk_index") or 0)
-        previous_chunk = chunks_by_index.get(graph.previous_by_index.get(chunk_index) or 0)
-        next_chunk = chunks_by_index.get(graph.next_by_index.get(chunk_index) or 0)
-        quality[chunk_index] = evaluate_chunk_quality(
+        index = int(chunk.get("chunk_index") or 0)
+        quality[index] = evaluate_chunk_quality(
             chunk,
-            previous_chunk=previous_chunk,
-            next_chunk=next_chunk,
+            previous_chunk=chunks_by_index.get(graph.previous_by_index.get(index) or 0),
+            next_chunk=chunks_by_index.get(graph.next_by_index.get(index) or 0),
         )
-
-    usable_leaf_count = sum(
-        1 for item in quality.values() if item.status == QUALITY_STATUS_USABLE
-    )
+    materials = build_section_materials(chunks, quality)
+    usable_materials = [material for material in materials if material.usable and material.material_text]
     if qa_total_limit is None:
-        requested_total = max(1, int(qa_per_chunk or 1)) * max(1, usable_leaf_count or len(chunks))
+        requested_total = max(1, int(qa_per_chunk or 1)) * len(usable_materials)
     else:
         requested_total = max(0, int(qa_total_limit))
-
-    candidates: List[GenerationUnit] = []
-    covered: set[int] = set()
-
-    # Physical fragments of one logical section must be one generation source.
-    chunks_by_section: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-    for chunk in chunks:
-        section_path = _safe_text(chunk.get("section_path"))
-        if section_path:
-            chunks_by_section[section_path].append(chunk)
-    for section_path, section_chunks in sorted(
-        chunks_by_section.items(),
-        key=lambda item: min(int(chunk.get("chunk_index") or 0) for chunk in item[1]),
-    ):
-        if len(section_chunks) < 2:
-            continue
-        group_chunks = [
-            chunk
-            for chunk in section_chunks
-            if quality.get(int(chunk.get("chunk_index") or 0))
-            and quality[int(chunk.get("chunk_index") or 0)].status != QUALITY_STATUS_DROP
-        ]
-        if not group_chunks:
-            continue
-        candidates.append(
-            _build_generation_unit(
-                unit_type=UNIT_TYPE_SECTION,
-                chunks=group_chunks,
-                chunk_quality=quality,
-                requested_mode=qa_detail_mode,
-                max_unit_chars=max_unit_chars,
-                reason=f"same_section:{section_path}",
+    mode = _safe_text(qa_detail_mode).lower() or "auto"
+    if mode == SCENARIO_TYPE_POINT:
+        point_planning_count = requested_total
+        summary_planning_count = 0
+    elif mode == SCENARIO_TYPE_SUMMARY:
+        point_planning_count = 0
+        summary_planning_count = requested_total
+    else:
+        # Plan enough point capacity to absorb every missing summary slot. The
+        # allocator still applies the target mix globally after both pools exist.
+        point_planning_count = requested_total
+        summary_planning_count = (
+            max(1, round(requested_total * max(0.0, min(1.0, auto_summary_ratio))))
+            if requested_total > 0
+            else 0
+        )
+    raw_scenarios = _plan_scenario_pool(
+        usable_materials,
+        scenario_type=SCENARIO_TYPE_POINT,
+        requested_count=point_planning_count,
+        scenario_planner=scenario_planner,
+        max_batch_chars=scenario_planning_batch_chars,
+    )
+    raw_scenarios.extend(
+        _plan_scenario_pool(
+            usable_materials,
+            scenario_type=SCENARIO_TYPE_SUMMARY,
+            requested_count=summary_planning_count,
+            scenario_planner=scenario_planner,
+            max_batch_chars=scenario_planning_batch_chars,
+        )
+    )
+    planner_batches = {
+        SCENARIO_TYPE_POINT: _batch_section_materials(
+            usable_materials,
+            max_batch_chars=scenario_planning_batch_chars,
+            preserve_parent_neighborhood=False,
+        ) if point_planning_count > 0 else [],
+        SCENARIO_TYPE_SUMMARY: _batch_section_materials(
+            usable_materials,
+            max_batch_chars=scenario_planning_batch_chars,
+            preserve_parent_neighborhood=True,
+        ) if summary_planning_count > 0 else [],
+    }
+    materials_by_id = {material.material_id: material for material in usable_materials}
+    candidates = [
+        unit
+        for raw in raw_scenarios
+        if isinstance(raw, dict)
+        for unit in [_build_generation_unit(raw, materials_by_id=materials_by_id, chunks_by_index=chunks_by_index)]
+        if unit is not None
+    ]
+    if mode in {"auto", SCENARIO_TYPE_POINT}:
+        existing_point_count = sum(
+            unit.qa_mode == SCENARIO_TYPE_POINT for unit in candidates
+        )
+        candidates.extend(
+            _fallback_point_units(
+                usable_materials,
+                chunks_by_index=chunks_by_index,
+                existing_units=candidates,
+                requested_count=max(0, point_planning_count - existing_point_count),
             )
         )
-        covered.update(int(chunk.get("chunk_index") or 0) for chunk in group_chunks)
-
-    for parent_key, indexes in sorted(
-        graph.children_by_parent.items(),
-        key=lambda item: min(item[1]) if item[1] else 10**9,
-    ):
-        if len(indexes) < 2:
-            continue
-        group_chunks = [
-            chunks_by_index[index]
-            for index in indexes
-            if index in chunks_by_index
-            and index not in covered
-            and quality.get(index)
-            and quality[index].status != QUALITY_STATUS_DROP
-        ]
-        usable_count = sum(
-            1
-            for chunk in group_chunks
-            if quality[int(chunk.get("chunk_index") or 0)].status == QUALITY_STATUS_USABLE
-        )
-        if len(group_chunks) < 2 or usable_count < 2:
-            continue
-        group_chars = sum(len(_collapse_text(_text_for_quality(chunk))) for chunk in group_chunks)
-        if group_chars > max(1000, int(max_unit_chars)):
-            continue
-        candidates.append(
-            _build_generation_unit(
-                unit_type=UNIT_TYPE_SECTION,
-                chunks=group_chunks,
-                chunk_quality=quality,
-                requested_mode=qa_detail_mode,
-                max_unit_chars=max_unit_chars,
-                reason=f"same_parent_group:{parent_key}",
-            )
-        )
-        covered.update(int(chunk.get("chunk_index") or 0) for chunk in group_chunks)
-
-    long_threshold = max(900, int(chunk_size or 600) * 2)
-    for chunk in chunks:
-        chunk_index = int(chunk.get("chunk_index") or 0)
-        if chunk_index in covered:
-            continue
-        if quality.get(chunk_index) and quality[chunk_index].status != QUALITY_STATUS_USABLE:
-            continue
-        text = _text_for_quality(chunk)
-        virtual_children = _count_virtual_children(text)
-        if len(_collapse_text(text)) < long_threshold or virtual_children < 2:
-            continue
-        candidates.append(
-            _build_generation_unit(
-                unit_type=UNIT_TYPE_VIRTUAL_PARENT,
-                chunks=[chunk],
-                chunk_quality=quality,
-                requested_mode=qa_detail_mode,
-                max_unit_chars=max_unit_chars,
-                reason="long_structured_chunk",
-                virtual_child_count=virtual_children,
-            )
-        )
-        covered.add(chunk_index)
-
-    for chunk in chunks:
-        chunk_index = int(chunk.get("chunk_index") or 0)
-        if chunk_index in covered:
-            continue
-        if quality.get(chunk_index) and quality[chunk_index].status != QUALITY_STATUS_USABLE:
-            continue
-        candidates.append(
-            _build_generation_unit(
-                unit_type=UNIT_TYPE_LEAF,
-                chunks=[chunk],
-                chunk_quality=quality,
-                requested_mode=qa_detail_mode,
-                max_unit_chars=max_unit_chars,
-                reason="usable_leaf_chunk",
-            )
-        )
-
-    planned_units, effective_total, dropped = _allocate_budget(candidates, requested_total)
+    units, candidate_counts, selected_counts, dropped = _select_scenarios(
+        candidates,
+        requested_mode=qa_detail_mode,
+        requested_total=requested_total,
+        auto_summary_ratio=auto_summary_ratio,
+    )
     return GenerationUnitPlan(
-        units=planned_units,
+        units=units,
+        section_materials=materials,
         chunk_quality=quality,
         graph=graph,
         requested_total_qa=requested_total,
-        effective_total_qa=effective_total,
+        effective_total_qa=len(units),
         qa_total_limit=qa_total_limit,
-        qa_detail_mode=_safe_text(qa_detail_mode).lower() or "point",
+        qa_detail_mode=_safe_text(qa_detail_mode).lower() or "auto",
         qa_per_chunk_fallback=max(1, int(qa_per_chunk or 1)),
         dropped_unit_count_by_budget=dropped,
+        scenario_candidates_by_type=candidate_counts,
+        scenario_selected_by_type=selected_counts,
+        scenario_planner_calls_by_type={
+            key: sum(
+                count > 0
+                for count in _allocate_planning_counts(
+                    value,
+                    point_planning_count
+                    if key == SCENARIO_TYPE_POINT
+                    else summary_planning_count,
+                )
+            )
+            for key, value in planner_batches.items()
+        },
+        scenario_planner_batches_by_type={
+            key: [len(batch) for batch in value]
+            for key, value in planner_batches.items()
+        },
     )
 
 
 __all__ = [
     "ChunkQuality",
+    "DEFAULT_AUTO_SUMMARY_RATIO",
+    "DEFAULT_SCENARIO_PLANNING_BATCH_CHARS",
     "GenerationUnit",
     "GenerationUnitPlan",
     "QUALITY_STATUS_CONTEXT_ONLY",
     "QUALITY_STATUS_DROP",
     "QUALITY_STATUS_USABLE",
+    "SCENARIO_TYPE_POINT",
+    "SCENARIO_TYPE_SUMMARY",
+    "SectionMaterial",
     "StructureGraph",
-    "UNIT_TYPE_LEAF",
-    "UNIT_TYPE_SECTION",
-    "UNIT_TYPE_VIRTUAL_PARENT",
+    "UNIT_TYPE_POINT_SCENARIO",
+    "UNIT_TYPE_SUMMARY_SCENARIO",
+    "build_section_materials",
     "build_structure_graph",
     "evaluate_chunk_quality",
     "plan_generation_units",

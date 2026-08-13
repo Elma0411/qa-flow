@@ -26,11 +26,7 @@ except Exception:  # pragma: no cover - optional dependency
 
 
 DOC_TREE_CHUNKS_SCHEMA_VERSION = 2
-LEGACY_DOC_TREE_CHUNKS_COLLECTION = "doc_tree_chunks"
-DOC_TREE_CHUNKS_COLLECTION = str(
-    (CONFIG.get("milvus") or {}).get("doc_tree_chunks_v2_collection")
-    or "doc_content_chunks_v2"
-).strip() or "doc_content_chunks_v2"
+DOC_TREE_CHUNKS_COLLECTION = "doc_content_chunks_v2"
 
 
 def build_doc_id(original_filename: str, text: str) -> str:
@@ -581,7 +577,6 @@ __all__ = [
     "DOC_TREE_CHUNKS_SCHEMA_VERSION",
     "DOCUMENT_CHUNK_STORE",
     "DocumentChunkStore",
-    "LEGACY_DOC_TREE_CHUNKS_COLLECTION",
     "build_doc_id",
     "ensure_doc_tree_chunks_initialized",
     "fetch_chunks_by_doc_id",

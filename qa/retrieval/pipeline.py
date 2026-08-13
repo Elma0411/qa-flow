@@ -16,6 +16,11 @@ DEFAULT_DENSE_RECALL_K = 24
 DEFAULT_BM25_RECALL_K = 24
 DEFAULT_RRF_CANDIDATE_K = 32
 DEFAULT_ATOMIC_RERANK_K = 12
+CALIBRATED_RELEVANCE_MIN_LOGIT = -1.0
+ATOMIC_RELEVANCE_MAX_LOGIT_DROP = 8.0
+WINDOW_RELEVANCE_MAX_LOGIT_DROP = 4.0
+ATOMIC_PRIMARY_SOURCE_MAX_LOGIT_DROP = 1.0
+WINDOW_PRIMARY_SOURCE_MAX_LOGIT_DROP = 2.0
 
 
 def normalize_retrieval_query(question: str) -> str:
@@ -24,6 +29,39 @@ def normalize_retrieval_query(question: str) -> str:
 
 def _dot(left: Sequence[float], right: Sequence[float]) -> float:
     return float(sum(float(a) * float(b) for a, b in zip(left, right)))
+
+
+def admit_relevant_ranked(
+    ranked: Sequence[tuple[str, float]],
+    *,
+    minimum_logit: float = CALIBRATED_RELEVANCE_MIN_LOGIT,
+    maximum_top_drop: float,
+    reference_score: Optional[float] = None,
+    maximum_reference_drop: Optional[float] = None,
+) -> tuple[List[tuple[str, float]], Dict[str, str]]:
+    """Apply the calibrated absolute and relative BGE relevance gates."""
+    values = [(str(identifier), float(score)) for identifier, score in ranked]
+    if not values:
+        return [], {}
+    top_score = max(score for _identifier, score in values)
+    admitted: List[tuple[str, float]] = []
+    rejected: Dict[str, str] = {}
+    for identifier, score in values:
+        if score < float(minimum_logit):
+            rejected[identifier] = "below_calibrated_minimum"
+            continue
+        if top_score - score > float(maximum_top_drop):
+            rejected[identifier] = "outside_top_score_band"
+            continue
+        if (
+            reference_score is not None
+            and maximum_reference_drop is not None
+            and float(reference_score) - score > float(maximum_reference_drop)
+        ):
+            rejected[identifier] = "outside_primary_source_band"
+            continue
+        admitted.append((identifier, score))
+    return admitted, rejected
 
 
 class EvidenceRetrievalPipeline:
@@ -90,11 +128,33 @@ class EvidenceRetrievalPipeline:
             for item in candidates
         ]
         atomic_ranked = self.reranker.rank(query, atomic_pairs)
-        atomic_ranked_ids = [
-            chunk_id
-            for chunk_id, _score in atomic_ranked
+        source_reference_pairs = [
+            (chunk_id, self.by_id[chunk_id].retrieval_text)
+            for chunk_id in sorted(source_ids)
+            if chunk_id in self.by_id
+        ]
+        source_reference_ranked = (
+            self.reranker.rank(query, source_reference_pairs)
+            if source_reference_pairs
+            else []
+        )
+        source_reference_top_score = (
+            max(score for _chunk_id, score in source_reference_ranked)
+            if source_reference_ranked
+            else None
+        )
+        atomic_non_source = [
+            (chunk_id, score)
+            for chunk_id, score in atomic_ranked
             if chunk_id not in source_ids
-        ][:DEFAULT_ATOMIC_RERANK_K]
+        ]
+        atomic_admitted, atomic_rejected = admit_relevant_ranked(
+            atomic_non_source,
+            maximum_top_drop=ATOMIC_RELEVANCE_MAX_LOGIT_DROP,
+            reference_score=source_reference_top_score,
+            maximum_reference_drop=ATOMIC_PRIMARY_SOURCE_MAX_LOGIT_DROP,
+        )
+        atomic_ranked_ids = [chunk_id for chunk_id, _score in atomic_admitted[:DEFAULT_ATOMIC_RERANK_K]]
         atomic_scores = {chunk_id: score for chunk_id, score in atomic_ranked}
         if timing is not None:
             timing["atomic_rerank_seconds"] = timing.get("atomic_rerank_seconds", 0.0) + time.perf_counter() - atomic_started
@@ -117,6 +177,17 @@ class EvidenceRetrievalPipeline:
             ),
         )
         window_scores = raw_window_scores
+        if window_ranked:
+            window_ranked, window_rejected = admit_relevant_ranked(
+                window_ranked,
+                maximum_top_drop=WINDOW_RELEVANCE_MAX_LOGIT_DROP,
+                reference_score=source_reference_top_score,
+                maximum_reference_drop=WINDOW_PRIMARY_SOURCE_MAX_LOGIT_DROP,
+            )
+        else:
+            window_rejected = {
+                window_id: "no_atomic_anchor_admitted" for window_id in windows_by_id
+            }
 
         # Structural alternatives with the same atomic anchors are mutually
         # exclusive (for example sibling hits with or without a parent body).
@@ -180,7 +251,7 @@ class EvidenceRetrievalPipeline:
             "selected_windows": selected,
             "selected_chunk_ids": unique_selected_chunk_ids,
             "trace": {
-                "pipeline": "bm25_dense_rrf_bge_structure_v1",
+                "pipeline": "bm25_dense_rrf_bge_admission_structure_v2",
                 "dense_hits": [item.__dict__ for item in dense],
                 "bm25_hits": [item.__dict__ for item in lexical],
                 "rrf_hits": [
@@ -193,8 +264,17 @@ class EvidenceRetrievalPipeline:
                     for item in fused
                 ],
                 "atomic_rerank": [
-                    {"chunk_id": chunk_id, "rerank_score": score}
+                    {
+                        "chunk_id": chunk_id,
+                        "rerank_score": score,
+                        "admitted": chunk_id not in atomic_rejected and chunk_id not in source_ids,
+                        "rejection_reason": atomic_rejected.get(chunk_id),
+                    }
                     for chunk_id, score in atomic_ranked
+                ],
+                "primary_source_rerank": [
+                    {"chunk_id": chunk_id, "rerank_score": score}
+                    for chunk_id, score in source_reference_ranked
                 ],
                 "window_candidates": [
                     {
@@ -203,6 +283,8 @@ class EvidenceRetrievalPipeline:
                         "reason": window.reason,
                         "includes_parent_body": window.includes_parent_body,
                         "rerank_score": window_scores.get(window.window_id),
+                        "admitted": window.window_id not in window_rejected,
+                        "rejection_reason": window_rejected.get(window.window_id),
                     }
                     for window in windows
                 ],
@@ -219,15 +301,31 @@ class EvidenceRetrievalPipeline:
                 "final_evidence_k": int(final_evidence_k),
                 "evidence_token_budget": int(evidence_token_budget),
                 "evidence_tokens_estimated": tokens_used,
+                "relevance_admission": {
+                    "minimum_logit": CALIBRATED_RELEVANCE_MIN_LOGIT,
+                    "atomic_maximum_top_drop": ATOMIC_RELEVANCE_MAX_LOGIT_DROP,
+                    "window_maximum_top_drop": WINDOW_RELEVANCE_MAX_LOGIT_DROP,
+                    "primary_source_top_score": source_reference_top_score,
+                    "atomic_primary_source_maximum_drop": ATOMIC_PRIMARY_SOURCE_MAX_LOGIT_DROP,
+                    "window_primary_source_maximum_drop": WINDOW_PRIMARY_SOURCE_MAX_LOGIT_DROP,
+                    "atomic_admitted_count": len(atomic_admitted),
+                    "window_admitted_count": len(window_ranked),
+                },
             },
         }
 
 
 __all__ = [
+    "ATOMIC_PRIMARY_SOURCE_MAX_LOGIT_DROP",
+    "ATOMIC_RELEVANCE_MAX_LOGIT_DROP",
+    "CALIBRATED_RELEVANCE_MIN_LOGIT",
     "DEFAULT_ATOMIC_RERANK_K",
     "DEFAULT_BM25_RECALL_K",
     "DEFAULT_DENSE_RECALL_K",
     "DEFAULT_RRF_CANDIDATE_K",
     "EvidenceRetrievalPipeline",
+    "WINDOW_RELEVANCE_MAX_LOGIT_DROP",
+    "WINDOW_PRIMARY_SOURCE_MAX_LOGIT_DROP",
+    "admit_relevant_ranked",
     "normalize_retrieval_query",
 ]

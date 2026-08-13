@@ -34,6 +34,12 @@ class _TieReranker:
         return list(reversed(scored))
 
 
+class _IrrelevantReranker:
+    def rank(self, query, pairs):
+        del query
+        return [(identifier, -4.0 - index) for index, (identifier, _text) in enumerate(pairs)]
+
+
 class RetrievalPipelineTests(unittest.TestCase):
     def test_pipeline_exposes_fixed_stage_trace_and_windows(self):
         chunks = [
@@ -56,7 +62,7 @@ class RetrievalPipelineTests(unittest.TestCase):
             source_chunk_ids=["c1"],
         )
 
-        self.assertEqual("bm25_dense_rrf_bge_structure_v1", result["trace"]["pipeline"])
+        self.assertEqual("bm25_dense_rrf_bge_admission_structure_v2", result["trace"]["pipeline"])
         self.assertTrue(result["trace"]["dense_hits"])
         self.assertTrue(result["trace"]["bm25_hits"])
         self.assertTrue(result["trace"]["rrf_hits"])
@@ -141,6 +147,87 @@ class RetrievalPipelineTests(unittest.TestCase):
         selected = result["selected_windows"][0]
         self.assertEqual("sibling_hits", selected.reason)
         self.assertNotIn("c1", selected.chunk_ids)
+
+    def test_irrelevant_candidates_are_not_used_to_fill_final_limit(self):
+        chunks = [
+            EvidenceChunk("c1", 1, "1", "", 1, True, 1, "主材料", "g1", 1, 1, "text", (), "主材料", "主材料"),
+            EvidenceChunk("c2", 2, "2", "", 1, True, 1, "无关条款", "g2", 1, 1, "text", (), "天气晴朗", "天气晴朗"),
+        ]
+        pipeline = EvidenceRetrievalPipeline(
+            chunks,
+            [[1.0], [0.8]],
+            reranker=_IrrelevantReranker(),
+        )
+
+        result = pipeline.retrieve(
+            "申请材料有哪些？",
+            [1.0],
+            final_evidence_k=5,
+            evidence_token_budget=4000,
+            source_chunk_ids=["c1"],
+        )
+
+        self.assertEqual([], result["selected_windows"])
+        self.assertEqual([], result["selected_chunk_ids"])
+        self.assertEqual(0, result["trace"]["relevance_admission"]["atomic_admitted_count"])
+
+    def test_candidate_far_below_primary_source_is_not_admitted(self):
+        chunks = [
+            EvidenceChunk("c1", 1, "1", "", 1, True, 1, "主材料", "g1", 1, 1, "text", (), "主材料", "主材料"),
+            EvidenceChunk("c2", 2, "2", "", 1, True, 1, "时限", "g2", 1, 1, "text", (), "五个工作日", "五个工作日"),
+        ]
+
+        class CalibratedReranker:
+            def rank(self, query, pairs):
+                del query
+                return [
+                    (identifier, 3.0 if identifier == "c1" else 0.1)
+                    for identifier, _text in pairs
+                ]
+
+        pipeline = EvidenceRetrievalPipeline(chunks, [[1.0], [0.8]], reranker=CalibratedReranker())
+        result = pipeline.retrieve(
+            "办理需要多长时间？",
+            [1.0],
+            final_evidence_k=1,
+            evidence_token_budget=4000,
+            source_chunk_ids=["c1"],
+        )
+
+        self.assertEqual([], result["selected_chunk_ids"])
+        self.assertEqual(
+            "outside_primary_source_band",
+            next(
+                item["rejection_reason"]
+                for item in result["trace"]["atomic_rerank"]
+                if item["chunk_id"] == "c2"
+            ),
+        )
+
+    def test_low_absolute_candidate_close_to_primary_source_is_admitted(self):
+        chunks = [
+            EvidenceChunk("c1", 1, "1", "", 1, True, 1, "主材料", "g1", 1, 1, "text", (), "五个工作日", "五个工作日"),
+            EvidenceChunk("c2", 2, "2", "", 1, True, 1, "补充时限", "g2", 1, 1, "text", (), "补正时间不计入期限", "补正时间不计入期限"),
+        ]
+
+        class LowRelevantReranker:
+            def rank(self, query, pairs):
+                del query
+                return [
+                    (identifier, -0.45 if identifier == "c1" else -0.8)
+                    for identifier, _text in pairs
+                ]
+
+        pipeline = EvidenceRetrievalPipeline(chunks, [[1.0], [0.8]], reranker=LowRelevantReranker())
+        result = pipeline.retrieve(
+            "办理需要多长时间？",
+            [1.0],
+            final_evidence_k=1,
+            evidence_token_budget=4000,
+            source_chunk_ids=["c1"],
+        )
+
+        self.assertEqual(["c2"], result["selected_chunk_ids"])
 
 
 if __name__ == "__main__":

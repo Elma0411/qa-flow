@@ -9,6 +9,7 @@ from qa.pipeline_runtime import parse_one_step_pipeline_runtime
 from qa.prompts.qa_generation_prompts import (
     build_candidate_question_system_prompt,
     build_evidence_answer_system_prompt,
+    build_question_editor_system_prompt,
 )
 from qa.validation import validate_and_normalize_item_with_reason
 
@@ -67,13 +68,13 @@ class QAGenerationContractTests(unittest.TestCase):
             qa_detail_mode="point",
         )
 
-        self.assertIn("在内部确定一个读者场景和一个信息需求", zh_prompt)
+        self.assertIn("严格遵循输入给出的 scenario_intent 和 reader_need", zh_prompt)
         self.assertIn("请使用中文。", zh_prompt)
         self.assertIn("不要把原文一句话的前半句改成问题", zh_prompt)
         self.assertIn("例如写", zh_prompt)
         self.assertIn("生育后还能增加多少天产假", zh_prompt)
         self.assertIn("默认提问者：办事人", zh_prompt)
-        self.assertIn("Identify one reader scenario and one information need", en_prompt)
+        self.assertIn("Follow the supplied scenario_intent and reader_need", en_prompt)
         self.assertIn("Use English.", en_prompt)
         self.assertIn("Do not convert the first half", en_prompt)
         self.assertIn("Example: write", en_prompt)
@@ -137,15 +138,33 @@ class QAGenerationContractTests(unittest.TestCase):
         )
 
         self.assertIn("不得基于质量判断输出空 items", zh_prompt)
+        self.assertIn("必须引用回答该问题所必需的每份主材料", zh_prompt)
         self.assertIn("只输出包含 1 个 item", zh_prompt)
         self.assertNotIn('{"items":[]}', zh_prompt)
         self.assertIn("Do not output an empty items list as a quality decision", en_prompt)
         self.assertIn("exactly one item", en_prompt)
+        self.assertIn("cite every primary material required by the question", en_prompt)
         self.assertNotIn('{"items":[]}', en_prompt)
         self.assertNotIn("- retrieval_query\n", zh_prompt)
         self.assertNotIn("- must_have_terms\n", zh_prompt)
         self.assertNotIn("- retrieval_query\n", en_prompt)
         self.assertNotIn("- must_have_terms\n", en_prompt)
+
+    def test_question_editor_prompt_contains_clause_shape_rewrite_examples(self):
+        zh_prompt = build_question_editor_system_prompt(
+            language_code="zh",
+            language_instruction="请使用中文。",
+            qa_detail_mode="point",
+        )
+        en_prompt = build_question_editor_system_prompt(
+            language_code="en",
+            language_instruction="Use English.",
+            qa_detail_mode="point",
+        )
+
+        self.assertIn("女职工生育后，可以额外休多少天产假", zh_prompt)
+        self.assertIn("把原文的条件从句直接搬到逗号前", zh_prompt)
+        self.assertIn("not natural merely because it is grammatical", en_prompt)
 
     def test_answer_prompt_requires_standalone_reader_explanation(self):
         zh_prompt = build_evidence_answer_system_prompt(
@@ -171,15 +190,6 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertIn('not a deictic phrase such as "this benefit"', en_prompt)
         self.assertIn("Eligible rural one-child or two-daughter families", en_prompt)
         self.assertIn("Do not invent an amount, ratio, procedure", en_prompt)
-
-    def test_default_candidate_count_matches_requested_output_count(self):
-        runtime = parse_one_step_pipeline_runtime({"qa_per_chunk": 1})
-        configured_runtime = parse_one_step_pipeline_runtime(
-            {"qa_per_chunk": 1, "candidate_multiplier": 3}
-        )
-
-        self.assertEqual(1, runtime.candidate_multiplier)
-        self.assertEqual(3, configured_runtime.candidate_multiplier)
 
     def test_zero_final_evidence_k_is_preserved(self):
         runtime = parse_one_step_pipeline_runtime(
@@ -296,6 +306,125 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertNotIn("source_anchor_text", item)
         self.assertEqual("chunk-1", item["evidence_usage"][0]["chunk_id"])
         self.assertEqual("主材料-1", item["evidence_usage"][0]["evidence_ref"])
+
+    def test_answer_source_attribution_uses_actually_cited_primary_materials(self):
+        client = _StaticChatClient(
+            {
+                "items": [
+                    {
+                        "question": "办理需要哪些材料和多长时间？",
+                        "answer": "需提交申请表，办理期限为五个工作日。",
+                        "answer_explanation": "申请材料和办理期限共同构成办理要求。",
+                        "source_fact_text": "提交申请表；五个工作日内办结。",
+                        "source": "文本内容",
+                        "evidence_usage": [
+                            {"evidence_ref": "主材料-2", "snippet": "提交申请表", "usage": "材料"},
+                            {"evidence_ref": "主材料-3", "snippet": "五个工作日", "usage": "时限"},
+                        ],
+                        "question_type": "简答题",
+                        "difficulty_level": "中等",
+                    }
+                ]
+            }
+        )
+        source_chunks = [
+            {"chunk_id": "c1", "chunk_index": 1, "title_path": "总则", "text": "总则。"},
+            {"chunk_id": "c2", "chunk_index": 2, "title_path": "材料", "text": "提交申请表。"},
+            {"chunk_id": "c3", "chunk_index": 3, "title_path": "时限", "text": "五个工作日内办结。"},
+        ]
+        ref_map = {
+            f"主材料-{index}": {
+                "chunk_id": chunk["chunk_id"],
+                "chunk_index": chunk["chunk_index"],
+                "title_path": chunk["title_path"],
+                "role": "primary_source",
+            }
+            for index, chunk in enumerate(source_chunks, 1)
+        }
+
+        item, reason = call_evidence_answer_llm(
+            client=client,
+            model="test-model",
+            candidate={"question": "办理需要哪些材料和多长时间？", "question_type": "简答题"},
+            generation_unit={
+                "source_chunk": source_chunks[0],
+                "source_chunks": source_chunks,
+                "source_unit_text": "\n".join(chunk["text"] for chunk in source_chunks),
+                "qa_generation_unit_text": "主材料-1\n总则。\n主材料-2\n提交申请表。\n主材料-3\n五个工作日内办结。",
+                "evidence_chunk_ids": [],
+                "qa_generation_unit_id": "unit-1",
+                "llm_evidence_ref_map": ref_map,
+            },
+            qa_detail_mode="summary",
+            prompt_language="zh",
+            request_timeout=10,
+            item_normalizer_with_reason=validate_and_normalize_item_with_reason,
+            source_override_handler=lambda *_args, **_kwargs: None,
+        )
+
+        self.assertEqual("ok", reason)
+        self.assertEqual("c2", item["source_chunk_id"])
+        self.assertEqual(2, item["source_chunk_index"])
+        self.assertEqual("材料", item["source_chunk_title_path"])
+        self.assertEqual(["c2", "c3"], item["source_chunk_ids"])
+        self.assertEqual([2, 3], item["source_chunk_indexes"])
+        self.assertEqual(["材料", "时限"], item["source_chunk_title_paths"])
+
+    def test_summary_answer_requires_primary_coverage_for_each_bound_material(self):
+        client = _StaticChatClient(
+            {
+                "items": [
+                    {
+                        "question": "办理需要哪些材料和多长时间？",
+                        "answer": "需要提交申请表。",
+                        "answer_explanation": "回答只覆盖了材料。",
+                        "source_fact_text": "提交申请表。",
+                        "source": "文本内容",
+                        "evidence_usage": [
+                            {"evidence_ref": "主材料-1", "snippet": "提交申请表", "usage": "材料"},
+                        ],
+                        "question_type": "简答题",
+                        "difficulty_level": "中等",
+                    }
+                ]
+            }
+        )
+        source_chunks = [
+            {"chunk_id": "c1", "chunk_index": 1, "title_path": "材料", "text": "提交申请表。"},
+            {"chunk_id": "c2", "chunk_index": 2, "title_path": "时限", "text": "五日内办结。"},
+        ]
+        item, reason = call_evidence_answer_llm(
+            client=client,
+            model="test-model",
+            candidate={"question": "办理需要哪些材料和多长时间？", "question_type": "简答题"},
+            generation_unit={
+                "source_chunk": source_chunks[0],
+                "source_chunks": source_chunks,
+                "source_unit": {
+                    "material_ids": ["section-1", "section-2"],
+                    "material_source_chunk_indexes": {
+                        "section-1": [1],
+                        "section-2": [2],
+                    },
+                },
+                "source_unit_text": "提交申请表。\n五日内办结。",
+                "qa_generation_unit_text": "主材料-1\n提交申请表。\n主材料-2\n五日内办结。",
+                "evidence_chunk_ids": [],
+                "qa_generation_unit_id": "unit-coverage",
+                "llm_evidence_ref_map": {
+                    "主材料-1": {"chunk_id": "c1", "chunk_index": 1, "role": "primary_source"},
+                    "主材料-2": {"chunk_id": "c2", "chunk_index": 2, "role": "primary_source"},
+                },
+            },
+            qa_detail_mode="summary",
+            prompt_language="zh",
+            request_timeout=10,
+            item_normalizer_with_reason=validate_and_normalize_item_with_reason,
+            source_override_handler=lambda *_args, **_kwargs: None,
+        )
+
+        self.assertIsNone(item)
+        self.assertEqual("incomplete_summary_primary_coverage", reason)
 
     def test_answer_input_hides_internal_metadata_and_planning_fields(self):
         class RecordingClient:

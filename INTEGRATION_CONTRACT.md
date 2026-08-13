@@ -181,6 +181,19 @@ QA retrieval configuration:
   `QA_RERANKER_DEVICE`, `QA_RERANKER_BATCH_SIZE`, and
   `QA_RERANKER_MAX_LENGTH`. A missing/incomplete model or load failure is a
   task error; the service must not silently use the former hand-written ranker.
+- BGE relevance admission is an internal, calibrated contract rather than a
+  request parameter. Atomic candidates below raw logit `-1.0` or more than
+  `8.0` below the best atomic candidate are rejected before structural window
+  construction. They must also score within `1.0` of the best primary source
+  chunk for the same question. Windows are reranked again and rejected below
+  `-1.0`, more than `4.0` below the best window, or more than `2.0` below that
+  primary-source baseline. These constants were calibrated with
+  Chinese and English relevant pairs, same-topic hard negatives, and unrelated
+  negatives for the bundled `bge-reranker-v2-m3`; the fixture and executable
+  check live in `tests/testdata/bge_reranker_relevance_cases.json` and
+  `scripts/calibrate_bge_relevance.py`. Changes require updating and running
+  that calibration plus the focused tests. `final_evidence_k` is only an upper
+  bound after admission, so the selected supplemental-window count may be zero.
 
 Image classifier classes:
 
@@ -350,13 +363,14 @@ Rules:
   explicit context dependency; no LLM hint or range policy participates.
 - A Markdown heading plus accepted image marker, with no other visible body,
   is `image_description`; the heading alone does not make it `mixed`.
-- New chunks are persisted in the versioned `doc_content_chunks_v2` collection
-  (`schema_version=2`). The legacy `doc_tree_chunks` collection is retained but
-  is never queried as an implicit fallback. Historical data is migrated only
-  through `POST /doc-chunks/rebuild`, which accepts source text plus chunking
-  options, regenerates complete v2 metadata, validates and embeds all rows
-  before replacing the matching `task_id + original_filename` scope, and
-  restores the old rows if the replacement write fails.
+- Structural chunks have one canonical Milvus collection:
+  `doc_content_chunks_v2` (`schema_version=2`). Its name is fixed in code and
+  cannot be redirected to the removed `doc_tree_chunks` schema through config.
+  There is no legacy read, write, or fallback collection. `POST
+  /doc-chunks/rebuild` accepts source text plus chunking options, regenerates
+  complete v2 metadata, validates and embeds all rows before replacing the
+  matching `task_id + original_filename` scope, and restores the current v2
+  rows if the replacement write fails.
 
 ## Contract D: QA Job Context
 
@@ -459,11 +473,37 @@ Rules:
   per-worker timing. `generation_chunk_details` is retained as a compatibility
   alias for older frontend/status consumers and does not carry raw timing
   intervals.
-- QA generation now plans `generation units` before LLM calls. The planner
-  first evaluates chunk quality, then groups usable same-parent chunks into
-  section units, routes long structured chunks to virtual-parent units, and
-  keeps remaining usable chunks as leaf units. `qa_detail_mode=auto` resolves
-  to `summary` for section/virtual-parent units and `point` for leaf units.
+- QA generation first reorganizes content into `section materials`: every
+  logical `section_path` is one atomic material containing that section's body
+  fragments, text, and accepted image descriptions. Different sections are
+  never merged merely because they share a chapter or parent heading.
+- A scenario-planning LLM then returns evidence-bound `PointScenario` and
+  `SummaryScenario` candidates. Point scenarios bind exactly one section
+  material and one fact need. Summary scenarios bind one material with a real
+  multi-fact enumeration or multiple materials that jointly serve one reader
+  need. Every material ID is validated against the supplied material catalog.
+  In `qa_detail_mode=auto`, the planner builds both pools and the allocator
+  targets 35% summary scenarios; missing summary capacity flows to point
+  scenarios rather than being fabricated. Explicit `point` or `summary` mode
+  selects only that pool. Each selected scenario generates exactly one main
+  question. Large documents are planned in internal character-bounded batches:
+  point batches may contain independent sections, while summary batches retain
+  structural parent neighborhoods so related sibling sections remain visible.
+  Pool selection and punctuation-insensitive final-question de-duplication are
+  document-wide. If a planner call underfills the point pool, deterministic
+  one-material point scenarios fill only the missing capacity; summary
+  scenarios are never synthesized as fallback. No frontend/request batch-size
+  control is exposed. A planner response is accepted only into the matching
+  Point/Summary pool; a mismatched `scenario_type` is discarded. One section
+  material may still contribute several Point scenarios when their intents
+  cover distinct facts.
+- Point and summary scenarios use distinct question-generation instructions.
+  Every generated candidate then passes through one question-editor LLM call
+  that returns `keep`, `rewrite`, or `drop`. The editor may naturalize wording,
+  remove copied clause syntax and vague references, but may not change the
+  scenario intent, evidence boundary, or question type. Only JSON shape,
+  non-empty values, valid IDs/types, and exact duplicates are checked in code;
+  linguistic naturalness is not decided by hard-coded rules.
 - After the candidate-question and answer LLM calls, generation performs only
   structural normalization: required JSON fields, supported question types,
   valid multiple-choice options/correct option, valid judgment answers, and
@@ -475,6 +515,15 @@ Rules:
   question with one central intent. The answer may summarize multiple related
   facts from one paragraph or a tightly connected passage group; unrelated
   questions must be emitted as separate items rather than concatenated.
+- Answer `evidence_usage` references are resolved back through the exact
+  `主材料-N` mapping. `source_chunk_id`, `source_chunk_index`, and
+  `source_chunk_title_path` identify the first directly cited primary chunk;
+  `source_chunk_ids`, `source_chunk_indexes`, and
+  `source_chunk_title_paths` retain the complete ordered primary-evidence set
+  for multi-material answers. A summary bound to multiple Section Materials is
+  retained only when `evidence_usage` cites at least one primary chunk from
+  every bound material; otherwise it enters the existing generation retry path.
+  Retrieved-only evidence never becomes the scalar primary source.
 - `qa_total_limit_scope=per_file` applies the total main-QA cap to each file.
   `qa_total_limit_scope=batch` pre-allocates the cap across successful files
   before concurrent generation so the final batch output does not exceed the

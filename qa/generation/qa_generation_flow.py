@@ -17,6 +17,8 @@ from qa.common import (
 from qa.prompts.qa_generation_prompts import (
     build_candidate_question_system_prompt,
     build_evidence_answer_system_prompt,
+    build_question_editor_system_prompt,
+    build_scenario_planner_system_prompt,
 )
 from qa.prompts.category_templates import resolve_category_prompt_template_key
 from qa.validation import normalize_difficulty_level, normalize_question_type
@@ -245,10 +247,42 @@ def _restore_evidence_usage_ids(
             if key not in {"evidence_ref", "chunk_id"}
         }
         entry["chunk_id"] = mapped["chunk_id"]
-        entry["role"] = str(entry.get("role") or mapped.get("role") or "evidence")
+        entry["role"] = str(mapped.get("role") or "evidence")
         entry["evidence_ref"] = ref
         restored.append(entry)
     return restored
+
+
+def _primary_usage_covers_bound_materials(
+    primary_ids: List[str],
+    *,
+    source_unit: Dict[str, Any],
+    source_chunks: List[Dict[str, Any]],
+) -> bool:
+    material_ids = [str(value) for value in source_unit.get("material_ids") or [] if str(value)]
+    if len(material_ids) <= 1:
+        return True
+    raw_mapping = source_unit.get("material_source_chunk_indexes")
+    if not isinstance(raw_mapping, dict):
+        return True
+    chunk_id_by_index = {
+        int(chunk.get("chunk_index") or 0): str(chunk.get("chunk_id") or "").strip()
+        for chunk in source_chunks
+        if isinstance(chunk, dict)
+    }
+    cited = set(primary_ids)
+    for material_id in material_ids:
+        indexes = raw_mapping.get(material_id)
+        if not isinstance(indexes, list):
+            return False
+        material_chunk_ids = {
+            chunk_id_by_index.get(int(index or 0), "")
+            for index in indexes
+        }
+        material_chunk_ids.discard("")
+        if not material_chunk_ids or cited.isdisjoint(material_chunk_ids):
+            return False
+    return True
 
 
 def _resolve_generation_language(prompt_language: str, text: str) -> Tuple[str, str]:
@@ -259,6 +293,221 @@ def _resolve_generation_language(prompt_language: str, text: str) -> Tuple[str, 
     if lang not in {"zh", "en"}:
         lang = "zh"
     return lang, build_language_instruction(lang)
+
+
+def call_scenario_planner_llm(
+    *,
+    client: Any,
+    model: str,
+    section_materials: List[Any],
+    requested_count: int,
+    qa_detail_mode: str,
+    prompt_language: str,
+    request_timeout: int,
+    debug_writer: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> List[Dict[str, Any]]:
+    """Plan typed scenarios whose material IDs can be validated deterministically."""
+    if requested_count <= 0 or not section_materials:
+        return []
+    readable_materials = [material.to_prompt_dict() for material in section_materials]
+    joined_text = "\n\n".join(str(item.get("content") or "") for item in readable_materials)
+    language_code, language_instruction = _resolve_generation_language(
+        prompt_language,
+        joined_text,
+    )
+    system_prompt = build_scenario_planner_system_prompt(
+        language_code=language_code,
+        language_instruction=language_instruction,
+        requested_count=requested_count,
+        qa_detail_mode=qa_detail_mode,
+    )
+    user_content = json.dumps({"materials": readable_materials}, ensure_ascii=False)
+    try:
+        raw = client.create_chat_completion_text(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=0.0,
+            response_format={"type": "json_object"},
+            timeout=float(request_timeout),
+        ).strip()
+    except Exception as exc:
+        if debug_writer:
+            debug_writer(
+                {
+                    "event": "scenario_planner_llm_call",
+                    "model": model,
+                    "qa_detail_mode": qa_detail_mode,
+                    "requested_count": requested_count,
+                    "material_count": len(readable_materials),
+                    "system_prompt": system_prompt,
+                    "user_content": user_content,
+                    "parse_error": str(exc),
+                }
+            )
+        raise
+    raw_items = _parse_json_items(raw)
+    allowed_ids = {str(material.material_id) for material in section_materials}
+    expected_scenario_type = str(qa_detail_mode or "").strip().lower()
+    normalized: List[Dict[str, Any]] = []
+    dropped: Dict[str, int] = {}
+    for item in raw_items:
+        scenario_type = str(item.get("scenario_type") or item.get("type") or "").strip().lower()
+        if scenario_type not in {"point", "summary"}:
+            dropped["invalid_scenario_type"] = dropped.get("invalid_scenario_type", 0) + 1
+            continue
+        if expected_scenario_type in {"point", "summary"} and scenario_type != expected_scenario_type:
+            dropped["scenario_type_mismatch"] = dropped.get("scenario_type_mismatch", 0) + 1
+            continue
+        intent = str(item.get("intent") or "").strip()
+        reader_need = str(item.get("reader_need") or "").strip()
+        material_ids: List[str] = []
+        for value in item.get("material_ids") or []:
+            material_id = str(value or "").strip()
+            if material_id in allowed_ids and material_id not in material_ids:
+                material_ids.append(material_id)
+        if not intent or not reader_need or not material_ids:
+            dropped["missing_required_field"] = dropped.get("missing_required_field", 0) + 1
+            continue
+        if scenario_type == "point" and len(material_ids) != 1:
+            dropped["point_requires_one_material"] = dropped.get("point_requires_one_material", 0) + 1
+            continue
+        normalized.append(
+            {
+                "scenario_type": scenario_type,
+                "intent": intent,
+                "reader_need": reader_need,
+                "material_ids": material_ids,
+            }
+        )
+    if debug_writer:
+        debug_writer(
+            {
+                "event": "scenario_planner_llm_call",
+                "model": model,
+                "qa_detail_mode": qa_detail_mode,
+                "requested_count": requested_count,
+                "material_count": len(readable_materials),
+                "system_prompt": system_prompt,
+                "user_content": user_content,
+                "raw_response": raw,
+                "items_raw_count": len(raw_items),
+                "items_validated_count": len(normalized),
+                "dropped_validation_reasons": dropped,
+            }
+        )
+    return normalized
+
+
+def call_question_editor_llm(
+    *,
+    client: Any,
+    model: str,
+    candidate: Dict[str, Any],
+    source_material: str,
+    scenario_intent: str,
+    reader_need: str,
+    qa_detail_mode: str,
+    prompt_language: str,
+    request_timeout: int,
+    chunk_index: Optional[int] = None,
+    debug_writer: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Tuple[Optional[Dict[str, Any]], str]:
+    """Run one semantic editor decision; code validates only its output shape."""
+    original_question = str(candidate.get("question") or "").strip()
+    if not original_question:
+        return None, "missing_question"
+    language_code, language_instruction = _resolve_generation_language(
+        prompt_language,
+        source_material or original_question,
+    )
+    system_prompt = build_question_editor_system_prompt(
+        language_code=language_code,
+        language_instruction=language_instruction,
+        qa_detail_mode=qa_detail_mode,
+    )
+    payload = {
+        "scenario_type": qa_detail_mode,
+        "scenario_intent": scenario_intent,
+        "reader_need": reader_need,
+        "question_type": candidate.get("question_type"),
+        "original_question": original_question,
+        "source_material": source_material,
+    }
+    user_content = json.dumps(payload, ensure_ascii=False)
+    try:
+        raw = client.create_chat_completion_text(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=0.0,
+            response_format={"type": "json_object"},
+            timeout=float(request_timeout),
+        ).strip()
+    except Exception as exc:
+        if debug_writer:
+            debug_writer(
+                {
+                    "event": "question_editor_llm_call",
+                    "chunk_index": chunk_index,
+                    "model": model,
+                    "qa_detail_mode": qa_detail_mode,
+                    "scenario_intent": scenario_intent,
+                    "reader_need": reader_need,
+                    "original_question": original_question,
+                    "system_prompt": system_prompt,
+                    "user_content": user_content,
+                    "parse_error": str(exc),
+                }
+            )
+        raise
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        parsed = {}
+    if not isinstance(parsed, dict):
+        parsed = {}
+    decision = str(parsed.get("decision") or "").strip().lower()
+    edited_question = str(parsed.get("question") or "").strip()
+    reason = str(parsed.get("reason") or "").strip()
+    result: Optional[Dict[str, Any]] = None
+    status = decision or "invalid_editor_response"
+    if decision == "keep":
+        result = dict(candidate)
+        result["question"] = original_question
+        status = "keep"
+    elif decision == "rewrite" and edited_question:
+        result = dict(candidate)
+        result["question"] = edited_question
+        status = "rewrite"
+    elif decision == "drop":
+        status = "drop"
+    else:
+        status = "invalid_editor_response"
+    if debug_writer:
+        debug_writer(
+            {
+                "event": "question_editor_llm_call",
+                "chunk_index": chunk_index,
+                "model": model,
+                "qa_detail_mode": qa_detail_mode,
+                "scenario_intent": scenario_intent,
+                "reader_need": reader_need,
+                "original_question": original_question,
+                "editor_decision": decision,
+                "edited_question": edited_question,
+                "editor_reason": reason,
+                "system_prompt": system_prompt,
+                "user_content": user_content,
+                "raw_response": raw,
+                "result_status": status,
+            }
+        )
+    return result, status
 
 
 def call_candidate_question_llm(
@@ -294,7 +543,14 @@ def call_candidate_question_llm(
     # Keep the candidate prompt readable. Chunk IDs, paths, and category
     # metadata stay in the trace; they are not useful for writing a natural
     # reader question and tend to leak into the wording.
-    user_content = "主来源材料：\n" + str(source_chunk_text or "").strip()
+    scenario_intent = str(source_chunk_meta.get("qa_generation_unit_scenario_intent") or "").strip()
+    reader_need = str(source_chunk_meta.get("qa_generation_unit_reader_need") or "").strip()
+    user_content = (
+        f"scenario_intent: {scenario_intent}\n"
+        f"reader_need: {reader_need}\n\n"
+        "主来源材料：\n"
+        + str(source_chunk_text or "").strip()
+    )
 
     response_type: Optional[str] = None
     response_dump: Any = None
@@ -499,6 +755,13 @@ def call_evidence_answer_llm(
                     evidence_usage,
                     evidence_ref_map,
                 )[:12]
+            restored_usage = normalized_item.get("evidence_usage") or []
+            if not any(
+                isinstance(entry, dict) and entry.get("role") == "primary_source"
+                for entry in restored_usage
+            ):
+                normalized_item = None
+                dropped_reason = "missing_primary_evidence_usage"
     if normalized_item:
         source_override_handler(
             normalized_item,
@@ -506,17 +769,57 @@ def call_evidence_answer_llm(
             language_code=language_code,
         )
         normalized_item["question"] = candidate_question
-        normalized_item["source_chunk_id"] = source_chunk.get("chunk_id")
-        normalized_item["source_chunk_index"] = source_chunk.get("chunk_index")
-        normalized_item["source_chunk_title_path"] = source_chunk.get("title_path")
-        normalized_item["evidence_chunk_ids"] = generation_unit.get("evidence_chunk_ids") or []
-        normalized_item["qa_generation_unit_id"] = generation_unit.get("qa_generation_unit_id")
-        normalized_item["qa_generation_unit_text"] = unit_text
-        normalized_item["retrieval_trace"] = generation_unit.get("retrieval_trace") or {}
-        normalized_item["source"] = source_chunk.get("chunk_id") or normalized_item.get("source")
-        normalized_item["text_for_embedding"] = (
-            f"{candidate_question} [SEP] {normalized_item.get('answer') or ''}"
-        )
+        evidence_usage = normalized_item.get("evidence_usage")
+        primary_ids: List[str] = []
+        if isinstance(evidence_usage, list):
+            for entry in evidence_usage:
+                if not isinstance(entry, dict) or entry.get("role") != "primary_source":
+                    continue
+                chunk_id = str(entry.get("chunk_id") or "").strip()
+                if chunk_id and chunk_id not in primary_ids:
+                    primary_ids.append(chunk_id)
+        source_chunks = generation_unit.get("source_chunks") or []
+        chunks_by_id = {
+            str(chunk.get("chunk_id") or "").strip(): chunk
+            for chunk in source_chunks
+            if isinstance(chunk, dict) and str(chunk.get("chunk_id") or "").strip()
+        }
+        primary_chunks = [chunks_by_id[chunk_id] for chunk_id in primary_ids if chunk_id in chunks_by_id]
+        source_unit_payload = generation_unit.get("source_unit")
+        if not isinstance(source_unit_payload, dict):
+            source_unit_payload = {}
+        if qa_detail_mode == "summary" and not _primary_usage_covers_bound_materials(
+            primary_ids,
+            source_unit=source_unit_payload,
+            source_chunks=[chunk for chunk in source_chunks if isinstance(chunk, dict)],
+        ):
+            normalized_item = None
+            dropped_reason = "incomplete_summary_primary_coverage"
+        if normalized_item and not primary_chunks:
+            primary_chunks = [source_chunk] if isinstance(source_chunk, dict) else []
+            primary_ids = [
+                str(source_chunk.get("chunk_id") or "").strip()
+            ] if source_chunk else []
+        primary_source = primary_chunks[0] if primary_chunks else source_chunk
+        if normalized_item:
+            normalized_item["source_chunk_id"] = primary_source.get("chunk_id")
+            normalized_item["source_chunk_index"] = primary_source.get("chunk_index")
+            normalized_item["source_chunk_title_path"] = primary_source.get("title_path")
+            normalized_item["source_chunk_ids"] = primary_ids
+            normalized_item["source_chunk_indexes"] = [
+                chunk.get("chunk_index") for chunk in primary_chunks if chunk.get("chunk_index") is not None
+            ]
+            normalized_item["source_chunk_title_paths"] = [
+                chunk.get("title_path") for chunk in primary_chunks if str(chunk.get("title_path") or "").strip()
+            ]
+            normalized_item["evidence_chunk_ids"] = generation_unit.get("evidence_chunk_ids") or []
+            normalized_item["qa_generation_unit_id"] = generation_unit.get("qa_generation_unit_id")
+            normalized_item["qa_generation_unit_text"] = unit_text
+            normalized_item["retrieval_trace"] = generation_unit.get("retrieval_trace") or {}
+            normalized_item["source"] = primary_source.get("chunk_id") or normalized_item.get("source")
+            normalized_item["text_for_embedding"] = (
+                f"{candidate_question} [SEP] {normalized_item.get('answer') or ''}"
+            )
 
     if debug_writer:
         debug_writer(
@@ -554,6 +857,8 @@ __all__ = [
     "build_question_type_plan",
     "call_candidate_question_llm",
     "call_evidence_answer_llm",
+    "call_question_editor_llm",
+    "call_scenario_planner_llm",
     "normalize_question_type_mode",
     "normalize_question_type_weights",
     "normalize_question_types",

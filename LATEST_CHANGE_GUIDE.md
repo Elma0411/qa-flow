@@ -1,36 +1,46 @@
 # Latest Change Guide
 
-更新时间：2026-08-13（Asia/Shanghai）
+更新时间：2026-08-14（Asia/Shanghai）
 
 ## Objective
 
-一次性修正章节/内容块混用和图片全局归属问题，并把答案证据检索替换为固定的成熟混合检索与真实 BGE 重排链路。
+把出题流程一次性收敛为“逻辑 section 材料 -> Point/Summary 场景 -> 分类出题 -> LLM 编辑 -> 相关证据检索 -> 真实来源回填”，同时移除旧 Milvus 文档块集合兼容。
 
 ## Effective Changes
 
-- 切块输出拆分章节结构、内容 chunk 和物理 fragment：新增 `section_*`、`fragment_*`、`content_kind`、`source_asset_ids` 字段，移除新输出中的 `is_leaf/index_path` 混合语义。
-- 内部章节可以保存自身正文；空父章节只存在于结构树；长章节的 `Part N/M` 不再进入标题或章节路径。图片描述只归属实际包含该图片 marker 的 chunk。
-- 检索固定为：问题规范化 -> 标准 BM25 + BGE-M3 dense -> RRF -> `chunk_id` 去重 -> 本地 `bge-reranker-v2-m3` 原子块精排 -> 结构窗口补全 -> 窗口二次 BGE 精排 -> 去重/token 预算。
-- 同一 `fragment_group_id` 必须整体恢复；同章节只合并连续命中；单块仅在“上述/如下/分别”等明确依赖信号下补一个相邻上下文；多个子章节命中同一父章节时只组合真实命中块，并将“含父正文/不含父正文”作为互斥候选交给二次重排。同分时短窗口优先，重叠窗口和超预算窗口不入选。
-- 候选题不再生成 `retrieval_query`、`must_have_terms`、`answer_scope_hint`。标准和一体化接口只公开 `final_evidence_k`（默认 5）与 `evidence_token_budget`（默认 4000）。
-- 新 chunk 写入版本化 Milvus 集合 `doc_content_chunks_v2`。旧 `doc_tree_chunks` 保留但不回退查询；`POST /doc-chunks/rebuild` 接受原文并重新切块，完整校验和生成向量后才替换同一 `task_id + original_filename`，写入失败会恢复原记录。
-- 文档块存储状态由进程级 `DocumentChunkStore` 管理，不再使用模块全局 Milvus client。
-- BGE reranker 由进程级 `RerankerService` 延迟加载并复用。模型缺失、文件不完整、依赖缺失或设备不可用会明确失败，不会退回旧排序。
+- 同一 `section_path` 的正文、物理 fragment 和已接受图片描述合并为一个 `SectionMaterial`；不同 section 不再因为同属一章或同一父标题而自动合并。
+- 新增 LLM 场景规划：`PointScenario` 绑定一份材料和一个事实需求；`SummaryScenario` 只绑定确实共同服务于一个读者需求的多个事实。长文档按内部字符预算分批，Summary 批次保留结构父邻域；`auto` 最终仍在文档级按 35% 目标分配，合格总结场景不足时额度回流给单点题。Point/Summary 返回值只进入对应类型池；同一 section 若包含多个不同事实，可形成多个不同 Point 场景。LLM 偶发少返回单点场景时，只用一材料一场景的确定性 Point fallback 补缺口，绝不伪造 Summary。
+- 每个场景只生成一道题。Point/Summary 使用不同约束，随后统一经过一次 LLM `keep/rewrite/drop` 编辑；程序只校验 JSON、必填值、合法 ID/类型和精确重复，不用硬规则判定语言自然度。
+- 后续 fragment 的重复 Markdown 标题在 `SectionMaterial` 中只保留一次；所有场景结束后再做一次忽略空白和标点的文档级问题去重。
+- 答案实际引用的 `主材料-N` 决定来源。标量 `source_chunk_id/index/title_path` 指向第一条直接主证据，`source_chunk_ids/indexes/title_paths` 保存总结题的完整主证据集合；多材料总结题必须覆盖每份绑定材料，否则进入既有重试。生成结束后不再被锚点 chunk 覆盖。
+- BGE 原子重排和窗口重排都增加相关性准入。最低原始 logit 为 `-1.0`；原子/窗口除头部相对分差外，还必须分别位于真实主材料得分下 `1.0/2.0` 以内。校准样本覆盖中英文相关、同主题硬负例和无关项，并有可执行脚本复现。`final_evidence_k` 只是上限，补充证据允许为 0。
+- 文档块只使用固定集合 `doc_content_chunks_v2`（schema v2）。代码不再暴露旧集合常量或可配置的集合重定向；运行环境中的旧 `doc_tree_chunks` 已删除。
 
 ## Expected Behavior
 
-- `section_is_leaf` 描述章节是否有子章节，不再描述图片或内容 chunk 是否“叶子”。
-- 每个证据归因仍落在真实 `chunk_id`；Evidence Window 只是查询时的虚拟组合，不制造持久化假 ID。
-- 工作台只显示最终证据窗口数和 token 预算，不再暴露检索模式、手工权重、轻量重排数或证据范围策略。
-- 新任务自动写入 v2 集合；旧任务需通过重建接口提交原始正文后才会出现在新块查询中。
+```text
+content chunks
+-> SectionMaterial
+-> PointScenario / SummaryScenario
+-> global allocation
+-> typed question generation
+-> LLM keep/rewrite/drop editor
+-> BM25 + dense + RRF + calibrated BGE admission
+-> answer generation
+-> actual primary-source attribution
+```
+
+- 同一个 section 可以同时参与意图不同的单点和总结场景。
+- sibling section 只有被场景规划器显式绑定且共同服务于一个读者需求时，才进入同一总结题。
+- 问题编辑后的文本才会进入检索和答案生成。
+- 无真正相关的补充证据时，答案只使用场景主材料。
 
 ## Validation
 
 ```bash
 python -m compileall -q app qa scripts
 python -m unittest discover -s tests
-node --check static/app.js
-node --check static/app_query.js
+QA_RERANKER_DEVICE=cpu python scripts/calibrate_bge_relevance.py --strict
 git diff --check
 ```
 
@@ -38,6 +48,5 @@ Docker runtime verification:
 
 ```bash
 docker exec qa-flow-runtime sh -lc 'cd /app && python -m compileall -q app qa scripts && python -m unittest discover -s tests'
-docker exec qa-flow-runtime sh -lc 'cd /app && QA_RERANKER_DEVICE=cpu python -c "from qa.retrieval import get_reranker_service; print(get_reranker_service().rank(\"申请材料\", [(\"a\", \"申请材料包括身份证明\"), (\"b\", \"天气晴朗\")]))"'
 curl http://localhost:12000/test-connection
 ```

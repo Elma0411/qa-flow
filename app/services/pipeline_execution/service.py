@@ -773,7 +773,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                     filename,
                     "chunk_storage",
                     "processing",
-                    "保存 chunk 溯源索引中（doc_tree_chunks）",
+                    "保存 chunk 溯源索引中（doc_content_chunks_v2）",
                     extra={"enable_chunk_storage": enable_chunk_storage},
                 )
                 try:
@@ -856,22 +856,6 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                     original_filename=filename,
                     progress_callback=_on_generation_progress,
                 )
-                # Replace model-provided `source` with stable chunk_id for traceability.
-                chunk_id_map = {
-                    int(m.get("chunk_index") or 0): str(m.get("chunk_id") or "")
-                    for m in (chunks_meta or [])
-                    if isinstance(m, dict) and int(m.get("chunk_index") or 0) > 0 and str(m.get("chunk_id") or "").strip()
-                }
-                if chunk_id_map:
-                    for qa in qa_data or []:
-                        if not isinstance(qa, dict):
-                            continue
-                        try:
-                            idx = int(qa.get("chunk_index") or 0)
-                        except Exception:
-                            continue
-                        if idx > 0 and idx in chunk_id_map:
-                            qa["source"] = chunk_id_map[idx]
                 generation_duration = time.time() - generation_start
                 generation_wall_detail, generation_cumulative_detail = _extract_generation_timing_views(
                     generation_timing_summary

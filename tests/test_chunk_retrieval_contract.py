@@ -132,6 +132,12 @@ class ChunkRetrievalContractTests(unittest.TestCase):
         self.assertEqual("doc_content_chunks_v2", DOC_TREE_CHUNKS_COLLECTION)
         self.assertEqual(2, DOC_TREE_CHUNKS_SCHEMA_VERSION)
 
+    def test_document_chunk_collection_name_is_not_configurable_to_legacy_schema(self):
+        from app.services.doc_chunks import service
+
+        self.assertFalse(hasattr(service, "LEGACY_DOC_TREE_CHUNKS_COLLECTION"))
+        self.assertNotIn("doc_tree_chunks_v2_collection", service.__dict__)
+
     def test_repeated_sibling_titles_get_distinct_section_paths(self):
         _texts, chunks, _report = self._chunk(
             "# 文档\n\n## 要求\n\n第一处要求。\n\n## 要求\n\n第二处要求。"
