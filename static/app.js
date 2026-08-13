@@ -1366,7 +1366,7 @@ function modulesByKeys(keys) {
   return (keys || []).map((key) => settingsModules.get(key)).filter(Boolean);
 }
 
-function openSettingsGroup(title, description, moduleKeys) {
+function openSettingsGroup(title, description, moduleKeys, options = {}) {
   const modules = modulesByKeys(moduleKeys);
   if (!modules.length) return;
   openSettingsDrawer({
@@ -1376,6 +1376,7 @@ function openSettingsGroup(title, description, moduleKeys) {
     nodes: [],
     fields: [],
     bank: null,
+    workspaceModal: options.workspaceModal === true,
   });
 }
 
@@ -1392,6 +1393,7 @@ function openPipelineSettingsModal() {
       'pipeline.performance',
       'pipeline.output',
     ],
+    { workspaceModal: true },
   );
 }
 
@@ -1567,7 +1569,7 @@ function setupPipelineModuleConsole() {
           { field: 'finalEvidenceK' },
           { field: 'evidenceTokenBudget' },
         ],
-        summary: () => `BGE 固定链路 / 窗口 ${$('#finalEvidenceK')?.value ?? 5} / ${$('#evidenceTokenBudget')?.value || 4000} tokens`,
+        summary: () => `BGE 固定链路 / 最多补证 ${$('#finalEvidenceK')?.value ?? 5} 组 / ${$('#evidenceTokenBudget')?.value || 4000} tokens`,
       },
       {
         key: 'evaluation',
@@ -1957,7 +1959,7 @@ function setupReviewWorkspace({ anchor, chunkSection, qaResultsSection }) {
   body.className = 'review-grid';
 
   if (chunkSection) {
-    setSectionTitle(chunkSection, 'Chunk 溯源', '按当前 task_id 查看树结构，点击 leaf chunk 检查正文和对应 QA。');
+    setSectionTitle(chunkSection, 'Chunk 溯源', '按当前 task_id 查看树结构，点击内容 chunk 检查正文和对应 QA。');
     chunkSection.classList.add('review-panel', 'review-panel--chunk');
     body.appendChild(chunkSection);
   }
@@ -2166,7 +2168,7 @@ function setupWorkbenchHero() {
     items.push(createSummaryChip('流程', () => $('#pipelineProcessingMode')?.value === 'integrated' ? '一体流程' : '标准 OCR', { moduleKey: 'pipeline.document' }));
     items.push(createSummaryChip('切分', () => `${$('#chunkingSplitType')?.value || 'markdown'} / ${$('#chunkSize')?.value || 600}`, { moduleKey: 'pipeline.chunking' }));
     items.push(createSummaryChip('生成', () => `${checkedQuestionTypesSummary()} / 上限 ${$('#qaTotalLimit')?.value || 20}`, { moduleKey: 'pipeline.generation' }));
-    items.push(createSummaryChip('检索', () => `BGE 固定链路 / 窗口 ${$('#finalEvidenceK')?.value ?? 5} / ${$('#evidenceTokenBudget')?.value || 4000} tokens`, { moduleKey: 'pipeline.retrieval' }));
+    items.push(createSummaryChip('检索', () => `BGE 固定链路 / 最多补证 ${$('#finalEvidenceK')?.value ?? 5} 组 / ${$('#evidenceTokenBudget')?.value || 4000} tokens`, { moduleKey: 'pipeline.retrieval' }));
     items.push(createSummaryChip('评估', () => pipelineEvaluationSummary(), { moduleKey: 'pipeline.evaluation' }));
     items.push(createSummaryChip('并发', () => `unit ${$('#chunkMaxConcurrency')?.value || '8'} / API ${$('#llmMaxConcurrentRequests')?.value || '默认'}`, { moduleKey: 'pipeline.performance' }));
     items.push(createSummaryChip('存储', () => pipelineStorageSummary(), { moduleKey: 'pipeline.output' }));
@@ -2806,6 +2808,57 @@ function findGenerationExtra(status) {
   return {};
 }
 
+function findUnitPlanSummary(status) {
+  const generationExtra = findGenerationExtra(status);
+  if (hasObjectKeys(generationExtra.unit_plan_summary)) {
+    return generationExtra.unit_plan_summary;
+  }
+  const outputTimings = collectOutputTimings(status);
+  for (let index = 0; index < outputTimings.length; index += 1) {
+    const timing = outputTimings[index];
+    if (hasObjectKeys(timing?.unit_plan_summary)) return timing.unit_plan_summary;
+    if (hasObjectKeys(timing?.generation_detail?.unit_plan_summary)) {
+      return timing.generation_detail.unit_plan_summary;
+    }
+  }
+  return {};
+}
+
+function scenarioCountText(counts) {
+  const safeCounts = isPlainObject(counts) ? counts : {};
+  const point = firstNumber(safeCounts.point);
+  const summary = firstNumber(safeCounts.summary);
+  if (point === null && summary === null) return null;
+  return `Point ${point ?? 0} / Summary ${summary ?? 0}`;
+}
+
+function selectedEvidenceWindowStats(units) {
+  const list = Array.isArray(units) ? units : [];
+  let total = 0;
+  let recorded = false;
+  list.forEach((unit) => {
+    const direct = firstNumber(unit?.selected_evidence_window_count);
+    if (direct !== null) {
+      total += direct;
+      recorded = true;
+      return;
+    }
+    const trace = unit?.unit_debug?.retrieval_trace;
+    if (!isPlainObject(trace)) return;
+    const traceCount = firstNumber(trace.selected_evidence_window_count);
+    if (traceCount !== null) {
+      total += traceCount;
+      recorded = true;
+      return;
+    }
+    if (Array.isArray(trace.selected_windows)) {
+      total += trace.selected_windows.length;
+      recorded = true;
+    }
+  });
+  return recorded ? total : null;
+}
+
 function sumStageElapsed(fileEntries, stageNames) {
   const wanted = new Set(stageNames || []);
   let total = 0;
@@ -2883,6 +2936,9 @@ function deriveGenerationTimingViews(generationExtra, outputTimings) {
   let explicitWallDetail = false;
   let outputChunkDetails = [];
   let outputUnitDetails = [];
+  let unitPlanSummary = hasObjectKeys(generationExtra.unit_plan_summary)
+    ? generationExtra.unit_plan_summary
+    : {};
 
   if (hasObjectKeys(generationExtra.generation_wall_detail)) {
     wallDetail = generationExtra.generation_wall_detail;
@@ -2912,6 +2968,9 @@ function deriveGenerationTimingViews(generationExtra, outputTimings) {
     if (!hasObjectKeys(cumulativeDetail) && hasObjectKeys(timing.generation_cumulative_detail)) {
       cumulativeDetail = timing.generation_cumulative_detail;
     }
+    if (!hasObjectKeys(unitPlanSummary) && hasObjectKeys(timing.unit_plan_summary)) {
+      unitPlanSummary = timing.unit_plan_summary;
+    }
     if (!hasObjectKeys(wallDetail) && hasObjectKeys(timing.generation_detail)) {
       wallDetail = timing.generation_detail;
     }
@@ -2935,6 +2994,7 @@ function deriveGenerationTimingViews(generationExtra, outputTimings) {
   return {
     wallDetail: normalizeGenerationWallDetail(wallDetail, explicitWallDetail),
     cumulativeDetail,
+    unitPlanSummary,
     unitDetails,
     chunkDetails: progressChunkDetails.length ? progressChunkDetails : outputChunkDetails,
   };
@@ -2988,6 +3048,7 @@ function derivePipelineTiming(status) {
     live_elapsed_seconds: totalSeconds,
     generation_detail: generationTiming,
     generation_cumulative_detail: generationViews.cumulativeDetail,
+    unit_plan_summary: generationViews.unitPlanSummary,
     generation_unit_details: generationViews.unitDetails,
     generation_chunk_details: generationViews.chunkDetails,
   };
@@ -3469,6 +3530,9 @@ function renderPipelineDebugStatus(status, options = {}) {
   root.className = 'pipeline-debug';
   const safeStatus = status && typeof status === 'object' ? status : {};
   const timing = derivePipelineTiming(safeStatus);
+  const unitPlanSummary = hasObjectKeys(timing.unit_plan_summary)
+    ? timing.unit_plan_summary
+    : findUnitPlanSummary(safeStatus);
   const statusKey = String(safeStatus.status || 'unknown').trim().toLowerCase();
   const stageText = pipelineCurrentStageText(safeStatus);
   const progressPercent = pipelineProgressPercent(safeStatus);
@@ -3556,13 +3620,28 @@ function renderPipelineDebugStatus(status, options = {}) {
   appendTextMetric(genMeta, 'unit 总数', firstNumber(detail.generation_units_total, safeStatus.generation_units_total));
   appendTextMetric(genMeta, '已完成 unit', firstNumber(detail.generation_units_completed, safeStatus.generation_units_done));
   appendTextMetric(genMeta, '生成 QA 数', firstNumber(detail.qa_generated));
+  appendTextMetric(
+    genMeta,
+    '场景候选池',
+    scenarioCountText(unitPlanSummary.scenario_candidates_by_type),
+  );
+  appendTextMetric(
+    genMeta,
+    '最终场景分配',
+    scenarioCountText(unitPlanSummary.scenario_selected_by_type),
+  );
   appendTextMetric(genMeta, '总题数上限', firstNumber(detail.qa_total_limit, safeStatus.qa_total_limit));
   appendTextMetric(genMeta, '上限范围', detail.qa_total_limit_scope || safeStatus.qa_total_limit_scope || 'per_file');
   appendTextMetric(genMeta, 'unit 最大尝试次数', safeStatus.chunk_max_attempts);
   appendTextMetric(genMeta, 'LLM/VLM API 请求并发', safeStatus.llm_max_concurrent_requests || 'Docker 环境默认');
   const retrievalConfig = safeStatus.retrieval_config || {};
-  appendTextMetric(genMeta, '检索链路', retrievalConfig.pipeline || 'bm25_dense_rrf_bge_structure_v1');
-  appendTextMetric(genMeta, '最终证据窗口', retrievalConfig.final_evidence_k ?? '5');
+  appendTextMetric(genMeta, '检索链路', retrievalConfig.pipeline || 'bm25_dense_rrf_bge_admission_structure_v2');
+  appendTextMetric(genMeta, '最多补充证据窗口/题', retrievalConfig.final_evidence_k ?? '5');
+  appendTextMetric(
+    genMeta,
+    '实际补充证据窗口（已完成题合计）',
+    selectedEvidenceWindowStats(timing.generation_unit_details),
+  );
   appendTextMetric(genMeta, '证据 token 预算', retrievalConfig.evidence_token_budget ?? '4000');
   generation.appendChild(genMeta);
   root.appendChild(generation);
@@ -3615,7 +3694,7 @@ function renderPipelineDebugStatus(status, options = {}) {
       const row = document.createElement('tr');
       const ct = chunk.timing && typeof chunk.timing === 'object' ? chunk.timing : {};
       appendChunkTableCell(row, debugCountText(chunk.unit_index || chunk.chunk_index, '?'), 'mono');
-      appendChunkTableCell(row, chunk.unit_type || 'leaf');
+      appendChunkTableCell(row, chunk.unit_type || 'point_scenario');
       appendChunkTableCell(row, chunk.qa_mode || 'point');
       appendChunkTableCell(
         row,

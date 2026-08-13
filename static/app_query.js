@@ -1,4 +1,4 @@
-// ---------- Chunk 树与溯源（doc_tree_chunks） ----------
+// ---------- Chunk 树与溯源（doc_content_chunks_v2） ----------
 
 const btnLoadChunkDocs = $('#btnLoadChunkDocs');
 const btnLoadChunkTree = $('#btnLoadChunkTree');
@@ -61,7 +61,7 @@ function safeArray(value) {
 
 function toScoreText(value) {
   const n = Number(value);
-  return Number.isFinite(n) ? n.toFixed(2) : '—';
+  return Number.isFinite(n) ? n.toFixed(2) : '-';
 }
 
 function createDebugEmpty(text) {
@@ -99,7 +99,7 @@ function createCodeSection(title, text) {
   heading.textContent = title;
   const body = document.createElement('div');
   body.className = 'chunk-debug-code';
-  body.textContent = String(text || '').trim() || '—';
+  body.textContent = String(text || '').trim() || '-';
   section.appendChild(heading);
   section.appendChild(body);
   return section;
@@ -193,7 +193,6 @@ function resetChunkDebugPanel(message = '请选择左侧内容 chunk') {
   setChunkDebugStatus('等待加载');
   const chunkView = $('#chunkDebugChunkView');
   const qaList = $('#chunkDebugQaList');
-  const qaDetail = $('#chunkDebugQaDetail');
   if (chunkView) {
     chunkView.innerHTML = '';
     chunkView.appendChild(createDebugEmpty(message));
@@ -201,10 +200,6 @@ function resetChunkDebugPanel(message = '请选择左侧内容 chunk') {
   if (qaList) {
     qaList.innerHTML = '';
     qaList.appendChild(createDebugEmpty('暂无 QA'));
-  }
-  if (qaDetail) {
-    qaDetail.innerHTML = '';
-    qaDetail.appendChild(createDebugEmpty('请选择一条 QA'));
   }
 }
 
@@ -240,8 +235,8 @@ function renderChunkView(payload) {
   const kpi = document.createElement('div');
   kpi.className = 'chunk-debug-kpi-grid';
   [
-    ['Chunk', chunk.chunk_index != null ? `#${chunk.chunk_index}` : '—'],
-    ['章节层级', chunk.section_level != null ? String(chunk.section_level) : '—'],
+    ['Chunk', chunk.chunk_index != null ? `#${chunk.chunk_index}` : '-'],
+    ['章节层级', chunk.section_level != null ? String(chunk.section_level) : '-'],
     ['QA 数', String(qaItems.length)],
     ['过滤后', String(qaItems.filter((it) => !!it.filtered).length)],
   ].forEach(([label, value]) => {
@@ -363,9 +358,8 @@ function renderQaList(qaItems) {
     btn.addEventListener('click', () => {
       chunkDebugState.selectedQaId = String(item.id || '');
       renderQaList(chunkDebugState.qaItems);
-      renderQaDetail(item);
+      openQaDetailModal(item);
     });
-    btn.addEventListener('dblclick', () => openQaDetailModal(item));
     list.appendChild(btn);
   });
 }
@@ -435,6 +429,7 @@ function renderTraceSection(title, traces) {
 function getEvidenceTraces(item, options = {}) {
   const includeRaw = !!options.includeRaw;
   const rawEvidenceIds = safeArray(item.evidence_chunk_ids);
+  const evidenceHits = safeArray(item.evidence_hits);
   const retrievalTrace = item.retrieval_trace && typeof item.retrieval_trace === 'object'
     ? item.retrieval_trace
     : {};
@@ -442,7 +437,9 @@ function getEvidenceTraces(item, options = {}) {
   const rawSemanticHits = safeArray(retrievalTrace.raw_semantic_hits);
   const evidenceMap = new Map();
 
-  const traces = includeRaw ? [...selectedEvidence, ...rawSemanticHits] : selectedEvidence;
+  const traces = includeRaw
+    ? [...evidenceHits, ...selectedEvidence, ...rawSemanticHits]
+    : [...evidenceHits, ...selectedEvidence];
   traces.forEach((trace) => {
     const chunkId = String(trace && trace.chunk_id || '').trim();
     if (!chunkId || evidenceMap.has(chunkId)) return;
@@ -585,6 +582,7 @@ function buildQaDetailCard(item, options = {}) {
   card.appendChild(
     createPillRow([
       item.question_type ? `题型：${item.question_type}` : '',
+      item.qa_generation_unit_mode ? `场景：${item.qa_generation_unit_mode}` : '',
       item.knowledge_category ? `分类：${item.knowledge_category}` : '',
       `平均分：${toScoreText(item.average_score)}`,
       item.filtered ? '状态：已过滤' : '状态：保留',
@@ -600,8 +598,20 @@ function buildQaDetailCard(item, options = {}) {
       ['source_chunk_id', item.source_chunk_id],
       ['source_chunk_index', item.source_chunk_index != null ? `#${item.source_chunk_index}` : ''],
       ['source_chunk_title_path', item.source_chunk_title_path],
+      ['source_chunk_ids', safeArray(item.source_chunk_ids).join(', ')],
+      ['source_chunk_indexes', safeArray(item.source_chunk_indexes).map((value) => `#${value}`).join(', ')],
+      ['source_chunk_title_paths', safeArray(item.source_chunk_title_paths).join(' ｜ ')],
       ['source', item.source],
       ['qa_generation_unit_id', item.qa_generation_unit_id],
+      ['qa_generation_unit_index', item.qa_generation_unit_index],
+      ['qa_generation_unit_type', item.qa_generation_unit_type],
+      ['qa_generation_unit_mode', item.qa_generation_unit_mode],
+      ['qa_generation_scenario_intent', item.qa_generation_scenario_intent],
+      ['qa_generation_reader_need', item.qa_generation_reader_need],
+      ['qa_generation_material_ids', safeArray(item.qa_generation_material_ids).join(', ')],
+      ['qa_generation_unit_source_chunk_indexes', safeArray(item.qa_generation_unit_source_chunk_indexes).map((value) => `#${value}`).join(', ')],
+      ['qa_generation_unit_section_path', item.qa_generation_unit_section_path],
+      ['qa_generation_unit_quality_child_coverage', item.qa_generation_unit_quality_child_coverage],
       ['创建时间', fmtDebugTs(item.created_at)],
     ]),
   );
@@ -629,7 +639,13 @@ function buildQaDetailCard(item, options = {}) {
       createKvGrid([
         ['原始问题', retrievalTrace.query],
         ['检索链路', retrievalTrace.pipeline],
-        ['最终证据窗口', retrievalTrace.final_evidence_k],
+        [
+          '实际补充证据窗口',
+          retrievalTrace.selected_evidence_window_count != null
+            ? retrievalTrace.selected_evidence_window_count
+            : safeArray(retrievalTrace.selected_windows).length,
+        ],
+        ['最多补充证据窗口', retrievalTrace.final_evidence_k],
         ['证据 token 预算', retrievalTrace.evidence_token_budget],
         ['估算证据 tokens', retrievalTrace.evidence_tokens_estimated],
       ]),
@@ -671,13 +687,6 @@ function buildQaDetailCard(item, options = {}) {
   return card;
 }
 
-function renderQaDetail(item) {
-  const detail = $('#chunkDebugQaDetail');
-  if (!detail) return;
-  detail.innerHTML = '';
-  detail.appendChild(buildQaDetailCard(item));
-}
-
 function renderChunkDebugPanel(payload) {
   const chunk = (payload && payload.chunk) || {};
   const qaItems = safeArray(payload && payload.qa && payload.qa.items);
@@ -690,11 +699,6 @@ function renderChunkDebugPanel(payload) {
   renderChunkDebugSummary(chunk, qaItems);
   renderChunkView(payload);
   renderQaList(qaItems);
-  const selected =
-    qaItems.find((item) => String(item.id || '') === String(chunkDebugState.selectedQaId || '')) ||
-    qaItems[0] ||
-    null;
-  renderQaDetail(selected);
 }
 
 function renderChunkTree(tree) {
@@ -808,7 +812,7 @@ async function handleLoadChunkTree() {
     const data = await fetchJson(`${base}/doc-chunks/tree?${qs.toString()}`);
     renderChunkTree(data.tree);
     setChunkOutputs('', '');
-    resetChunkDebugPanel('请选择左侧 leaf chunk');
+    resetChunkDebugPanel('请选择左侧内容 chunk');
   } catch (err) {
     renderChunkTree(null);
     setChunkOutputs('加载树失败：' + String(err), '');

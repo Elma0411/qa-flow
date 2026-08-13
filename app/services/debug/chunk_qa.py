@@ -86,7 +86,14 @@ def load_chunk_qa_items_from_artifacts(
     for path in paths:
         for item in _load_consolidated_items(path):
             source_chunk_id = str(item.get("source_chunk_id") or item.get("source") or "").strip()
-            if source_chunk_id != safe_chunk_id:
+            source_chunk_ids = item.get("source_chunk_ids")
+            source_chunk_ids = source_chunk_ids if isinstance(source_chunk_ids, list) else []
+            normalized_source_ids = {
+                str(value or "").strip()
+                for value in source_chunk_ids
+                if str(value or "").strip()
+            }
+            if source_chunk_id != safe_chunk_id and safe_chunk_id not in normalized_source_ids:
                 continue
             if only_filtered and not bool(item.get("filtered")):
                 continue

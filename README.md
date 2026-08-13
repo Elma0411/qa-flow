@@ -189,6 +189,8 @@ Milvus 查询结果，而不是继续依赖已过期的 JSON 或 CSV 文件。
 `doc_tree_chunks` 集合及其兼容路径已经移除。块级溯源使用以下接口：
 
 - `GET /doc-chunks/by-task/{task_id}`
+- `GET /doc-chunks/by-doc/assets`（按 `doc_id`，或按 `task_id` 加可选文件名，
+  一次返回完整纯文本、全部 QA 和可选 chunk 列表）
 - `GET /doc-chunks/tree`
 - `GET /doc-chunks/{chunk_id}`
 - `GET /doc-chunks/{chunk_id}/qa`
@@ -196,6 +198,11 @@ Milvus 查询结果，而不是继续依赖已过期的 JSON 或 CSV 文件。
   服务重新切块并安全替换该任务下对应文件的 v2 索引）
 
 这些接口用于查看切块结果、树状结构、单块详情，以及某个块关联的问答。
+`/doc-chunks/by-doc/assets` 默认返回全文和活跃 QA；可用
+`include_full_text`、`include_qas`、`include_chunks` 和 `qa_only_active`
+控制返回内容。QA 详情会保留 Point/Summary 场景、场景意图、材料 ID 以及
+总结题的完整多主来源字段。按 chunk 查询 QA 时会按完整主来源集合匹配，
+因此多材料总结题会在每个实际主来源块下显示，而不是只出现在第一条来源块。
 
 重建请求示例：
 

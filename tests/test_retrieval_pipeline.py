@@ -63,6 +63,14 @@ class RetrievalPipelineTests(unittest.TestCase):
         )
 
         self.assertEqual("bm25_dense_rrf_bge_admission_structure_v2", result["trace"]["pipeline"])
+        self.assertEqual(
+            len(result["trace"]["selected_windows"]),
+            result["trace"]["selected_evidence_window_count"],
+        )
+        self.assertEqual(
+            len(result["selected_chunk_ids"]),
+            result["trace"]["selected_evidence_chunk_count"],
+        )
         self.assertTrue(result["trace"]["dense_hits"])
         self.assertTrue(result["trace"]["bm25_hits"])
         self.assertTrue(result["trace"]["rrf_hits"])

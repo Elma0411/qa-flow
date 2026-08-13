@@ -290,6 +290,9 @@ function renderQaDetail(data) {
     faith ? { text: `faith: ${faith}`, className: 'faith' } : null,
     filtered ? { text: `filtered: ${filtered}`, className: 'theme' } : null,
     isAug ? { text: '增广 (augmented)', className: 'theme' } : null,
+    data?.qa_generation_unit_mode
+      ? { text: `场景: ${data.qa_generation_unit_mode}`, className: 'theme' }
+      : null,
   ]);
 
   const admin = data?.admin && typeof data.admin === 'object' ? data.admin : null;
@@ -302,7 +305,50 @@ function renderQaDetail(data) {
     { k: 'question', v: data?.question || '' },
     { k: 'answer', v: data?.answer || '' },
     source ? { k: 'source', v: source } : null,
+    data?.source_chunk_id ? { k: 'source_chunk_id', v: data.source_chunk_id } : null,
+    data?.source_chunk_index != null ? { k: 'source_chunk_index', v: String(data.source_chunk_index) } : null,
+    data?.source_chunk_title_path ? { k: 'source_chunk_title_path', v: data.source_chunk_title_path } : null,
+    Array.isArray(data?.source_chunk_ids) && data.source_chunk_ids.length
+      ? { k: 'source_chunk_ids', v: data.source_chunk_ids.join(', ') }
+      : null,
+    Array.isArray(data?.source_chunk_indexes) && data.source_chunk_indexes.length
+      ? { k: 'source_chunk_indexes', v: data.source_chunk_indexes.join(', ') }
+      : null,
+    Array.isArray(data?.source_chunk_title_paths) && data.source_chunk_title_paths.length
+      ? { k: 'source_chunk_title_paths', v: data.source_chunk_title_paths.join(' ｜ ') }
+      : null,
     data?.source_fact_text ? { k: 'source_fact_text', v: data.source_fact_text } : null,
+    data?.qa_generation_unit_id ? { k: 'qa_generation_unit_id', v: data.qa_generation_unit_id } : null,
+    data?.qa_generation_unit_index != null
+      ? { k: 'qa_generation_unit_index', v: String(data.qa_generation_unit_index) }
+      : null,
+    data?.qa_generation_unit_type ? { k: 'qa_generation_unit_type', v: data.qa_generation_unit_type } : null,
+    data?.qa_generation_unit_mode ? { k: 'qa_generation_unit_mode', v: data.qa_generation_unit_mode } : null,
+    data?.qa_generation_scenario_intent
+      ? { k: 'scenario_intent', v: data.qa_generation_scenario_intent }
+      : null,
+    data?.qa_generation_reader_need ? { k: 'reader_need', v: data.qa_generation_reader_need } : null,
+    Array.isArray(data?.qa_generation_material_ids) && data.qa_generation_material_ids.length
+      ? { k: 'material_ids', v: data.qa_generation_material_ids.join(', ') }
+      : null,
+    Array.isArray(data?.qa_generation_unit_source_chunk_indexes) && data.qa_generation_unit_source_chunk_indexes.length
+      ? { k: 'unit_source_chunk_indexes', v: data.qa_generation_unit_source_chunk_indexes.join(', ') }
+      : null,
+    data?.qa_generation_unit_section_path
+      ? { k: 'unit_section_path', v: data.qa_generation_unit_section_path }
+      : null,
+    data?.qa_generation_unit_quality_child_coverage != null
+      ? { k: 'unit_quality_child_coverage', v: String(data.qa_generation_unit_quality_child_coverage) }
+      : null,
+    Array.isArray(data?.evidence_chunk_ids) && data.evidence_chunk_ids.length
+      ? { k: 'supplemental_evidence_chunk_ids', v: data.evidence_chunk_ids.join(', ') }
+      : null,
+    data?.retrieval_trace?.selected_evidence_window_count != null
+      ? { k: 'selected_evidence_window_count', v: String(data.retrieval_trace.selected_evidence_window_count) }
+      : null,
+    data?.retrieval_trace?.final_evidence_k != null
+      ? { k: 'max_supplemental_evidence_windows', v: String(data.retrieval_trace.final_evidence_k) }
+      : null,
     data?.knowledge_category ? { k: 'category', v: data.knowledge_category } : null,
     data?.question_type ? { k: 'q_type', v: data.question_type } : null,
     data?.difficulty_level ? { k: 'difficulty', v: data.difficulty_level } : null,
@@ -758,7 +804,7 @@ async function loadDetail(id) {
   }
   if (!isProbablyChunkId(source)) {
     setChunkDetailPlaceholder(
-      `source 不是 chunk_id（可能是旧数据/未保存 chunk 溯源索引），无法溯源到 doc_tree_chunks。\nsource=${source}`,
+      `source 不是 chunk_id（可能是旧数据/未保存 chunk 溯源索引），无法溯源到 doc_content_chunks_v2。\nsource=${source}`,
     );
     return;
   }

@@ -365,9 +365,23 @@ def get_qa_item(qa_id: str) -> Dict[str, Any]:
         "evidence_chunk_ids": debug_payload.get("evidence_chunk_ids") or [],
         "qa_generation_unit_id": debug_payload.get("qa_generation_unit_id"),
         "qa_generation_unit_text": debug_payload.get("qa_generation_unit_text"),
+        "qa_generation_unit_index": debug_payload.get("qa_generation_unit_index"),
+        "qa_generation_unit_type": debug_payload.get("qa_generation_unit_type"),
+        "qa_generation_unit_mode": debug_payload.get("qa_generation_unit_mode"),
         "qa_generation_scenario_intent": debug_payload.get("qa_generation_scenario_intent"),
         "qa_generation_reader_need": debug_payload.get("qa_generation_reader_need"),
         "qa_generation_material_ids": debug_payload.get("qa_generation_material_ids") or [],
+        "qa_generation_unit_source_chunk_indexes": debug_payload.get(
+            "qa_generation_unit_source_chunk_indexes"
+        )
+        or [],
+        "qa_generation_unit_section_path": debug_payload.get(
+            "qa_generation_unit_section_path"
+        ),
+        "qa_generation_unit_quality_child_coverage": debug_payload.get(
+            "qa_generation_unit_quality_child_coverage"
+        ),
+        "evidence_hits": debug_payload.get("evidence_hits") or [],
         "retrieval_query": debug_payload.get("retrieval_query"),
         "must_have_terms": debug_payload.get("must_have_terms") or [],
         "answer_scope_hint": debug_payload.get("answer_scope_hint"),

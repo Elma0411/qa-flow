@@ -476,13 +476,15 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                 generation_unit_details: List[Dict[str, Any]] = []
                 generation_chunk_details: List[Dict[str, Any]] = []
                 generation_timing_summary: Dict[str, Any] = {}
+                unit_plan_summary: Dict[str, Any] = {}
 
                 def _on_generation_progress(info: Dict[str, Any]) -> None:
-                    nonlocal gen_last_update, generation_timing_summary
+                    nonlocal gen_last_update, generation_timing_summary, unit_plan_summary
                     try:
                         event = str((info or {}).get("event") or "")
                         now = time.time()
                         if event == "start":
+                            unit_plan_summary = dict((info or {}).get("unit_plan_summary") or {})
                             total_chunks = int((info or {}).get("total_chunks") or 0)
                             total_units = int((info or {}).get("total_generation_units") or 0)
                             msg = f"一步式生成问答对中：共 {total_units} 个 generation unit"
@@ -511,6 +513,9 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                             return
 
                         if event == "done":
+                            unit_plan_summary = dict(
+                                (info or {}).get("unit_plan_summary") or unit_plan_summary
+                            )
                             generation_timing_summary = dict((info or {}).get("timing") or {})
                             wall_detail, cumulative_detail = _extract_generation_timing_views(
                                 generation_timing_summary
@@ -578,6 +583,12 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                             "candidate_questions": (info or {}).get("candidate_questions"),
                             "candidates_considered": (info or {}).get("candidates_considered"),
                             "valid_items": valid_items,
+                            "selected_evidence_window_count": (info or {}).get(
+                                "selected_evidence_window_count"
+                            ),
+                            "selected_evidence_chunk_count": (info or {}).get(
+                                "selected_evidence_chunk_count"
+                            ),
                             "dropped_reason_stats": (info or {}).get("dropped_reason_stats")
                             or (info or {}).get("dropped_answer_reasons")
                             or {},
@@ -991,6 +1002,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                         "generation_cumulative_detail": generation_cumulative_detail,
                         "generation_unit_details": generation_unit_details,
                         "generation_chunk_details": generation_chunk_details,
+                        "unit_plan_summary": unit_plan_summary,
                         "qa_total_limit": file_qa_total_limit,
                         "qa_total_limit_scope": qa_total_limit_scope,
                         "qa_generated": len(qa_data),
@@ -1287,6 +1299,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                         "generation_cumulative_detail": generation_cumulative_detail,
                         "generation_unit_details": generation_unit_details,
                         "generation_chunk_details": generation_chunk_details,
+                        "unit_plan_summary": unit_plan_summary,
                         "qa_total_limit": file_qa_total_limit,
                         "qa_total_limit_scope": qa_total_limit_scope,
                         "qa_generated": len(qa_data),
@@ -1376,6 +1389,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                             "generation_cumulative_detail",
                             "generation_unit_details",
                             "generation_chunk_details",
+                            "unit_plan_summary",
                         ):
                             if detail_key in timing:
                                 entry_timing[detail_key] = timing.get(detail_key)

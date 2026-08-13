@@ -1,5 +1,7 @@
 import asyncio
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from app.services.integrated_pipeline.service import _apply_image_replacements_to_chunks
@@ -8,7 +10,13 @@ from app.services.doc_chunks import (
     DOC_TREE_CHUNKS_SCHEMA_VERSION,
     DocumentChunkStore,
 )
-from app.routers.doc_chunks import ChunkRebuildRequest, rebuild_chunks
+from app.routers.doc_chunks import (
+    ChunkRebuildRequest,
+    get_document_assets,
+    qa_by_chunk,
+    rebuild_chunks,
+)
+from app.services.debug.qa_store import upsert_qa_debug_items
 from qa.chunking.easy_dataset import build_tree_chunks_easy_dataset
 from qa.retrieval import (
     BM25Index,
@@ -221,6 +229,87 @@ class ChunkRetrievalContractTests(unittest.TestCase):
                 asyncio.run(rebuild_chunks(payload))
 
         self.assertEqual(503, raised.exception.status_code)
+
+    def test_document_assets_returns_complete_text_and_all_qa_pages(self):
+        chunks = [
+            {
+                "chunk_id": "c2",
+                "doc_id": "doc-1",
+                "task_id": "task-1",
+                "original_filename": "source.md",
+                "chunk_index": 2,
+                "text": "第二段。",
+            },
+            {
+                "chunk_id": "c1",
+                "doc_id": "doc-1",
+                "task_id": "task-1",
+                "original_filename": "source.md",
+                "chunk_index": 1,
+                "text": "第一段。",
+            },
+        ]
+
+        def list_items(**kwargs):
+            page = kwargs["page"]
+            return {
+                "items": [{"id": f"qa-{page}"}],
+                "pagination": {"total_items": 2, "total_pages": 2},
+            }
+
+        with patch("app.routers.doc_chunks.fetch_chunks_by_doc_id") as fetch, patch(
+            "app.routers.doc_chunks.admin_qa_service.list_qa_items",
+            side_effect=list_items,
+        ) as list_qa, patch("app.routers.doc_chunks.get_debug_map") as debug_map:
+            fetch.return_value = {"success": True, "chunks": chunks}
+            debug_map.side_effect = lambda ids: {
+                qa_id: {"qa_generation_unit_mode": "point"} for qa_id in ids
+            }
+            result = asyncio.run(
+                get_document_assets(
+                    doc_id="doc-1",
+                    task_id="task-1",
+                    original_filename="source.md",
+                    include_full_text=True,
+                    include_qas=True,
+                    include_chunks=True,
+                    qa_only_active=True,
+                    qa_page_size=1,
+                )
+            )
+
+        self.assertEqual("第一段。\n\n第二段。", result["full_text"])
+        self.assertEqual(["qa-1", "qa-2"], [item["id"] for item in result["qas"]])
+        self.assertTrue(all(item["qa_generation_unit_mode"] == "point" for item in result["qas"]))
+        self.assertEqual(2, result["total_chunks"])
+        self.assertEqual("doc_content_chunks_v2", result["collection_name"])
+        self.assertEqual([1, 2], [call.kwargs["page"] for call in list_qa.call_args_list])
+
+    def test_chunk_qa_includes_secondary_primary_sources_from_debug_store(self):
+        qa_item = {
+            "id": "qa-summary-1",
+            "task_id": "task-multi-source",
+            "original_filename": "source.md",
+            "source": "c1",
+            "source_chunk_id": "c1",
+            "source_chunk_ids": ["c1", "c2"],
+            "question": "办理需要哪些材料和多长时间？",
+            "answer": "需提交申请表，五个工作日内办结。",
+            "filtered": False,
+            "is_primary": True,
+        }
+        with tempfile.TemporaryDirectory() as tmp_dir, patch.dict(
+            "os.environ",
+            {"QA_DEBUG_DB_PATH": str(Path(tmp_dir) / "qa-debug.sqlite3")},
+        ):
+            upsert_qa_debug_items([qa_item])
+            with patch("app.routers.doc_chunks.milvus_service.MILVUS_AVAILABLE", False), patch(
+                "app.routers.doc_chunks.milvus_service.milvus_client", None
+            ), patch("app.routers.doc_chunks.get_chunk_by_id", return_value={"success": False}):
+                result = asyncio.run(qa_by_chunk("c2", page=1, page_size=20))
+
+        self.assertEqual("debug", result["source"])
+        self.assertEqual(["qa-summary-1"], [item["id"] for item in result["items"]])
 
 
 class RetrievalContractTests(unittest.TestCase):

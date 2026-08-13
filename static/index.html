@@ -4,19 +4,29 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>QA 处理与浏览</title>
+    <link rel="icon" type="image/png" href="/ui/59e73d111ceb75d7cefaa8ec07f9fb07.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@300;400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/ui/styles.css?v=2026-07-23-1" />
+    <link rel="stylesheet" href="/ui/styles.css?v=2026-08-14-2" />
   </head>
   <body>
     <a class="skip-link" href="#main">跳到内容</a>
     <header>
       <div class="header-row">
-        <h1>问答对生成与浏览控制台</h1>
+        <div class="app-brand" aria-label="问答对生成板块">
+          <div class="app-brand-logo">
+            <img src="/ui/59e73d111ceb75d7cefaa8ec07f9fb07.png" alt="国家电网 State Grid" />
+          </div>
+          <div class="app-brand-copy">
+            <strong>问答对生成板块</strong>
+            <span>文档解析 · 问答生成 · 质量评测</span>
+          </div>
+        </div>
+        <h1 class="app-shell-page-title">问答对生成与浏览控制台</h1>
         <div class="header-actions">
           <nav class="nav">
             <a class="active" href="/ui/index.html" aria-current="page">流水线</a>
@@ -533,7 +543,7 @@
           <label>
             <input type="checkbox" id="enableChunkStorage" checked />
             保存 chunk 溯源索引（enable_chunk_storage）
-            <small>写入 doc_tree_chunks，用于后续按 chunk 追溯正文、树结构和 QA 来源。</small>
+            <small>写入 doc_content_chunks_v2，用于后续按 chunk 追溯正文、树结构和 QA 来源。</small>
           </label>
           <details style="width: 100%">
             <summary>Chunking 高级参数</summary>
@@ -688,11 +698,11 @@
           <label>
             问答粒度（qa_detail_mode）
             <select id="qaDetailMode">
-              <option value="auto" selected>auto（按 generation unit 自动选择）</option>
+              <option value="auto" selected>auto（Point/Summary 场景自动配额）</option>
               <option value="point">point（单点事实直答）</option>
               <option value="summary">summary（总结/对比/推理）</option>
             </select>
-            <small>auto 会让 leaf unit 走 point，让 section/long unit 走 summary。</small>
+            <small>Point 和 Summary 分池规划；auto 以 35% 总结题为目标，合格总结场景不足时额度自动让给单点题，不强行凑题型。</small>
           </label>
           <label>
             知识分类器（knowledge_classifier）
@@ -912,14 +922,14 @@
             <small>每个 generation unit 生成不足目标 QA 时最多尝试几轮；追求速度可设 1，追求覆盖率可设 2 或更高。</small>
           </label>
           <label>
-            最终证据窗口数（final_evidence_k）
+            最多补充证据窗口数（final_evidence_k）
             <input type="number" id="finalEvidenceK" value="5" min="0" max="20" step="1" />
-            <small>BM25 + dense 召回、RRF、BGE 两次重排完成后，最多保留多少个证据窗口。</small>
+            <small>BM25 + dense、RRF 和 BGE 相关性准入后最多保留多少组补充证据；实际可以为 0。</small>
           </label>
           <label>
             证据 token 预算（evidence_token_budget）
             <input type="number" id="evidenceTokenBudget" value="4000" min="256" max="32000" step="256" />
-            <small>最终证据窗口的近似 token 总预算；结构补全后按二次 BGE 排序依次装入。</small>
+            <small>补充证据窗口的近似 token 总预算；结构补全后按二次 BGE 排序依次装入。</small>
           </label>
           <label>
             增广并发（augment_max_concurrency，可选）
@@ -965,8 +975,8 @@
         <h2>1A. Chunk 树与溯源（Tree-Chunking）</h2>
         <p class="hint">
           先运行统一流水线入口 8B（并开启 <code>enable_chunk_storage</code>），即可在此按任务查看
-          <code>doc_tree_chunks</code> 中的树结构，并点击 leaf chunk 查看正文与对应 QA（按
-          <code>source==chunk_id</code> 溯源）。
+          <code>doc_content_chunks_v2</code> 中的树结构，并点击内容 chunk 查看正文与对应 QA（按
+          <code>source_chunk_id==chunk_id</code> 溯源）。
         </p>
         <div class="form-grid" style="margin-top: 10px">
           <label>
@@ -1002,7 +1012,7 @@
             <div class="chunk-debug-topbar">
               <div>
                 <div class="hint" style="margin: 0 0 4px 0">调试面板</div>
-                <div id="chunkDebugSummary" class="chunk-debug-summary">请选择左侧 leaf chunk</div>
+                <div id="chunkDebugSummary" class="chunk-debug-summary">请选择左侧内容 chunk</div>
               </div>
               <div class="chunk-debug-tabs" role="tablist" aria-label="Chunk 调试视图">
                 <button
@@ -1036,10 +1046,6 @@
                 <div class="chunk-debug-qa-list-box">
                   <div class="hint" style="margin: 0 0 6px 0">QA 列表</div>
                   <div id="chunkDebugQaList" class="chunk-debug-qa-list"></div>
-                </div>
-                <div class="chunk-debug-qa-detail-box">
-                  <div class="hint" style="margin: 0 0 6px 0">QA 详情</div>
-                  <div id="chunkDebugQaDetail"></div>
                 </div>
               </div>
             </div>
@@ -1139,8 +1145,8 @@
     <script src="/ui/app_runtime.js?v=2026-07-03-1"></script>
     <script src="/ui/app_config.js?v=2026-06-25-1"></script>
     <script src="/ui/app_render.js?v=2026-07-03-1"></script>
-    <script src="/ui/app_query.js?v=2026-07-05-1"></script>
-    <script src="/ui/app.js?v=2026-08-11-1"></script>
+    <script src="/ui/app_query.js?v=2026-08-14-1"></script>
+    <script src="/ui/app.js?v=2026-08-14-2"></script>
     <script>
       (function () {
         if (window.__QA_UI_APPJS_READY__) return;

@@ -354,9 +354,21 @@ def build_consolidated_entry(
             "evidence_chunk_ids": merged.get("evidence_chunk_ids"),
             "qa_generation_unit_id": merged.get("qa_generation_unit_id"),
             "qa_generation_unit_text": merged.get("qa_generation_unit_text"),
+            "qa_generation_unit_index": merged.get("qa_generation_unit_index"),
+            "qa_generation_unit_type": merged.get("qa_generation_unit_type"),
+            "qa_generation_unit_mode": merged.get("qa_generation_unit_mode"),
             "qa_generation_scenario_intent": merged.get("qa_generation_scenario_intent"),
             "qa_generation_reader_need": merged.get("qa_generation_reader_need"),
             "qa_generation_material_ids": merged.get("qa_generation_material_ids") or [],
+            "qa_generation_unit_source_chunk_indexes": merged.get(
+                "qa_generation_unit_source_chunk_indexes"
+            )
+            or [],
+            "qa_generation_unit_section_path": merged.get("qa_generation_unit_section_path"),
+            "qa_generation_unit_quality_child_coverage": merged.get(
+                "qa_generation_unit_quality_child_coverage"
+            ),
+            "evidence_hits": merged.get("evidence_hits") or [],
             "retrieval_query": merged.get("retrieval_query"),
             "must_have_terms": merged.get("must_have_terms") or [],
             "answer_scope_hint": merged.get("answer_scope_hint"),

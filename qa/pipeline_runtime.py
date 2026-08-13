@@ -503,6 +503,25 @@ def run_one_step_chunk_worker(
             if isinstance(item, dict):
                 item["chunk_index"] = chunk_index
 
+    selected_evidence_window_count = 0
+    selected_evidence_chunk_count = 0
+    for item in items_final:
+        trace = item.get("retrieval_trace") if isinstance(item, dict) else None
+        if not isinstance(trace, dict):
+            continue
+        selected_windows = trace.get("selected_windows")
+        selected_chunks = trace.get("selected_evidence_chunk_ids")
+        selected_evidence_window_count += int(
+            trace.get("selected_evidence_window_count")
+            if trace.get("selected_evidence_window_count") is not None
+            else len(selected_windows) if isinstance(selected_windows, list) else 0
+        )
+        selected_evidence_chunk_count += int(
+            trace.get("selected_evidence_chunk_count")
+            if trace.get("selected_evidence_chunk_count") is not None
+            else len(selected_chunks) if isinstance(selected_chunks, list) else 0
+        )
+
     return {
         "chunk_index": chunk_index,
         "attempt_used": attempt_used_total,
@@ -511,6 +530,8 @@ def run_one_step_chunk_worker(
         "candidate_questions": candidate_questions_total,
         "candidates_considered": candidates_considered,
         "valid_items": len(items_final),
+        "selected_evidence_window_count": selected_evidence_window_count,
+        "selected_evidence_chunk_count": selected_evidence_chunk_count,
         "dropped_reason_stats": dropped_reason_stats,
         "wall_intervals": wall_intervals,
         "timing": {

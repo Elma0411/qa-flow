@@ -1,5 +1,8 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from qa.generation.qa_generation_flow import (
     call_candidate_question_llm,
@@ -12,6 +15,8 @@ from qa.prompts.qa_generation_prompts import (
     build_question_editor_system_prompt,
 )
 from qa.validation import validate_and_normalize_item_with_reason
+from app.services.debug.qa_store import get_debug_map, upsert_qa_debug_items
+from app.services.storage.consolidation import build_consolidated_entry
 
 
 class _StaticChatClient:
@@ -23,6 +28,67 @@ class _StaticChatClient:
 
 
 class QAGenerationContractTests(unittest.TestCase):
+    def test_scenario_provenance_survives_consolidation_and_debug_storage(self):
+        qa_item = {
+            "id": "qa-scenario-1",
+            "question": "办理需要哪些材料和多长时间？",
+            "answer": "需提交申请表，五个工作日内办结。",
+            "source": "c1",
+            "source_fact_text": "提交申请表；五个工作日内办结。",
+            "source_chunk_id": "c1",
+            "source_chunk_index": 1,
+            "source_chunk_title_path": "材料",
+            "source_chunk_ids": ["c1", "c2"],
+            "source_chunk_indexes": [1, 2],
+            "source_chunk_title_paths": ["材料", "时限"],
+            "qa_generation_unit_id": "unit-summary-1",
+            "qa_generation_unit_text": "主材料-1\n提交申请表。\n主材料-2\n五个工作日内办结。",
+            "qa_generation_unit_index": 2,
+            "qa_generation_unit_type": "summary_scenario",
+            "qa_generation_unit_mode": "summary",
+            "qa_generation_scenario_intent": "总结办理要求",
+            "qa_generation_reader_need": "一次了解材料和时限",
+            "qa_generation_material_ids": ["section-1", "section-2"],
+            "qa_generation_unit_source_chunk_indexes": [1, 2],
+            "qa_generation_unit_section_path": "1",
+            "qa_generation_unit_quality_child_coverage": 1.0,
+            "question_type": "简答题",
+            "difficulty_level": "中等",
+        }
+        entry = build_consolidated_entry(
+            task_id="task-scenario",
+            original_filename="scenario.md",
+            facts=[],
+            categorized_facts=[],
+            qa_data=[qa_item],
+            evaluation_results=None,
+            filtered_qa_data=None,
+            include_evaluation=False,
+            evaluation_method="llm",
+            filter_by_threshold=False,
+            score_threshold=0.7,
+            chunk_size=600,
+            qa_per_chunk=1,
+            qa_detail_mode="auto",
+            prompt_language="zh",
+            llm_model="test-model",
+        )
+
+        consolidated = entry["payload"]["items"][0]
+        self.assertEqual("summary_scenario", consolidated["qa_generation_unit_type"])
+        self.assertEqual("summary", consolidated["qa_generation_unit_mode"])
+        self.assertEqual(["c1", "c2"], consolidated["source_chunk_ids"])
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = str(Path(tmp_dir) / "qa-debug.sqlite3")
+            with patch.dict("os.environ", {"QA_DEBUG_DB_PATH": db_path}):
+                upsert_qa_debug_items([consolidated])
+                debug_payload = get_debug_map([consolidated["id"]])[consolidated["id"]]
+
+        self.assertEqual("summary_scenario", debug_payload["qa_generation_unit_type"])
+        self.assertEqual("summary", debug_payload["qa_generation_unit_mode"])
+        self.assertEqual(["section-1", "section-2"], debug_payload["qa_generation_material_ids"])
+
     def test_summary_candidate_prompt_requires_one_question_per_item(self):
         zh_prompt = build_candidate_question_system_prompt(
             language_code="zh",

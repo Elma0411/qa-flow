@@ -298,6 +298,8 @@ class EvidenceRetrievalPipeline:
                     for window in selected
                 ],
                 "atomic_scores": atomic_scores,
+                "selected_evidence_window_count": len(selected),
+                "selected_evidence_chunk_count": len(unique_selected_chunk_ids),
                 "final_evidence_k": int(final_evidence_k),
                 "evidence_token_budget": int(evidence_token_budget),
                 "evidence_tokens_estimated": tokens_used,

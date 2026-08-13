@@ -531,6 +531,12 @@ def process_text_to_qa_one_step(
                     "candidate_questions": payload.get("candidate_questions", 0),
                     "candidates_considered": payload.get("candidates_considered", 0),
                     "valid_items": len(items_list),
+                    "selected_evidence_window_count": payload.get(
+                        "selected_evidence_window_count"
+                    ),
+                    "selected_evidence_chunk_count": payload.get(
+                        "selected_evidence_chunk_count"
+                    ),
                     "dropped_reason_stats": payload.get("dropped_reason_stats")
                     or payload.get("dropped_answer_reasons")
                     or {},
@@ -561,6 +567,12 @@ def process_text_to_qa_one_step(
                             "completed_chunks": completed_units,
                             "total_chunks": total_chunks,
                             "valid_items": len(items_list),
+                            "selected_evidence_window_count": payload.get(
+                                "selected_evidence_window_count"
+                            ),
+                            "selected_evidence_chunk_count": payload.get(
+                                "selected_evidence_chunk_count"
+                            ),
                             "attempt_used": payload.get("attempt_used"),
                             "error": payload.get("error"),
                             "skip_reason": payload.get("skip_reason"),

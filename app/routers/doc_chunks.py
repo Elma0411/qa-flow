@@ -12,7 +12,11 @@ from pydantic import BaseModel
 from app.core.logger import logger
 from app.services import milvus as milvus_service
 from app.services import admin as admin_qa_service
-from app.services.debug import load_chunk_qa_items_from_artifacts
+from app.services.debug import (
+    get_debug_items_by_source_chunk_id,
+    get_debug_map,
+    load_chunk_qa_items_from_artifacts,
+)
 from app.services.doc_chunks import (
     DOC_TREE_CHUNKS_COLLECTION,
     DOC_TREE_CHUNKS_SCHEMA_VERSION,
@@ -216,6 +220,195 @@ async def docs_by_task(task_id: str) -> Dict[str, Any]:
     return list_docs_by_task(task_id)
 
 
+@router.get("/by-doc/assets")
+async def get_document_assets(
+    doc_id: Optional[str] = Query(None, description="文档ID（doc_id 或 task_id 至少提供一个）"),
+    task_id: Optional[str] = Query(None, description="任务ID。配合 original_filename 可精确锁定文档"),
+    original_filename: Optional[str] = Query(None, description="原始文件名。配合 task_id 做精确过滤，不填则取第一个匹配文档"),
+    include_full_text: bool = Query(True, description="返回一体化流程产生的完整纯文本文档（从 doc_content_chunks_v2 按序拼接）"),
+    include_qas: bool = Query(True, description="返回该文档产生的全部 QA 对（标量精确查询，不丢失数据）"),
+    include_chunks: bool = Query(False, description="返回所有文本块列表（含 chunk_id、标题路径、文本等元数据）"),
+    qa_only_active: bool = Query(True, description="仅返回活跃状态的 QA（is_active=true）。设为 false 返回全部含已停用"),
+    qa_page_size: int = Query(200, ge=1, le=200, description="QA 内部分页大小，不影响最终返回结果"),
+) -> Dict[str, Any]:
+    """
+    一次获取指定文档在 qa-flow 中产生的全部数据资产。
+
+    适用场景：RAG 模块在 qa-flow 流水线完成后，获取某个文档的完整纯文本和全部 QA 对，
+    用于构建本地知识库、RAG 上下文或下游 LLM 应用。
+
+    核心特性：
+    - 纯 Milvus 标量查询，不走向量相似检索，确保精确完整
+    - 自选返回内容：全文 / QA 对 / 文本块可按需组合
+    - 全文由 doc_content_chunks_v2 按 chunk_index 排序拼接还原，等价于一体化流程输出
+    """
+    # ── 1. 解析标识符 ──
+    resolved_doc_id = str(doc_id or "").strip() or None
+    resolved_task_id = str(task_id or "").strip() or None
+    resolved_filename = str(original_filename or "").strip() or None
+
+    if not resolved_doc_id and not resolved_task_id:
+        raise HTTPException(
+            status_code=400,
+            detail="至少需要提供 doc_id 或 task_id 之一",
+        )
+
+    # 只给了 task_id 时，通过 list_docs_by_task 解析 doc_id 和 filename
+    if not resolved_doc_id and resolved_task_id:
+        docs_result = list_docs_by_task(resolved_task_id)
+        if not docs_result.get("success"):
+            raise HTTPException(
+                status_code=500,
+                detail=str(docs_result.get("message") or "查询任务文档列表失败"),
+            )
+        docs: List[Dict[str, Any]] = docs_result.get("docs") or []
+        if not docs:
+            raise HTTPException(
+                status_code=404,
+                detail=f"未找到 task_id={resolved_task_id} 关联的文档（可能 pipeline 尚未完成或 chunk 入库失败）",
+            )
+        if resolved_filename:
+            matched = [d for d in docs if d.get("original_filename") == resolved_filename]
+            if not matched:
+                available = [d.get("original_filename") for d in docs]
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"未找到文件 '{resolved_filename}'。task_id={resolved_task_id} 下的文件: {available}",
+                )
+            doc_info = matched[0]
+        else:
+            doc_info = docs[0]
+        resolved_doc_id = str(doc_info.get("doc_id") or "").strip()
+        resolved_filename = resolved_filename or str(doc_info.get("original_filename") or "").strip()
+
+    if not resolved_doc_id:
+        raise HTTPException(
+            status_code=400,
+            detail="无法解析 doc_id，请直接提供 doc_id 参数",
+        )
+
+    # ── 2. 获取文本块（需要全文或块列表时） ──
+    chunks: List[Dict[str, Any]] = []
+    need_chunks = include_full_text or include_chunks
+    if need_chunks:
+        chunks_result = fetch_chunks_by_doc_id(
+            resolved_doc_id,
+            task_id=resolved_task_id,
+            include_text=include_full_text or include_chunks,
+        )
+        if not chunks_result.get("success"):
+            raise HTTPException(
+                status_code=500,
+                detail=str(chunks_result.get("message") or "查询文档块失败"),
+            )
+        chunks = chunks_result.get("chunks") or []
+        if not chunks:
+            raise HTTPException(
+                status_code=404,
+                detail=f"未找到 doc_id={resolved_doc_id} 的文档块（Milvus 中无此文档的 chunk 记录）",
+            )
+        # 从 chunks 补全元信息
+        if not resolved_filename:
+            resolved_filename = str(chunks[0].get("original_filename") or "").strip()
+        if not resolved_task_id:
+            resolved_task_id = str(chunks[0].get("task_id") or "").strip()
+
+    # 仅需 QA 时也必须补全 task_id + filename，避免同名文件跨任务串数据。
+    if include_qas and (not resolved_filename or not resolved_task_id) and not chunks:
+        chunks_result = fetch_chunks_by_doc_id(
+            resolved_doc_id,
+            task_id=resolved_task_id,
+            include_text=False,
+        )
+        if chunks_result.get("success"):
+            temp_chunks = chunks_result.get("chunks") or []
+            if temp_chunks:
+                resolved_filename = str(temp_chunks[0].get("original_filename") or "").strip()
+                if not resolved_task_id:
+                    resolved_task_id = str(temp_chunks[0].get("task_id") or "").strip()
+
+    # ── 3. 构建全文 ──
+    full_text: Optional[str] = None
+    if include_full_text:
+        sorted_chunks = sorted(chunks, key=lambda c: int(c.get("chunk_index") or 0))
+        full_text = "\n\n".join(
+            str(c.get("text") or "") for c in sorted_chunks
+        )
+
+    # ── 4. 获取全部 QA ──
+    qas: List[Dict[str, Any]] = []
+    total_qas = 0
+    if include_qas:
+        if not resolved_filename:
+            raise HTTPException(
+                status_code=400,
+                detail="无法确定文件名，无法查询 QA 对。请同时提供 original_filename 参数",
+            )
+        is_active_filter: Optional[bool] = True if qa_only_active else None
+        page = 1
+        while True:
+            try:
+                qa_result = admin_qa_service.list_qa_items(
+                    task_id=resolved_task_id,
+                    original_filename=resolved_filename,
+                    is_active=is_active_filter,
+                    page=page,
+                    page_size=qa_page_size,
+                )
+            except admin_qa_service.AdminMilvusError as exc:
+                raise HTTPException(status_code=503, detail=f"Milvus 查询 QA 失败: {exc}")
+            except Exception as exc:
+                logger.exception("list_qa_items failed for doc_id=%s", resolved_doc_id)
+                raise HTTPException(status_code=500, detail=f"查询 QA 失败: {exc}")
+
+            items = qa_result.get("items") or []
+            qa_ids = [
+                str(item.get("id") or "").strip()
+                for item in items
+                if isinstance(item, dict) and str(item.get("id") or "").strip()
+            ]
+            debug_map = get_debug_map(qa_ids)
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                qa_id = str(item.get("id") or "").strip()
+                debug_detail = debug_map.get(qa_id) or {}
+                enriched = dict(debug_detail)
+                enriched.update(item)
+                qas.append(enriched)
+            pagination = qa_result.get("pagination") if isinstance(qa_result.get("pagination"), dict) else {}
+            total_qas = int(pagination.get("total_items") or len(qas))
+            total_pages = int(pagination.get("total_pages") or 0)
+            if not items or page >= total_pages:
+                break
+            page += 1
+
+    # ── 5. 组装响应 ──
+    response: Dict[str, Any] = {
+        "success": True,
+        "doc_id": resolved_doc_id,
+        "task_id": resolved_task_id,
+        "original_filename": resolved_filename,
+        "collection_name": DOC_TREE_CHUNKS_COLLECTION,
+        "schema_version": DOC_TREE_CHUNKS_SCHEMA_VERSION,
+    }
+
+    if include_full_text:
+        response["full_text"] = full_text
+        response["full_text_chars"] = len(full_text) if full_text else 0
+
+    if include_qas:
+        response["qas"] = qas
+        response["total_qas"] = len(qas)
+        response["reported_total_qas"] = total_qas
+
+    if include_chunks:
+        response["chunks"] = chunks
+        response["total_chunks"] = len(chunks)
+
+    return response
+
+
 @router.get("/tree")
 async def doc_tree(
     doc_id: str = Query(..., description="doc_id"),
@@ -253,14 +446,34 @@ async def qa_by_chunk(
     page_size: int = Query(20, ge=1, le=200),
     only_filtered: bool = Query(False, description="是否只返回过滤后的问答对"),
 ) -> Dict[str, Any]:
+    only_filtered_value = (
+        only_filtered
+        if isinstance(only_filtered, bool)
+        else bool(getattr(only_filtered, "default", False))
+    )
     source_field = _resolve_milvus_source_field()
     milvus_items: List[Dict[str, Any]] = []
     milvus_total = 0
     milvus_error: Optional[Exception] = None
+    chunk_context: Dict[str, Any] = {}
+
+    try:
+        chunk_lookup = get_chunk_by_id(chunk_id)
+        if chunk_lookup.get("success") and isinstance(chunk_lookup.get("chunk"), dict):
+            chunk_context = dict(chunk_lookup["chunk"])
+    except Exception:
+        chunk_context = {}
+
+    debug_items = get_debug_items_by_source_chunk_id(
+        chunk_id,
+        task_id=str(chunk_context.get("task_id") or "").strip() or None,
+        original_filename=str(chunk_context.get("original_filename") or "").strip() or None,
+        only_filtered=only_filtered_value,
+    )
 
     if milvus_service.MILVUS_AVAILABLE and milvus_service.milvus_client:
         filter_expr = f"{source_field} == {json.dumps(str(chunk_id))}"
-        if only_filtered:
+        if only_filtered_value:
             filter_expr += " and filtered == true"
 
         try:
@@ -268,7 +481,6 @@ async def qa_by_chunk(
         except Exception:
             pass
 
-        offset = (page - 1) * page_size
         output_fields = [
             "id",
             "task_id",
@@ -293,36 +505,48 @@ async def qa_by_chunk(
             rows = milvus_service.milvus_client.query(
                 expr=filter_expr,
                 output_fields=output_fields,
-                offset=offset,
-                limit=page_size,
+                offset=0,
+                limit=16384,
             )
             milvus_items = [row for row in rows or [] if isinstance(row, dict)]
-            try:
-                count_rows = milvus_service.milvus_client.query(
-                    expr=filter_expr,
-                    output_fields=["id"],
-                    limit=16384,
-                )
-                milvus_total = len(count_rows)
-            except Exception:
-                milvus_total = len(milvus_items)
         except Exception as exc:
             milvus_error = exc
             logger.exception("query qa by chunk failed: %s", exc)
 
-    if milvus_items or milvus_total > 0:
+    merged_by_id: Dict[str, Dict[str, Any]] = {}
+    for item in milvus_items:
+        item_id = str(item.get("id") or "").strip()
+        if item_id:
+            merged_by_id[item_id] = item
+    for item in debug_items:
+        item_id = str(item.get("id") or "").strip()
+        if item_id and item_id not in merged_by_id:
+            merged_by_id[item_id] = item
+
+    if merged_by_id:
+        merged_items = sorted(
+            merged_by_id.values(),
+            key=lambda row: (
+                0 if row.get("is_primary") else 1,
+                int(row.get("created_at") or 0),
+                str(row.get("id") or ""),
+            ),
+        )
+        milvus_total = len(merged_items)
+        start = (page - 1) * page_size
+        end = start + page_size
         return {
             "success": True,
             "chunk_id": chunk_id,
-            "source": "milvus",
-            "source_field": source_field,
+            "source": "milvus" if milvus_items else "debug",
+            "source_field": source_field if milvus_items else "source_chunk_id",
             "page": page,
             "page_size": page_size,
             "total": milvus_total,
-            "items": milvus_items,
+            "items": merged_items[start:end],
         }
 
-    task_id = _resolve_chunk_task_id(chunk_id)
+    task_id = str(chunk_context.get("task_id") or "").strip() or _resolve_chunk_task_id(chunk_id)
     if task_id:
         artifact_result = load_chunk_qa_items_from_artifacts(
             task_id=task_id,
@@ -399,9 +623,34 @@ async def chunk_debug(
                 "source_chunk_id": debug_detail.get("source_chunk_id"),
                 "source_chunk_index": debug_detail.get("source_chunk_index"),
                 "source_chunk_title_path": debug_detail.get("source_chunk_title_path"),
+                "source_chunk_ids": debug_detail.get("source_chunk_ids") or [],
+                "source_chunk_indexes": debug_detail.get("source_chunk_indexes") or [],
+                "source_chunk_title_paths": debug_detail.get("source_chunk_title_paths") or [],
                 "evidence_chunk_ids": debug_detail.get("evidence_chunk_ids") or [],
                 "qa_generation_unit_id": debug_detail.get("qa_generation_unit_id"),
                 "qa_generation_unit_text": debug_detail.get("qa_generation_unit_text"),
+                "qa_generation_unit_index": debug_detail.get("qa_generation_unit_index"),
+                "qa_generation_unit_type": debug_detail.get("qa_generation_unit_type"),
+                "qa_generation_unit_mode": debug_detail.get("qa_generation_unit_mode"),
+                "qa_generation_scenario_intent": debug_detail.get(
+                    "qa_generation_scenario_intent"
+                ),
+                "qa_generation_reader_need": debug_detail.get("qa_generation_reader_need"),
+                "qa_generation_material_ids": debug_detail.get(
+                    "qa_generation_material_ids"
+                )
+                or [],
+                "qa_generation_unit_source_chunk_indexes": debug_detail.get(
+                    "qa_generation_unit_source_chunk_indexes"
+                )
+                or [],
+                "qa_generation_unit_section_path": debug_detail.get(
+                    "qa_generation_unit_section_path"
+                ),
+                "qa_generation_unit_quality_child_coverage": debug_detail.get(
+                    "qa_generation_unit_quality_child_coverage"
+                ),
+                "evidence_hits": debug_detail.get("evidence_hits") or [],
                 "retrieval_trace": debug_detail.get("retrieval_trace") or {},
                 "source_fact_text": debug_detail.get("source_fact_text") or item.get("source_fact_text"),
                 "question_type_reason": debug_detail.get("question_type_reason"),

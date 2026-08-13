@@ -118,9 +118,21 @@ def _build_debug_payload(item: Dict[str, Any]) -> Dict[str, Any]:
         "evidence_chunk_ids": item.get("evidence_chunk_ids") or [],
         "qa_generation_unit_id": item.get("qa_generation_unit_id"),
         "qa_generation_unit_text": item.get("qa_generation_unit_text"),
+        "qa_generation_unit_index": item.get("qa_generation_unit_index"),
+        "qa_generation_unit_type": item.get("qa_generation_unit_type"),
+        "qa_generation_unit_mode": item.get("qa_generation_unit_mode"),
         "qa_generation_scenario_intent": item.get("qa_generation_scenario_intent"),
         "qa_generation_reader_need": item.get("qa_generation_reader_need"),
         "qa_generation_material_ids": item.get("qa_generation_material_ids") or [],
+        "qa_generation_unit_source_chunk_indexes": item.get(
+            "qa_generation_unit_source_chunk_indexes"
+        )
+        or [],
+        "qa_generation_unit_section_path": item.get("qa_generation_unit_section_path"),
+        "qa_generation_unit_quality_child_coverage": item.get(
+            "qa_generation_unit_quality_child_coverage"
+        ),
+        "evidence_hits": item.get("evidence_hits") or [],
         "retrieval_query": item.get("retrieval_query"),
         "must_have_terms": item.get("must_have_terms") or [],
         "answer_scope_hint": item.get("answer_scope_hint"),
@@ -222,6 +234,60 @@ def get_debug_map(qa_ids: Iterable[str]) -> Dict[str, Dict[str, Any]]:
     return result
 
 
+def get_debug_items_by_source_chunk_id(
+    source_chunk_id: str,
+    *,
+    task_id: str | None = None,
+    original_filename: str | None = None,
+    only_filtered: bool = False,
+    max_rows: int = 50000,
+) -> List[Dict[str, Any]]:
+    """Return debug QA items whose primary-source set contains ``source_chunk_id``.
+
+    The Milvus QA collection keeps the first primary source in its scalar
+    ``source`` field for filtering, while the complete multi-material source
+    set lives in the debug payload.  Chunk QA inspection therefore needs this
+    small exact lookup in addition to the scalar Milvus query.
+    """
+    target = str(source_chunk_id or "").strip()
+    if not target:
+        return []
+
+    init_db()
+    conditions: List[str] = []
+    params: List[str | int] = []
+    safe_task_id = str(task_id or "").strip()
+    safe_filename = str(original_filename or "").strip()
+    if safe_task_id:
+        conditions.append("task_id = ?")
+        params.append(safe_task_id)
+    if safe_filename:
+        conditions.append("original_filename = ?")
+        params.append(safe_filename)
+
+    sql = "SELECT payload_json FROM qa_debug_payloads"
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
+    sql += " ORDER BY created_at ASC, qa_id ASC LIMIT ?"
+    params.append(max(1, min(int(max_rows), 50000)))
+
+    matches: List[Dict[str, Any]] = []
+    with _connect() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    for row in rows:
+        payload = _json_loads(row["payload_json"])
+        scalar_source = str(payload.get("source_chunk_id") or payload.get("source") or "").strip()
+        source_ids = payload.get("source_chunk_ids")
+        source_ids = source_ids if isinstance(source_ids, list) else []
+        normalized_source_ids = {str(value or "").strip() for value in source_ids if str(value or "").strip()}
+        if target != scalar_source and target not in normalized_source_ids:
+            continue
+        if only_filtered and not bool(payload.get("filtered")):
+            continue
+        matches.append(payload)
+    return matches
+
+
 def delete_debug_entries(qa_ids: Iterable[str]) -> int:
     id_list = [str(item) for item in qa_ids if str(item or "").strip()]
     if not id_list:
@@ -240,4 +306,10 @@ def delete_debug_entries(qa_ids: Iterable[str]) -> int:
     return removed
 
 
-__all__ = ["delete_debug_entries", "get_debug_map", "init_db", "upsert_qa_debug_items"]
+__all__ = [
+    "delete_debug_entries",
+    "get_debug_items_by_source_chunk_id",
+    "get_debug_map",
+    "init_db",
+    "upsert_qa_debug_items",
+]

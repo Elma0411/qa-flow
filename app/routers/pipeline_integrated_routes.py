@@ -481,7 +481,7 @@ async def batch_upload_integrated_document_pipeline(
     ),
     final_evidence_k: Optional[int] = Form(
         None,
-        description="最终保留的证据窗口数（默认 5）",
+        description="最多保留的补充证据窗口数（默认 5；相关性准入后允许为 0）",
     ),
     evidence_token_budget: Optional[int] = Form(
         None,
@@ -730,7 +730,7 @@ async def batch_upload_integrated_document_pipeline(
             "chunk_concurrency": chunk_concurrency,
             "chunk_max_attempts": chunk_attempts,
             "retrieval_config": {
-                "pipeline": "bm25_dense_rrf_bge_structure_v1",
+                "pipeline": "bm25_dense_rrf_bge_admission_structure_v2",
                 "final_evidence_k": final_evidence_k,
                 "evidence_token_budget": evidence_token_budget,
             },

@@ -4,7 +4,7 @@
 
 ## Objective
 
-把出题流程一次性收敛为“逻辑 section 材料 -> Point/Summary 场景 -> 分类出题 -> LLM 编辑 -> 相关证据检索 -> 真实来源回填”，同时移除旧 Milvus 文档块集合兼容。
+把出题流程及工作台一次性收敛为“逻辑 section 材料 -> Point/Summary 场景 -> 分类出题 -> LLM 编辑 -> 相关证据检索 -> 真实来源回填”，同时移除旧 Milvus 文档块集合兼容并让前后端共享同一语义。
 
 ## Effective Changes
 
@@ -15,6 +15,9 @@
 - 答案实际引用的 `主材料-N` 决定来源。标量 `source_chunk_id/index/title_path` 指向第一条直接主证据，`source_chunk_ids/indexes/title_paths` 保存总结题的完整主证据集合；多材料总结题必须覆盖每份绑定材料，否则进入既有重试。生成结束后不再被锚点 chunk 覆盖。
 - BGE 原子重排和窗口重排都增加相关性准入。最低原始 logit 为 `-1.0`；原子/窗口除头部相对分差外，还必须分别位于真实主材料得分下 `1.0/2.0` 以内。校准样本覆盖中英文相关、同主题硬负例和无关项，并有可执行脚本复现。`final_evidence_k` 只是上限，补充证据允许为 0。
 - 文档块只使用固定集合 `doc_content_chunks_v2`（schema v2）。代码不再暴露旧集合常量或可配置的集合重定向；运行环境中的旧 `doc_tree_chunks` 已删除。
+- 工作台、管理页和 chunk QA 弹窗统一显示 Point/Summary 场景、意图、读者需求、材料 ID 及完整多主来源；`qa_generation_unit_type/mode` 等规划字段现在会经过 consolidated JSON、调试 SQLite 和管理详情接口完整保留。
+- 任务状态显示 Point/Summary 候选池与最终分配。`final_evidence_k` 在界面中明确为“每题最多补充窗口数”，同时显示已完成 unit 的实际补充窗口总数；相关性准入后实际值可以为 0。
+- 新增 `GET /doc-chunks/by-doc/assets`，可按文档一次获取全文、全部 QA 和可选 chunk 列表；文案与接口说明只使用 `doc_content_chunks_v2`。
 
 ## Expected Behavior
 
@@ -34,6 +37,8 @@ content chunks
 - sibling section 只有被场景规划器显式绑定且共同服务于一个读者需求时，才进入同一总结题。
 - 问题编辑后的文本才会进入检索和答案生成。
 - 无真正相关的补充证据时，答案只使用场景主材料。
+- 总结题详情能够同时追溯全部实际主来源，而不是只看到第一条标量来源。
+- 按内容 chunk 查看 QA 时同时匹配总结题的完整 `source_chunk_ids`，多材料总结题会出现在每个实际主来源块下。
 
 ## Validation
 
