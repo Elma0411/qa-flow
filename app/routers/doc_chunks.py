@@ -7,15 +7,20 @@ import json
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 from app.core.logger import logger
 from app.services import milvus as milvus_service
 from app.services import admin as admin_qa_service
 from app.services.debug import load_chunk_qa_items_from_artifacts
 from app.services.doc_chunks import (
+    DOC_TREE_CHUNKS_COLLECTION,
+    DOC_TREE_CHUNKS_SCHEMA_VERSION,
+    build_doc_id as build_tree_doc_id,
     fetch_chunks_by_doc_id,
     get_chunk_by_id,
     list_docs_by_task,
+    rebuild_doc_tree_chunks,
 )
 
 router = APIRouter(prefix="/doc-chunks", tags=["doc-chunks"])
@@ -48,33 +53,31 @@ def _safe_split_title_path(title_path: str) -> List[str]:
 
 def _build_tree_from_chunks(chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Build a hierarchical tree purely from leaf chunks.
-    - Nodes are keyed by `index_path` prefixes (split by '.').
-    - Leaf chunks are attached to their `index_path` node.
+    Build the section tree from v2 section paths and attach independent content chunks.
     """
 
     node_map: Dict[str, Dict[str, Any]] = {}
 
-    def get_node(index_path: str) -> Dict[str, Any]:
-        if index_path in node_map:
-            return node_map[index_path]
+    def get_node(section_path: str) -> Dict[str, Any]:
+        if section_path in node_map:
+            return node_map[section_path]
         node = {
-            "index_path": index_path,
+            "section_path": section_path,
             "title": "",
             "children": [],
             "chunks": [],
         }
-        node_map[index_path] = node
+        node_map[section_path] = node
         return node
 
     root = get_node("")
     root["title"] = "ROOT"
 
     for ch in chunks:
-        index_path = str(ch.get("index_path") or "").strip()
-        if not index_path:
-            index_path = str(ch.get("chunk_index") or "").strip() or "0"
-        index_parts = [p for p in index_path.split(".") if p.strip()]
+        section_path = str(ch.get("section_path") or "").strip()
+        if not section_path:
+            raise ValueError("chunk v2 missing section_path")
+        index_parts = [p for p in section_path.split(".") if p.strip()]
         title_parts = _safe_split_title_path(str(ch.get("title_path") or ""))
         if len(title_parts) >= len(index_parts) and index_parts:
             title_parts_aligned = title_parts[-len(index_parts) :]
@@ -97,7 +100,7 @@ def _build_tree_from_chunks(chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
                     cur_node["title"] = part
             parent_path = cur_path
 
-        leaf_node = get_node(index_path)
+        leaf_node = get_node(section_path)
         if not leaf_node.get("title") and title_parts:
             leaf_node["title"] = title_parts[-1]
         leaf_node["chunks"].append(
@@ -105,7 +108,12 @@ def _build_tree_from_chunks(chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "chunk_id": ch.get("chunk_id") or ch.get("id"),
                 "chunk_index": ch.get("chunk_index"),
                 "title_path": ch.get("title_path"),
-                "index_path": index_path,
+                "section_path": section_path,
+                "section_chunk_index": ch.get("section_chunk_index"),
+                "fragment_group_id": ch.get("fragment_group_id"),
+                "fragment_index": ch.get("fragment_index"),
+                "fragment_count": ch.get("fragment_count"),
+                "content_kind": ch.get("content_kind"),
             }
         )
 
@@ -113,7 +121,7 @@ def _build_tree_from_chunks(chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
         node["chunks"].sort(key=lambda x: int(x.get("chunk_index") or 0))
 
         def sort_key(n: Dict[str, Any]) -> Any:
-            p = str(n.get("index_path") or "")
+            p = str(n.get("section_path") or "")
             last = p.split(".")[-1] if p else ""
             try:
                 return (0, int(last))
@@ -126,6 +134,69 @@ def _build_tree_from_chunks(chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     sort_node(root)
     return root
+
+
+class ChunkRebuildRequest(BaseModel):
+    task_id: str
+    text: str
+    original_filename: str
+    chunk_size: int = 600
+    split_type: Optional[str] = "markdown"
+    text_split_min_length: Optional[int] = None
+    text_split_max_length: Optional[int] = None
+    chunk_overlap: Optional[int] = None
+    prefix_max_depth: int = 4
+
+
+@router.post("/rebuild")
+async def rebuild_chunks(payload: ChunkRebuildRequest) -> Dict[str, Any]:
+    """Re-chunk source text and explicitly replace one task's v2 rows."""
+    try:
+        from qa.chunking import build_tree_chunks
+
+        task_id = str(payload.task_id or "").strip()
+        original_filename = str(payload.original_filename or "").strip()
+        text = str(payload.text or "")
+        if not task_id:
+            raise ValueError("task_id is required for explicit chunk rebuild")
+        if not original_filename:
+            raise ValueError("original_filename is required for explicit chunk rebuild")
+        if not text.strip():
+            raise ValueError("text is required for explicit chunk rebuild")
+        doc_id = build_tree_doc_id(original_filename, text)
+        _chunks_for_llm, chunks_meta, chunking_report = build_tree_chunks(
+            text,
+            chunk_size=max(1, int(payload.chunk_size)),
+            original_filename=original_filename,
+            task_id=task_id,
+            doc_id=doc_id,
+            prefix_max_depth=max(0, int(payload.prefix_max_depth)),
+            split_type=payload.split_type,
+            text_split_min_length=payload.text_split_min_length,
+            text_split_max_length=payload.text_split_max_length,
+            chunk_overlap=payload.chunk_overlap,
+        )
+        result = rebuild_doc_tree_chunks(chunks_meta, task_id=task_id)
+        if not result.get("success"):
+            raise HTTPException(
+                status_code=503,
+                detail=str(result.get("message") or "v2 chunk rebuild failed"),
+            )
+        result.update(
+            {
+                "doc_id": doc_id,
+                "original_filename": original_filename,
+                "chunking_report": chunking_report,
+            }
+        )
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("explicit v2 chunk rebuild failed for task_id=%s", payload.task_id)
+        raise HTTPException(status_code=500, detail=f"v2 chunk rebuild failed: {exc}")
 
 
 def _resolve_chunk_task_id(chunk_id: str) -> Optional[str]:
@@ -160,6 +231,8 @@ async def doc_tree(
         "success": True,
         "task_id": task_id,
         "doc_id": doc_id,
+        "collection_name": DOC_TREE_CHUNKS_COLLECTION,
+        "schema_version": DOC_TREE_CHUNKS_SCHEMA_VERSION,
         "chunk_count": len(chunks),
         "tree": tree,
     }

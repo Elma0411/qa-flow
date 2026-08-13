@@ -21,6 +21,7 @@ from app.services.llm import get_llm_client_pool
 from app.services.llm_config import activate_profile as activate_llm_profile
 from app.services.llm_config import list_profiles as list_llm_profiles
 from app.services.milvus import ensure_milvus_initialized
+from qa.retrieval import get_reranker_service
 
 
 def _load_active_llm_profile() -> None:
@@ -47,6 +48,7 @@ async def lifespan(app: FastAPI):
         logger.info("GPU scheduler snapshot unavailable")
     yield
     get_llm_client_pool().close_all()
+    get_reranker_service().close()
     await stop_artifact_cleanup_loop()
 
 

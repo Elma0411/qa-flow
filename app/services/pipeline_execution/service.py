@@ -217,26 +217,16 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
     max_concurrency: int = job_context["max_concurrency"]
     chunk_max_concurrency: int = job_context.get("chunk_max_concurrency", 8)
     chunk_max_attempts: int = max(1, int(job_context.get("chunk_max_attempts") or 2))
-    retrieval_mode: str = str(job_context.get("retrieval_mode") or "hybrid").strip().lower()
-    if retrieval_mode not in {"semantic", "hybrid"}:
-        retrieval_mode = "hybrid"
-    semantic_top_k: int = max(0, int(job_context.get("semantic_top_k") or 3))
-    rerank_top_n: int = max(1, int(job_context.get("rerank_top_n") or 12))
-    try:
-        hybrid_weight_dense = max(0.0, min(1.0, float(job_context.get("hybrid_weight_dense", 0.68))))
-    except Exception:
-        hybrid_weight_dense = 0.68
-    try:
-        hybrid_weight_lexical = max(0.0, min(1.0, float(job_context.get("hybrid_weight_lexical", 0.24))))
-    except Exception:
-        hybrid_weight_lexical = 0.24
-    try:
-        retrieval_structure_weight = max(0.0, min(0.5, float(job_context.get("retrieval_structure_weight", 0.08))))
-    except Exception:
-        retrieval_structure_weight = 0.08
-    answer_scope_policy: str = str(job_context.get("answer_scope_policy") or "source_primary").strip().lower()
-    if answer_scope_policy not in {"source_primary", "same_section", "cross_chunk"}:
-        answer_scope_policy = "source_primary"
+    final_evidence_k_value = job_context.get("final_evidence_k")
+    final_evidence_k: int = max(
+        0,
+        int(5 if final_evidence_k_value is None else final_evidence_k_value),
+    )
+    evidence_token_budget_value = job_context.get("evidence_token_budget")
+    evidence_token_budget: int = max(
+        256,
+        int(4000 if evidence_token_budget_value is None else evidence_token_budget_value),
+    )
     augment_max_concurrency: int = job_context.get("augment_max_concurrency", 8)
     eval_max_concurrency: int = job_context["eval_max_concurrency"]
     question_type_mode: str = job_context.get("question_type_mode") or "mixed"
@@ -681,6 +671,27 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                         chunks_meta = [
                             dict(item) for item in pre_split_chunk_meta if isinstance(item, dict)
                         ]
+                        required_chunk_fields = {
+                            "chunk_id",
+                            "section_path",
+                            "section_chunk_index",
+                            "fragment_group_id",
+                            "fragment_index",
+                            "fragment_count",
+                            "content_kind",
+                            "source_asset_ids",
+                        }
+                        for meta in chunks_meta:
+                            missing_fields = sorted(
+                                field
+                                for field in required_chunk_fields
+                                if field not in meta or meta.get(field) is None
+                            )
+                            if missing_fields:
+                                raise ValueError(
+                                    "pre_split_chunk_meta is not v2; "
+                                    f"chunk_index={meta.get('chunk_index')} missing={missing_fields}"
+                                )
                         chunking_report = dict(file_info.get("chunking_report") or {})
                         chunking_report.setdefault("mode", "pre_split_integrated")
                         chunking_report.setdefault("effective_split_type", chunking_split_type or "markdown")
@@ -825,13 +836,8 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                         "prompt_language": prompt_language,
                         "chunk_max_concurrency": chunk_max_concurrency,
                         "strict_max_attempts": chunk_max_attempts,
-                        "retrieval_mode": retrieval_mode,
-                        "semantic_top_k": semantic_top_k,
-                        "rerank_top_n": rerank_top_n,
-                        "hybrid_weight_dense": hybrid_weight_dense,
-                        "hybrid_weight_lexical": hybrid_weight_lexical,
-                        "retrieval_structure_weight": retrieval_structure_weight,
-                        "answer_scope_policy": answer_scope_policy,
+                        "final_evidence_k": final_evidence_k,
+                        "evidence_token_budget": evidence_token_budget,
                         "model": llm_config["model"],
                         "request_timeout": CONFIG.get("request_timeout", 120),
                         "question_type_mode": question_type_mode,

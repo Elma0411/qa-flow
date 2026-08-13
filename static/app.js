@@ -1562,17 +1562,12 @@ function setupPipelineModuleConsole() {
         icon: 'R',
         kicker: '检索',
         title: '检索证据',
-        description: '配置候选问题检索 evidence 的排序模式、topK、轻量重排、权重和系统允许的最大证据范围。',
+        description: '固定使用 BM25 + dense、RRF、BGE 原子块重排、结构窗口补全和窗口二次重排。',
         nodes: [
-          { field: 'retrievalMode' },
-          { field: 'semanticTopK' },
-          { field: 'rerankTopN' },
-          { field: 'hybridWeightDense' },
-          { field: 'hybridWeightLexical' },
-          { field: 'retrievalStructureWeight' },
-          { field: 'answerScopePolicy' },
+          { field: 'finalEvidenceK' },
+          { field: 'evidenceTokenBudget' },
         ],
-        summary: () => `${$('#retrievalMode')?.value || 'hybrid'} / topK ${$('#semanticTopK')?.value || 3} / ${$('#answerScopePolicy')?.value || 'source_primary'}`,
+        summary: () => `BGE 固定链路 / 窗口 ${$('#finalEvidenceK')?.value ?? 5} / ${$('#evidenceTokenBudget')?.value || 4000} tokens`,
       },
       {
         key: 'evaluation',
@@ -2171,7 +2166,7 @@ function setupWorkbenchHero() {
     items.push(createSummaryChip('流程', () => $('#pipelineProcessingMode')?.value === 'integrated' ? '一体流程' : '标准 OCR', { moduleKey: 'pipeline.document' }));
     items.push(createSummaryChip('切分', () => `${$('#chunkingSplitType')?.value || 'markdown'} / ${$('#chunkSize')?.value || 600}`, { moduleKey: 'pipeline.chunking' }));
     items.push(createSummaryChip('生成', () => `${checkedQuestionTypesSummary()} / 上限 ${$('#qaTotalLimit')?.value || 20}`, { moduleKey: 'pipeline.generation' }));
-    items.push(createSummaryChip('检索', () => `${$('#retrievalMode')?.value || 'hybrid'} / topK ${$('#semanticTopK')?.value || 3} / ${$('#answerScopePolicy')?.value || 'source_primary'}`, { moduleKey: 'pipeline.retrieval' }));
+    items.push(createSummaryChip('检索', () => `BGE 固定链路 / 窗口 ${$('#finalEvidenceK')?.value ?? 5} / ${$('#evidenceTokenBudget')?.value || 4000} tokens`, { moduleKey: 'pipeline.retrieval' }));
     items.push(createSummaryChip('评估', () => pipelineEvaluationSummary(), { moduleKey: 'pipeline.evaluation' }));
     items.push(createSummaryChip('并发', () => `unit ${$('#chunkMaxConcurrency')?.value || '8'} / API ${$('#llmMaxConcurrentRequests')?.value || '默认'}`, { moduleKey: 'pipeline.performance' }));
     items.push(createSummaryChip('存储', () => pipelineStorageSummary(), { moduleKey: 'pipeline.output' }));
@@ -2389,13 +2384,8 @@ async function handlePipelineSubmit(e) {
     const chunkMaxConcurrency = $('#chunkMaxConcurrency')?.value || '';
     const llmMaxConcurrentRequests = $('#llmMaxConcurrentRequests')?.value || '';
     const chunkMaxAttempts = $('#chunkMaxAttempts')?.value || '2';
-    const retrievalMode = $('#retrievalMode')?.value || 'hybrid';
-    const semanticTopK = $('#semanticTopK')?.value || '3';
-    const rerankTopN = $('#rerankTopN')?.value || '12';
-    const hybridWeightDense = $('#hybridWeightDense')?.value || '0.68';
-    const hybridWeightLexical = $('#hybridWeightLexical')?.value || '0.24';
-    const retrievalStructureWeight = $('#retrievalStructureWeight')?.value || '0.08';
-    const answerScopePolicy = $('#answerScopePolicy')?.value || 'source_primary';
+    const finalEvidenceK = $('#finalEvidenceK')?.value ?? '5';
+    const evidenceTokenBudget = $('#evidenceTokenBudget')?.value || '4000';
     const augmentMaxConcurrency = $('#augmentMaxConcurrency')?.value || '';
     const saveModeEl = $('#saveMode');
 
@@ -2529,23 +2519,8 @@ async function handlePipelineSubmit(e) {
     if (chunkMaxAttempts.trim()) {
       formData.append('chunk_max_attempts', chunkMaxAttempts.trim());
     }
-    formData.append('retrieval_mode', retrievalMode);
-    if (semanticTopK.trim()) {
-      formData.append('semantic_top_k', semanticTopK.trim());
-    }
-    if (rerankTopN.trim()) {
-      formData.append('rerank_top_n', rerankTopN.trim());
-    }
-    if (hybridWeightDense.trim()) {
-      formData.append('hybrid_weight_dense', hybridWeightDense.trim());
-    }
-    if (hybridWeightLexical.trim()) {
-      formData.append('hybrid_weight_lexical', hybridWeightLexical.trim());
-    }
-    if (retrievalStructureWeight.trim()) {
-      formData.append('retrieval_structure_weight', retrievalStructureWeight.trim());
-    }
-    formData.append('answer_scope_policy', answerScopePolicy);
+    formData.append('final_evidence_k', finalEvidenceK.trim());
+    formData.append('evidence_token_budget', evidenceTokenBudget.trim());
     if (augmentMaxConcurrency.trim()) {
       formData.append('augment_max_concurrency', augmentMaxConcurrency.trim());
     }
@@ -3586,10 +3561,9 @@ function renderPipelineDebugStatus(status, options = {}) {
   appendTextMetric(genMeta, 'unit 最大尝试次数', safeStatus.chunk_max_attempts);
   appendTextMetric(genMeta, 'LLM/VLM API 请求并发', safeStatus.llm_max_concurrent_requests || 'Docker 环境默认');
   const retrievalConfig = safeStatus.retrieval_config || {};
-  appendTextMetric(genMeta, '检索模式', retrievalConfig.retrieval_mode || 'hybrid');
-  appendTextMetric(genMeta, 'evidence topK', retrievalConfig.semantic_top_k ?? '3');
-  appendTextMetric(genMeta, '轻量重排候选', retrievalConfig.rerank_top_n ?? '12');
-  appendTextMetric(genMeta, '前端范围策略', retrievalConfig.answer_scope_policy || 'source_primary');
+  appendTextMetric(genMeta, '检索链路', retrievalConfig.pipeline || 'bm25_dense_rrf_bge_structure_v1');
+  appendTextMetric(genMeta, '最终证据窗口', retrievalConfig.final_evidence_k ?? '5');
+  appendTextMetric(genMeta, '证据 token 预算', retrievalConfig.evidence_token_budget ?? '4000');
   generation.appendChild(genMeta);
   root.appendChild(generation);
 

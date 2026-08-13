@@ -558,10 +558,17 @@ def build_chunk_report(
         if meta:
             for key in (
                 "chunk_id",
-                "index_path",
                 "title_path",
-                "parent_index_path",
-                "root_index_path",
+                "section_path",
+                "section_parent_path",
+                "section_level",
+                "section_is_leaf",
+                "section_chunk_index",
+                "fragment_group_id",
+                "fragment_index",
+                "fragment_count",
+                "content_kind",
+                "source_asset_ids",
                 "split_type",
             ):
                 value = meta.get(key)

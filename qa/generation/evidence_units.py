@@ -1,24 +1,17 @@
-# 文件作用：构建同文档证据索引和生成单元。
-# 关联说明：被 qa_generation_flow 和 text_to_qa_pipeline 调用，负责证据索引与生成上下文。
+"""Same-document evidence index backed by the fixed retrieval pipeline."""
 
 from __future__ import annotations
 
 import hashlib
-import math
-import re
 import time
-from collections import Counter
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence
+
+from qa.retrieval import EvidenceChunk, EvidenceRetrievalPipeline
 
 
-DEFAULT_SEMANTIC_TOP_K = 3
-DEFAULT_MAX_UNIT_CHARS = 6000
-DEFAULT_RETRIEVAL_MODE = "hybrid"
-DEFAULT_HYBRID_WEIGHT_DENSE = 0.68
-DEFAULT_HYBRID_WEIGHT_LEXICAL = 0.24
-DEFAULT_STRUCTURE_WEIGHT = 0.08
-DEFAULT_RERANK_TOP_N = 12
+DEFAULT_FINAL_EVIDENCE_K = 5
+DEFAULT_EVIDENCE_TOKEN_BUDGET = 4000
+DEFAULT_MAX_UNIT_CHARS = 12000
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -32,90 +25,6 @@ def _safe_text(value: Any) -> str:
     return str(value or "").strip()
 
 
-def _dot_score(left: Sequence[float], right: Sequence[float]) -> float:
-    if not left or not right:
-        return 0.0
-    limit = min(len(left), len(right))
-    return float(sum(float(left[index]) * float(right[index]) for index in range(limit)))
-
-
-def _dense_to_unit_interval(score: float) -> float:
-    return max(0.0, min(1.0, (float(score) + 1.0) / 2.0))
-
-
-def _lexical_tokens(text: str) -> List[str]:
-    raw = _safe_text(text).lower()
-    if not raw:
-        return []
-    tokens: List[str] = []
-    for segment in re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]+", raw):
-        if re.fullmatch(r"[a-z0-9_]+", segment):
-            if len(segment) >= 2:
-                tokens.append(segment)
-            continue
-        if len(segment) == 1:
-            tokens.append(segment)
-            continue
-        tokens.extend(segment[index : index + 2] for index in range(len(segment) - 1))
-        if len(segment) >= 3:
-            tokens.extend(segment[index : index + 3] for index in range(len(segment) - 2))
-    return tokens
-
-
-def _normalize_terms(raw_terms: Any) -> List[str]:
-    if raw_terms is None:
-        return []
-    if isinstance(raw_terms, list):
-        values = raw_terms
-    else:
-        values = re.split(r"[,，;；\n]+", str(raw_terms))
-    terms: List[str] = []
-    seen: set[str] = set()
-    for value in values:
-        term = _safe_text(value)
-        if not term:
-            continue
-        key = term.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        terms.append(term)
-    return terms
-
-
-def _lexical_query_tokens(query: str, must_have_terms: Sequence[str]) -> List[str]:
-    tokens = _lexical_tokens(query)
-    for term in must_have_terms:
-        term_tokens = _lexical_tokens(term)
-        tokens.extend(term_tokens)
-        tokens.extend(term_tokens)
-    return tokens
-
-
-def _safe_float(value: Any, default: float) -> float:
-    try:
-        return float(value)
-    except Exception:
-        return default
-
-
-def _split_title_path(title_path: str) -> List[str]:
-    normalized = _safe_text(title_path).replace("＞", ">")
-    return [part.strip() for part in normalized.split(">") if part.strip()]
-
-
-def _parent_title_path(title_path: str) -> str:
-    parts = _split_title_path(title_path)
-    if len(parts) <= 1:
-        return ""
-    return " > ".join(parts[:-1])
-
-
-def _format_chunk_for_unit(chunk: Dict[str, Any]) -> str:
-    text = _safe_text(chunk.get("text")) or _safe_text(chunk.get("text_for_embedding"))
-    return text.strip()
-
-
 def build_document_chunks(
     pre_split_chunks: Sequence[str],
     chunk_meta_list: Optional[Sequence[Dict[str, Any]]] = None,
@@ -124,114 +33,72 @@ def build_document_chunks(
     for index, raw_meta in enumerate(chunk_meta_list or [], start=1):
         if not isinstance(raw_meta, dict):
             continue
-        chunk_index = _safe_int(raw_meta.get("chunk_index"), index)
-        if chunk_index <= 0:
-            chunk_index = index
+        chunk_index = max(1, _safe_int(raw_meta.get("chunk_index"), index))
         meta_by_index[chunk_index] = dict(raw_meta)
 
     chunks: List[Dict[str, Any]] = []
     for index, raw_text in enumerate(pre_split_chunks or [], start=1):
         meta = dict(meta_by_index.get(index) or {})
         text = _safe_text(meta.get("text")) or _safe_text(raw_text)
-        text_for_embedding = _safe_text(meta.get("text_for_embedding")) or text
+        if not text:
+            continue
         title_path = _safe_text(meta.get("title_path"))
+        text_for_embedding = _safe_text(meta.get("text_for_embedding")) or text
+        retrieval_text = text_for_embedding
         if title_path and title_path not in text_for_embedding:
             retrieval_text = f"标题路径：{title_path}\n{text_for_embedding}".strip()
-        else:
-            retrieval_text = text_for_embedding
-
-        chunk_id = _safe_text(meta.get("chunk_id"))
-        if not chunk_id:
-            chunk_id = hashlib.sha1(f"{index}|||{title_path}|||{text}".encode("utf-8")).hexdigest()
-
+        chunk_id = _safe_text(meta.get("chunk_id")) or hashlib.sha1(
+            f"{index}|||{title_path}|||{text}".encode("utf-8")
+        ).hexdigest()
+        section_path = _safe_text(meta.get("section_path"))
+        if not section_path:
+            raise ValueError(
+                "pre_split_chunk_meta must provide v2 section_path for every chunk"
+            )
+        section_parent_path = _safe_text(meta.get("section_parent_path"))
+        source_asset_ids = meta.get("source_asset_ids") or []
+        if not isinstance(source_asset_ids, list):
+            source_asset_ids = []
         chunks.append(
             {
+                **meta,
                 "chunk_id": chunk_id,
                 "chunk_index": index,
-                "index_path": _safe_text(meta.get("index_path")) or str(index),
+                "section_chunk_index": max(1, _safe_int(meta.get("section_chunk_index"), 1)),
+                "section_path": section_path,
+                "section_parent_path": section_parent_path,
+                "section_level": max(1, _safe_int(meta.get("section_level"), 1)),
+                "section_is_leaf": bool(meta.get("section_is_leaf", True)),
                 "title_path": title_path,
-                "parent_index_path": _safe_text(meta.get("parent_index_path")),
-                "root_index_path": _safe_text(meta.get("root_index_path")),
-                "level": _safe_int(meta.get("level"), 1),
+                "fragment_group_id": _safe_text(meta.get("fragment_group_id")) or chunk_id,
+                "fragment_index": max(1, _safe_int(meta.get("fragment_index"), 1)),
+                "fragment_count": max(1, _safe_int(meta.get("fragment_count"), 1)),
+                "content_kind": _safe_text(meta.get("content_kind")) or "text",
+                "source_asset_ids": source_asset_ids,
                 "text": text,
                 "text_for_embedding": text_for_embedding,
                 "retrieval_text": retrieval_text,
-                "path_summary": _safe_text(meta.get("path_summary")),
-                "split_type": _safe_text(meta.get("split_type")),
             }
         )
-    return [chunk for chunk in chunks if _safe_text(chunk.get("text"))]
-
-
-@dataclass(frozen=True)
-class EvidenceHit:
-    chunk_id: str
-    chunk_index: int
-    score: float
-    title_path: str
-    parent_index_path: str
-    role: str
-    dense_score: float = 0.0
-    lexical_score: float = 0.0
-    structure_score: float = 0.0
-    fused_score: float = 0.0
-    retrieval_rank: int = 0
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "chunk_id": self.chunk_id,
-            "chunk_index": self.chunk_index,
-            "score": self.score,
-            "title_path": self.title_path,
-            "parent_index_path": self.parent_index_path,
-            "role": self.role,
-            "dense_score": self.dense_score,
-            "lexical_score": self.lexical_score,
-            "structure_score": self.structure_score,
-            "fused_score": self.fused_score,
-            "retrieval_rank": self.retrieval_rank,
-        }
+    return chunks
 
 
 class QADocumentEvidenceIndex:
     def __init__(self, chunks: List[Dict[str, Any]], embeddings: List[List[float]]) -> None:
         if not chunks:
-            raise ValueError("qa_generation_units requires at least one chunk")
+            raise ValueError("QA evidence index requires at least one content chunk")
         if len(chunks) != len(embeddings):
-            raise ValueError("chunk embedding count does not match chunk count")
+            raise ValueError("content chunk and embedding counts do not match")
         self.chunks = chunks
         self.embeddings = embeddings
-        self._chunk_lexical_tokens = [
-            _lexical_tokens(
-                "\n".join(
-                    [
-                        _safe_text(chunk.get("title_path")),
-                        _safe_text(chunk.get("path_summary")),
-                        _safe_text(chunk.get("retrieval_text")),
-                    ]
-                )
-            )
-            for chunk in chunks
-        ]
-        token_document_frequency: Counter[str] = Counter()
-        for tokens in self._chunk_lexical_tokens:
-            token_document_frequency.update(set(tokens))
-        self._token_idf = {
-            token: math.log((len(chunks) + 1) / (count + 0.5)) + 1.0
-            for token, count in token_document_frequency.items()
-        }
         self._chunks_by_index = {
-            int(chunk.get("chunk_index") or 0): chunk
-            for chunk in chunks
-            if int(chunk.get("chunk_index") or 0) > 0
+            int(chunk.get("chunk_index") or 0): chunk for chunk in chunks
         }
-        self._children_by_parent: Dict[str, List[int]] = {}
-        for chunk in chunks:
-            parent_key = _safe_text(chunk.get("parent_index_path"))
-            chunk_index = int(chunk.get("chunk_index") or 0)
-            if not parent_key or chunk_index <= 0:
-                continue
-            self._children_by_parent.setdefault(parent_key, []).append(chunk_index)
+        self._chunks_by_id = {
+            _safe_text(chunk.get("chunk_id")): chunk for chunk in chunks
+        }
+        typed_chunks = [EvidenceChunk.from_dict(chunk) for chunk in chunks]
+        self.pipeline = EvidenceRetrievalPipeline(typed_chunks, embeddings)
 
     @classmethod
     def build(cls, chunks: List[Dict[str, Any]]) -> "QADocumentEvidenceIndex":
@@ -239,7 +106,7 @@ class QADocumentEvidenceIndex:
 
         retrieval_texts = [_safe_text(chunk.get("retrieval_text")) for chunk in chunks]
         if not all(retrieval_texts):
-            raise ValueError("qa_generation_units found empty retrieval_text")
+            raise ValueError("QA evidence index found an empty retrieval_text")
         embeddings = generate_embeddings(retrieval_texts)
         return cls(chunks=chunks, embeddings=embeddings)
 
@@ -249,587 +116,134 @@ class QADocumentEvidenceIndex:
             raise ValueError(f"source chunk not found: {chunk_index}")
         return chunk
 
-    def retrieve(
-        self,
-        query: str,
-        *,
-        source_chunk_index: int,
-        top_k: int = DEFAULT_SEMANTIC_TOP_K,
-        must_have_terms: Optional[Sequence[str]] = None,
-        answer_scope: str = "source_primary",
-        retrieval_mode: str = DEFAULT_RETRIEVAL_MODE,
-        hybrid_weight_dense: float = DEFAULT_HYBRID_WEIGHT_DENSE,
-        hybrid_weight_lexical: float = DEFAULT_HYBRID_WEIGHT_LEXICAL,
-        structure_weight: float = DEFAULT_STRUCTURE_WEIGHT,
-        rerank_top_n: int = DEFAULT_RERANK_TOP_N,
-    ) -> Tuple[List[EvidenceHit], List[Dict[str, Any]]]:
-        from app.services.milvus import generate_embeddings
-
-        clean_query = _safe_text(query)
-        if not clean_query:
-            return [], []
-        query_embedding = generate_embeddings([clean_query])[0]
-        return self._rank_with_query_embedding(
-            clean_query,
-            query_embedding,
-            source_chunk_index=source_chunk_index,
-            top_k=top_k,
-            must_have_terms=must_have_terms,
-            answer_scope=answer_scope,
-            retrieval_mode=retrieval_mode,
-            hybrid_weight_dense=hybrid_weight_dense,
-            hybrid_weight_lexical=hybrid_weight_lexical,
-            structure_weight=structure_weight,
-            rerank_top_n=rerank_top_n,
-        )
-
     def retrieve_many(
         self,
-        queries: Sequence[Any],
+        questions: Sequence[str],
         *,
-        source_chunk_index: int,
-        top_k: int = DEFAULT_SEMANTIC_TOP_K,
+        source_chunk_ids: Sequence[str],
+        final_evidence_k: int,
+        evidence_token_budget: int,
         timing: Optional[Dict[str, float]] = None,
-        retrieval_mode: str = DEFAULT_RETRIEVAL_MODE,
-        hybrid_weight_dense: float = DEFAULT_HYBRID_WEIGHT_DENSE,
-        hybrid_weight_lexical: float = DEFAULT_HYBRID_WEIGHT_LEXICAL,
-        structure_weight: float = DEFAULT_STRUCTURE_WEIGHT,
-        rerank_top_n: int = DEFAULT_RERANK_TOP_N,
-    ) -> Dict[str, Tuple[List[EvidenceHit], List[Dict[str, Any]]]]:
+    ) -> Dict[str, Dict[str, Any]]:
         from app.services.milvus import generate_embeddings
 
-        payloads: List[Dict[str, Any]] = []
-        for raw_query in queries:
-            if isinstance(raw_query, dict):
-                key = _safe_text(raw_query.get("key") or raw_query.get("question") or raw_query.get("query"))
-                query = _safe_text(raw_query.get("query") or raw_query.get("question"))
-                must_have_terms = _normalize_terms(raw_query.get("must_have_terms"))
-                answer_scope = _safe_text(raw_query.get("answer_scope")) or "source_primary"
-            else:
-                key = _safe_text(raw_query)
-                query = key
-                must_have_terms = []
-                answer_scope = "source_primary"
-            if not key or not query:
-                continue
-            payloads.append(
-                {
-                    "key": key,
-                    "query": query,
-                    "must_have_terms": must_have_terms,
-                    "answer_scope": answer_scope,
-                }
-            )
-        if not payloads:
+        clean_questions: List[str] = []
+        seen: set[str] = set()
+        for question in questions:
+            value = _safe_text(question)
+            if value and value not in seen:
+                seen.add(value)
+                clean_questions.append(value)
+        if not clean_questions:
             return {}
-        embedding_start = time.perf_counter()
-        query_embeddings = generate_embeddings([payload["query"] for payload in payloads])
-        embedding_seconds = time.perf_counter() - embedding_start
+        embedding_started = time.perf_counter()
+        query_embeddings = generate_embeddings(clean_questions)
         if timing is not None:
-            timing["embedding_seconds"] = timing.get("embedding_seconds", 0.0) + embedding_seconds
-        results: Dict[str, Tuple[List[EvidenceHit], List[Dict[str, Any]]]] = {}
-        rank_start = time.perf_counter()
-        for payload, query_embedding in zip(payloads, query_embeddings):
-            results[payload["key"]] = self._rank_with_query_embedding(
-                payload["query"],
-                query_embedding,
-                source_chunk_index=source_chunk_index,
-                top_k=top_k,
-                must_have_terms=payload.get("must_have_terms"),
-                answer_scope=payload.get("answer_scope") or "source_primary",
-                retrieval_mode=retrieval_mode,
-                hybrid_weight_dense=hybrid_weight_dense,
-                hybrid_weight_lexical=hybrid_weight_lexical,
-                structure_weight=structure_weight,
-                rerank_top_n=rerank_top_n,
+            timing["embedding_seconds"] = timing.get("embedding_seconds", 0.0) + time.perf_counter() - embedding_started
+        results: Dict[str, Dict[str, Any]] = {}
+        for question, embedding in zip(clean_questions, query_embeddings):
+            results[question] = self.pipeline.retrieve(
+                question,
+                embedding,
+                final_evidence_k=final_evidence_k,
+                evidence_token_budget=evidence_token_budget,
+                source_chunk_ids=source_chunk_ids,
+                timing=timing,
             )
-        rank_seconds = time.perf_counter() - rank_start
-        if timing is not None:
-            timing["ranking_seconds"] = timing.get("ranking_seconds", 0.0) + rank_seconds
         return results
-
-    def _rank_with_query_embedding(
-        self,
-        query: str,
-        query_embedding: Sequence[float],
-        *,
-        source_chunk_index: int,
-        top_k: int,
-        must_have_terms: Optional[Sequence[str]] = None,
-        answer_scope: str = "source_primary",
-        retrieval_mode: str = DEFAULT_RETRIEVAL_MODE,
-        hybrid_weight_dense: float = DEFAULT_HYBRID_WEIGHT_DENSE,
-        hybrid_weight_lexical: float = DEFAULT_HYBRID_WEIGHT_LEXICAL,
-        structure_weight: float = DEFAULT_STRUCTURE_WEIGHT,
-        rerank_top_n: int = DEFAULT_RERANK_TOP_N,
-    ) -> Tuple[List[EvidenceHit], List[Dict[str, Any]]]:
-        source_index = int(source_chunk_index)
-        source_chunk = self._chunks_by_index.get(source_index) or {}
-        source_parent = _safe_text(source_chunk.get("parent_index_path"))
-        source_title_parts = set(_split_title_path(_safe_text(source_chunk.get("title_path"))))
-        mode = _safe_text(retrieval_mode).lower() or DEFAULT_RETRIEVAL_MODE
-        if mode not in {"semantic", "hybrid"}:
-            mode = DEFAULT_RETRIEVAL_MODE
-        dense_weight = max(0.0, _safe_float(hybrid_weight_dense, DEFAULT_HYBRID_WEIGHT_DENSE))
-        lexical_weight = max(0.0, _safe_float(hybrid_weight_lexical, DEFAULT_HYBRID_WEIGHT_LEXICAL))
-        if mode == "semantic":
-            lexical_weight = 0.0
-            structure_weight = 0.0
-        if dense_weight <= 0 and lexical_weight <= 0:
-            dense_weight = 1.0
-        weight_total = dense_weight + lexical_weight
-        dense_weight = dense_weight / weight_total
-        lexical_weight = lexical_weight / weight_total
-        structure_weight = max(0.0, min(0.5, _safe_float(structure_weight, DEFAULT_STRUCTURE_WEIGHT)))
-        rerank_top_n = max(int(top_k), int(rerank_top_n or DEFAULT_RERANK_TOP_N), 1)
-        query_terms = _normalize_terms(must_have_terms)
-        query_tokens = _lexical_query_tokens(query, query_terms)
-        query_token_weight = sum(self._token_idf.get(token, 1.0) for token in set(query_tokens)) or 1.0
-
-        scored: List[Dict[str, Any]] = []
-        for position, (chunk, embedding) in enumerate(zip(self.chunks, self.embeddings)):
-            dense_score = _dot_score(query_embedding, embedding)
-            chunk_tokens = self._chunk_lexical_tokens[position] if position < len(self._chunk_lexical_tokens) else []
-            chunk_token_counts = Counter(chunk_tokens)
-            lexical_overlap = 0.0
-            if query_tokens and chunk_token_counts:
-                lexical_overlap = sum(
-                    self._token_idf.get(token, 1.0)
-                    for token in set(query_tokens)
-                    if chunk_token_counts.get(token, 0) > 0
-                ) / query_token_weight
-            must_term_hits = 0
-            for term in query_terms:
-                term_text = _safe_text(term).lower()
-                target_text = (
-                    _safe_text(chunk.get("title_path"))
-                    + "\n"
-                    + _safe_text(chunk.get("retrieval_text"))
-                ).lower()
-                if term_text and term_text in target_text:
-                    must_term_hits += 1
-            must_term_coverage = (must_term_hits / len(query_terms)) if query_terms else 0.0
-            lexical_score = max(0.0, min(1.0, 0.75 * lexical_overlap + 0.25 * must_term_coverage))
-
-            chunk_index = int(chunk.get("chunk_index") or 0)
-            chunk_parent = _safe_text(chunk.get("parent_index_path"))
-            chunk_title_parts = set(_split_title_path(_safe_text(chunk.get("title_path"))))
-            same_parent = bool(source_parent and chunk_parent and source_parent == chunk_parent)
-            adjacent = bool(chunk_index > 0 and abs(chunk_index - source_index) == 1)
-            title_overlap = (
-                len(source_title_parts & chunk_title_parts) / max(1, len(source_title_parts | chunk_title_parts))
-                if source_title_parts or chunk_title_parts
-                else 0.0
-            )
-            scope = _safe_text(answer_scope).lower() or "source_primary"
-            scope_same_section_boost = 0.15 if scope in {"same_section", "cross_chunk"} and same_parent else 0.0
-            scope_cross_boost = 0.08 if scope == "cross_chunk" and lexical_score > 0 else 0.0
-            structure_score = max(
-                0.0,
-                min(
-                    1.0,
-                    (0.55 if same_parent else 0.0)
-                    + (0.25 if adjacent else 0.0)
-                    + (0.20 * title_overlap)
-                    + scope_same_section_boost
-                    + scope_cross_boost,
-                ),
-            )
-            fused_score = (
-                dense_weight * _dense_to_unit_interval(dense_score)
-                + lexical_weight * lexical_score
-                + structure_weight * structure_score
-            )
-            scored.append(
-                {
-                    "chunk": chunk,
-                    "dense_score": dense_score,
-                    "lexical_score": lexical_score,
-                    "structure_score": structure_score,
-                    "fused_score": fused_score,
-                    "must_term_hits": must_term_hits,
-                    "must_term_total": len(query_terms),
-                    "must_term_coverage": must_term_coverage,
-                    "same_parent": same_parent,
-                    "adjacent": adjacent,
-                    "title_overlap": title_overlap,
-                }
-            )
-
-        scored.sort(key=lambda item: item["dense_score"], reverse=True)
-        dense_rank = {
-            int(item["chunk"].get("chunk_index") or 0): rank
-            for rank, item in enumerate(scored, start=1)
-        }
-        lexical_sorted = sorted(scored, key=lambda item: item["lexical_score"], reverse=True)
-        lexical_rank = {
-            int(item["chunk"].get("chunk_index") or 0): rank
-            for rank, item in enumerate(lexical_sorted, start=1)
-        }
-        pool_size = max(rerank_top_n, int(top_k) + 3)
-        pool_by_index: Dict[int, Dict[str, Any]] = {}
-        for item in scored[:pool_size]:
-            pool_by_index[int(item["chunk"].get("chunk_index") or 0)] = item
-        for item in lexical_sorted[:pool_size]:
-            pool_by_index[int(item["chunk"].get("chunk_index") or 0)] = item
-        final_pool = sorted(
-            pool_by_index.values(),
-            key=lambda item: item["fused_score"],
-            reverse=True,
-        )
-        if mode == "semantic":
-            final_pool = scored
-        final_scores = [float(item["fused_score"]) for item in final_pool]
-        score_gap_top1_top2 = (
-            final_scores[0] - final_scores[1] if len(final_scores) >= 2 else None
-        )
-        score_gap_top1_topk = (
-            final_scores[0] - final_scores[min(len(final_scores), max(1, int(top_k))) - 1]
-            if final_scores and int(top_k) > 1
-            else None
-        )
-        raw_trace = [
-            {
-                "chunk_id": item["chunk"].get("chunk_id"),
-                "chunk_index": item["chunk"].get("chunk_index"),
-                "title_path": item["chunk"].get("title_path"),
-                "parent_index_path": item["chunk"].get("parent_index_path"),
-                "score": item["fused_score"],
-                "dense_score": item["dense_score"],
-                "lexical_score": item["lexical_score"],
-                "structure_score": item["structure_score"],
-                "must_term_hits": item["must_term_hits"],
-                "must_term_total": item["must_term_total"],
-                "must_term_coverage": item["must_term_coverage"],
-                "dense_rank": dense_rank.get(int(item["chunk"].get("chunk_index") or 0)),
-                "lexical_rank": lexical_rank.get(int(item["chunk"].get("chunk_index") or 0)),
-                "final_rank": rank,
-                "same_parent": item["same_parent"],
-                "adjacent": item["adjacent"],
-                "title_overlap": item["title_overlap"],
-                "is_source_chunk": int(item["chunk"].get("chunk_index") or 0) == source_index,
-                "score_gap_top1_top2": score_gap_top1_top2,
-                "score_gap_top1_topk": score_gap_top1_topk,
-            }
-            for rank, item in enumerate(final_pool[: max(10, int(top_k) + 3)], start=1)
-        ]
-
-        hits: List[EvidenceHit] = []
-        for rank, item in enumerate(final_pool, start=1):
-            chunk = item["chunk"]
-            chunk_index = int(chunk.get("chunk_index") or 0)
-            if chunk_index <= 0 or chunk_index == source_index:
-                continue
-            hits.append(
-                EvidenceHit(
-                    chunk_id=_safe_text(chunk.get("chunk_id")),
-                    chunk_index=chunk_index,
-                    score=float(item["fused_score"]),
-                    title_path=_safe_text(chunk.get("title_path")),
-                    parent_index_path=_safe_text(chunk.get("parent_index_path")),
-                    role="semantic_hit",
-                    dense_score=float(item["dense_score"]),
-                    lexical_score=float(item["lexical_score"]),
-                    structure_score=float(item["structure_score"]),
-                    fused_score=float(item["fused_score"]),
-                    retrieval_rank=rank,
-                )
-            )
-            if len(hits) >= max(0, int(top_k)):
-                break
-        return hits, raw_trace
 
     def build_generation_unit(
         self,
         *,
         source_chunk_index: int,
-        source_unit: Optional[Dict[str, Any]] = None,
+        source_unit: Optional[Dict[str, Any]],
         question: str,
-        retrieval_query: str = "",
-        must_have_terms: Optional[Sequence[str]] = None,
-        answer_scope: str = "source_primary",
-        semantic_top_k: int = DEFAULT_SEMANTIC_TOP_K,
-        max_unit_chars: int = DEFAULT_MAX_UNIT_CHARS,
-        retrieval_mode: str = DEFAULT_RETRIEVAL_MODE,
-        hybrid_weight_dense: float = DEFAULT_HYBRID_WEIGHT_DENSE,
-        hybrid_weight_lexical: float = DEFAULT_HYBRID_WEIGHT_LEXICAL,
-        structure_weight: float = DEFAULT_STRUCTURE_WEIGHT,
-        rerank_top_n: int = DEFAULT_RERANK_TOP_N,
-        semantic_hits: Optional[List[EvidenceHit]] = None,
-        raw_semantic_trace: Optional[List[Dict[str, Any]]] = None,
-        answer_scope_hint: str = "source_primary",
-        answer_scope_policy: str = "source_primary",
-        answer_scope_decision: Optional[Dict[str, Any]] = None,
+        retrieval_result: Dict[str, Any],
+        final_evidence_k: int,
+        evidence_token_budget: int,
     ) -> Dict[str, Any]:
         source_chunk = self.get_chunk(source_chunk_index)
-        source_unit_payload = dict(source_unit or {}) if isinstance(source_unit, dict) else {}
-        source_unit_indexes = [
-            _safe_int(index, 0)
-            for index in (source_unit_payload.get("source_chunk_indexes") or [])
-            if _safe_int(index, 0) > 0
-        ]
-        if not source_unit_indexes:
-            source_unit_indexes = [int(source_chunk_index)]
-        source_index_set = set(source_unit_indexes)
-        source_chunks = [
-            self.get_chunk(index)
-            for index in source_unit_indexes
-            if index in self._chunks_by_index
-        ]
-        if not source_chunks:
-            source_chunks = [source_chunk]
-        clean_retrieval_query = _safe_text(retrieval_query) or _safe_text(question)
-        normalized_terms = _normalize_terms(must_have_terms)
-        normalized_scope = _safe_text(answer_scope).lower() or "source_primary"
-        if semantic_hits is None or raw_semantic_trace is None:
-            hits, raw_trace = self.retrieve(
-                clean_retrieval_query,
-                source_chunk_index=source_chunk_index,
-                top_k=semantic_top_k,
-                must_have_terms=normalized_terms,
-                answer_scope=normalized_scope,
-                retrieval_mode=retrieval_mode,
-                hybrid_weight_dense=hybrid_weight_dense,
-                hybrid_weight_lexical=hybrid_weight_lexical,
-                structure_weight=structure_weight,
-                rerank_top_n=rerank_top_n,
-            )
-        else:
-            hits, raw_trace = semantic_hits, raw_semantic_trace
-        source_parent = _safe_text(source_unit_payload.get("parent_index_path")) or _safe_text(source_chunk.get("parent_index_path"))
+        source_unit_payload = dict(source_unit or {})
+        source_indexes = [
+            _safe_int(value)
+            for value in source_unit_payload.get("source_chunk_indexes") or []
+            if _safe_int(value) in self._chunks_by_index
+        ] or [source_chunk_index]
+        source_chunks = [self.get_chunk(index) for index in source_indexes]
+        source_ids = [_safe_text(chunk.get("chunk_id")) for chunk in source_chunks]
+        windows = list(retrieval_result.get("selected_windows") or [])
 
-        selected_hits: List[EvidenceHit] = []
-        source_text_budget = sum(len(_format_chunk_for_unit(chunk)) for chunk in source_chunks)
-        remaining_budget = max(1000, int(max_unit_chars)) - source_text_budget
-        auto_merge_trace: List[Dict[str, Any]] = []
-        source_count_by_parent: Dict[str, int] = {}
-        for chunk in source_chunks:
-            parent_key = _safe_text(chunk.get("parent_index_path"))
-            if parent_key:
-                source_count_by_parent[parent_key] = source_count_by_parent.get(parent_key, 0) + 1
-        hit_indexes_by_parent: Dict[str, set[int]] = {}
-        for hit in hits:
-            if int(hit.chunk_index) in source_index_set:
-                continue
-            parent_key = _safe_text(hit.parent_index_path)
-            if parent_key:
-                hit_indexes_by_parent.setdefault(parent_key, set()).add(int(hit.chunk_index))
-        auto_merge_parent_coverage: Dict[str, float] = {}
-        for parent_key, hit_indexes in hit_indexes_by_parent.items():
-            parent_children = self._children_by_parent.get(parent_key) or []
-            source_children = source_count_by_parent.get(parent_key, 0)
-            denominator = max(1, len(parent_children) - source_children)
-            coverage = len(hit_indexes) / denominator
-            auto_merge_parent_coverage[parent_key] = coverage
-            if coverage >= 0.50 and len(hit_indexes) >= 2:
-                auto_merge_trace.append(
-                    {
-                        "parent_index_path": parent_key,
-                        "matched_child_count": len(hit_indexes),
-                        "source_child_count": source_children,
-                        "parent_child_count": len(parent_children),
-                        "coverage": coverage,
-                        "source_chunk_indexes": sorted(source_index_set),
-                        "matched_chunk_indexes": sorted(hit_indexes),
-                    }
-                )
-        for hit in hits:
-            if int(hit.chunk_index) in source_index_set:
-                continue
-            hit_is_same_section = bool(
-                hit.parent_index_path
-                and source_parent
-                and hit.parent_index_path == source_parent
-            )
-            hit_is_adjacent = bool(abs(int(hit.chunk_index) - int(source_chunk_index)) == 1)
-            if normalized_scope == "source_primary":
-                continue
-            if normalized_scope == "same_section" and not (hit_is_same_section or hit_is_adjacent):
-                continue
-            chunk = self.get_chunk(hit.chunk_index)
-            hit_text = _format_chunk_for_unit(chunk)
-            if remaining_budget - len(hit_text) < 0:
-                continue
-            auto_merge_coverage = auto_merge_parent_coverage.get(hit.parent_index_path, 0.0)
-            if hit_is_same_section and auto_merge_coverage >= 0.50:
-                role = "auto_merged_section_context"
-            else:
-                role = "same_section_context" if hit_is_same_section or hit_is_adjacent else "related_context"
-            selected_hits.append(
-                EvidenceHit(
-                    chunk_id=hit.chunk_id,
-                    chunk_index=hit.chunk_index,
-                    score=hit.score,
-                    title_path=hit.title_path,
-                    parent_index_path=hit.parent_index_path,
-                    role=role,
-                    dense_score=hit.dense_score,
-                    lexical_score=hit.lexical_score,
-                    structure_score=hit.structure_score,
-                    fused_score=hit.fused_score,
-                    retrieval_rank=hit.retrieval_rank,
-                )
-            )
-            remaining_budget -= len(hit_text)
+        evidence_chunks: List[Dict[str, Any]] = []
+        seen_ids = set(source_ids)
+        for window in windows:
+            for chunk_id in window.chunk_ids:
+                if chunk_id in seen_ids or chunk_id not in self._chunks_by_id:
+                    continue
+                seen_ids.add(chunk_id)
+                evidence_chunks.append(self._chunks_by_id[chunk_id])
 
-        unit_text = self._render_unit_text(
-            source_chunk=source_chunk,
-            source_chunks=source_chunks,
-            source_unit=source_unit_payload,
-            hits=selected_hits,
-        )
-        llm_evidence_ref_map = self._build_llm_evidence_ref_map(
-            source_chunks=source_chunks,
-            hits=selected_hits,
-        )
-        evidence_chunk_ids = [hit.chunk_id for hit in selected_hits if hit.chunk_id]
-        source_chunk_ids = [
-            _safe_text(chunk.get("chunk_id"))
-            for chunk in source_chunks
-            if _safe_text(chunk.get("chunk_id"))
-        ]
+        sections: List[str] = ["【主来源材料】"]
+        ref_map: Dict[str, Dict[str, Any]] = {}
+        for position, chunk in enumerate(source_chunks, start=1):
+            label = f"主材料-{position}"
+            sections.append(f"{label}\n{_safe_text(chunk.get('text'))}")
+            ref_map[label] = {
+                "chunk_id": chunk.get("chunk_id"),
+                "chunk_index": chunk.get("chunk_index"),
+                "role": "primary_source",
+            }
+        if evidence_chunks:
+            sections.append("【检索证据】")
+            for position, chunk in enumerate(evidence_chunks, start=1):
+                label = f"检索证据-{position}"
+                title_path = _safe_text(chunk.get("title_path"))
+                rendered = _safe_text(chunk.get("text"))
+                if title_path:
+                    rendered = f"标题路径：{title_path}\n{rendered}"
+                sections.append(f"{label}\n{rendered}")
+                ref_map[label] = {
+                    "chunk_id": chunk.get("chunk_id"),
+                    "chunk_index": chunk.get("chunk_index"),
+                    "role": "retrieved_evidence",
+                }
+
+        evidence_ids = [_safe_text(chunk.get("chunk_id")) for chunk in evidence_chunks]
         unit_id = hashlib.sha1(
-            (
-                _safe_text(source_unit_payload.get("unit_id"))
-                + "|||"
-                + "|||".join(source_chunk_ids)
-                + "|||"
-                + _safe_text(question)
-                + "|||"
-                + "|||".join(evidence_chunk_ids)
-            ).encode("utf-8")
+            ("|||".join(source_ids + [_safe_text(question)] + evidence_ids)).encode("utf-8")
         ).hexdigest()
+        trace = dict(retrieval_result.get("trace") or {})
+        trace["query"] = _safe_text(question)
+        trace["source_chunk_ids"] = source_ids
+        trace["selected_evidence_chunk_ids"] = evidence_ids
+        trace["final_evidence_k"] = int(final_evidence_k)
+        trace["evidence_token_budget"] = int(evidence_token_budget)
         return {
             "qa_generation_unit_id": unit_id,
             "source_chunk": source_chunk,
             "source_unit": source_unit_payload,
             "source_chunks": source_chunks,
-            "source_chunk_ids": source_chunk_ids,
-            "source_unit_text": _safe_text(source_unit_payload.get("unit_text")) or "\n\n".join(_format_chunk_for_unit(chunk) for chunk in source_chunks),
-            "evidence_hits": [hit.to_dict() for hit in selected_hits],
-            "evidence_chunk_ids": evidence_chunk_ids,
-            "qa_generation_unit_text": unit_text,
-            "llm_evidence_ref_map": llm_evidence_ref_map,
-            "retrieval_trace": {
-                "query": _safe_text(question),
-                "retrieval_query": clean_retrieval_query,
-                "must_have_terms": normalized_terms,
-                "answer_scope_hint": _safe_text(answer_scope_hint) or "source_primary",
-                "answer_scope_policy": _safe_text(answer_scope_policy) or "source_primary",
-                "answer_scope": normalized_scope,
-                "effective_answer_scope": normalized_scope,
-                "answer_scope_decision": answer_scope_decision or {},
-                "source_unit": {
-                    "unit_id": source_unit_payload.get("unit_id"),
-                    "unit_index": source_unit_payload.get("unit_index"),
-                    "unit_type": source_unit_payload.get("unit_type"),
-                    "qa_mode": source_unit_payload.get("qa_mode"),
-                    "anchor_chunk_index": source_unit_payload.get("anchor_chunk_index"),
-                    "source_chunk_indexes": source_unit_indexes,
-                    "source_chunk_ids": source_chunk_ids,
-                    "quality_child_coverage": source_unit_payload.get("quality_child_coverage"),
-                },
-                "retrieval_mode": _safe_text(retrieval_mode) or DEFAULT_RETRIEVAL_MODE,
-                "hybrid_weight_dense": _safe_float(hybrid_weight_dense, DEFAULT_HYBRID_WEIGHT_DENSE),
-                "hybrid_weight_lexical": _safe_float(hybrid_weight_lexical, DEFAULT_HYBRID_WEIGHT_LEXICAL),
-                "structure_weight": _safe_float(structure_weight, DEFAULT_STRUCTURE_WEIGHT),
-                "rerank_top_n": int(rerank_top_n or DEFAULT_RERANK_TOP_N),
-                "semantic_top_k": int(semantic_top_k),
-                "max_unit_chars": int(max_unit_chars),
-                "raw_semantic_hits": raw_trace,
-                "selected_evidence": [hit.to_dict() for hit in selected_hits],
-                "auto_merge_trace": auto_merge_trace,
-            },
+            "source_chunk_ids": source_ids,
+            "source_unit_text": _safe_text(source_unit_payload.get("unit_text")) or "\n\n".join(_safe_text(chunk.get("text")) for chunk in source_chunks),
+            "evidence_hits": [
+                {
+                    "chunk_id": chunk.get("chunk_id"),
+                    "chunk_index": chunk.get("chunk_index"),
+                    "title_path": chunk.get("title_path"),
+                    "role": "retrieved_evidence",
+                }
+                for chunk in evidence_chunks
+            ],
+            "evidence_chunk_ids": evidence_ids,
+            "qa_generation_unit_text": "\n\n".join(sections).strip(),
+            "llm_evidence_ref_map": ref_map,
+            "retrieval_trace": trace,
         }
-
-    def _render_unit_text(
-        self,
-        *,
-        source_chunk: Dict[str, Any],
-        source_chunks: Optional[Sequence[Dict[str, Any]]] = None,
-        source_unit: Optional[Dict[str, Any]] = None,
-        hits: Sequence[EvidenceHit],
-    ) -> str:
-        source_chunks = list(source_chunks or [source_chunk])
-        source_unit = dict(source_unit or {})
-        unit_type = _safe_text(source_unit.get("unit_type"))
-        primary_parts = ["【主来源材料】"]
-        for position, chunk in enumerate(source_chunks, start=1):
-            primary_parts.append(f"主材料-{position}\n{_format_chunk_for_unit(chunk)}")
-        sections: List[str] = ["\n\n".join(primary_parts).strip()]
-
-        same_section_hits = [
-            hit
-            for hit in hits
-            if hit.role in {"same_section_context", "auto_merged_section_context"}
-        ]
-        related_hits = [
-            hit
-            for hit in hits
-            if hit.role not in {"same_section_context", "auto_merged_section_context"}
-        ]
-
-        if same_section_hits:
-            has_auto_merge = any(hit.role == "auto_merged_section_context" for hit in same_section_hits)
-            label = "自动合并同章节上下文" if has_auto_merge else "同章节上下文"
-            parts = [f"【{label}】"]
-            for position, hit in enumerate(same_section_hits, start=1):
-                chunk = self.get_chunk(hit.chunk_index)
-                parts.append(f"同章节补充-{position}\n{_format_chunk_for_unit(chunk)}")
-            sections.append("\n\n".join(parts))
-
-        if related_hits:
-            parts = ["【相关补充】"]
-            for position, hit in enumerate(related_hits, start=1):
-                chunk = self.get_chunk(hit.chunk_index)
-                parts.append(f"相关补充-{position}\n{_format_chunk_for_unit(chunk)}")
-            sections.append("\n\n".join(parts))
-
-        return "\n\n".join(section for section in sections if section.strip()).strip()
-
-    @staticmethod
-    def _build_llm_evidence_ref_map(
-        *,
-        source_chunks: Sequence[Dict[str, Any]],
-        hits: Sequence[EvidenceHit],
-    ) -> Dict[str, Dict[str, Any]]:
-        """Map readable evidence labels back to internal chunk metadata.
-
-        The labels are the only identifiers exposed to the answer model. Real
-        chunk IDs remain in the returned trace and are restored after parsing.
-        """
-        refs: Dict[str, Dict[str, Any]] = {}
-        for position, chunk in enumerate(source_chunks, start=1):
-            refs[f"主材料-{position}"] = {
-                "chunk_id": _safe_text(chunk.get("chunk_id")),
-                "chunk_index": _safe_int(chunk.get("chunk_index")),
-                "role": "primary_source",
-            }
-        same_position = 0
-        related_position = 0
-        for hit in hits:
-            if hit.role in {"same_section_context", "auto_merged_section_context"}:
-                same_position += 1
-                ref = f"同章节补充-{same_position}"
-            else:
-                related_position += 1
-                ref = f"相关补充-{related_position}"
-            refs[ref] = {
-                "chunk_id": hit.chunk_id,
-                "chunk_index": hit.chunk_index,
-                "role": hit.role,
-            }
-        return refs
 
 
 __all__ = [
-    "DEFAULT_HYBRID_WEIGHT_DENSE",
-    "DEFAULT_HYBRID_WEIGHT_LEXICAL",
+    "DEFAULT_EVIDENCE_TOKEN_BUDGET",
+    "DEFAULT_FINAL_EVIDENCE_K",
     "DEFAULT_MAX_UNIT_CHARS",
-    "DEFAULT_RETRIEVAL_MODE",
-    "DEFAULT_RERANK_TOP_N",
-    "DEFAULT_SEMANTIC_TOP_K",
-    "DEFAULT_STRUCTURE_WEIGHT",
     "QADocumentEvidenceIndex",
     "build_document_chunks",
 ]

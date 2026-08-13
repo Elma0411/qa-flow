@@ -163,26 +163,24 @@ Document preprocessing concurrency:
 
 QA retrieval configuration:
 
-- Standard and integrated complete-pipeline requests accept optional
+- Standard and integrated complete-pipeline requests expose exactly two
   request-level retrieval controls:
-  - `retrieval_mode`: `hybrid` or `semantic`; defaults to `hybrid`.
-  - `semantic_top_k`: evidence chunk count included in answer context;
-    defaults to `3`, and `0` means source chunk only.
-  - `rerank_top_n`: candidate pool size for lightweight hybrid reranking;
-    defaults to `12`.
-  - `hybrid_weight_dense`: dense vector score weight; defaults to `0.68`.
-  - `hybrid_weight_lexical`: lexical term score weight; defaults to `0.24`.
-  - `retrieval_structure_weight`: same-section/adjacent/title-path structure
-    weight; defaults to `0.08`.
-  - `answer_scope_policy`: `source_primary`, `same_section`, or
-    `cross_chunk`; defaults to `source_primary`.
+  - `final_evidence_k`: final evidence-window count; defaults to `5`. `0`
+    keeps only the generation unit's primary material.
+  - `evidence_token_budget`: approximate total token budget for retrieved
+    evidence windows; defaults to `4000` and has a minimum of `256`.
 - Routes write the resolved values to both `job_context` and task status
   `retrieval_config`. The two complete-pipeline entry points must keep the same
   defaults and validation ranges.
-- `semantic` mode preserves the old dense-only ranking path. `hybrid` mode uses
-  dense, lexical, and structure signals. The project does not currently expose
-  a cross-encoder reranker; `rerank_top_n` controls the lightweight candidate
-  pool for the hybrid rerank step.
+- The internal path is fixed: deterministic question normalization -> standard
+  BM25 plus BGE-M3 dense recall -> RRF -> chunk-ID de-duplication -> local
+  BGE reranking of atomic chunks -> structural window completion -> BGE
+  reranking of windows -> de-duplication and token budgeting.
+- `QA_RERANKER_MODEL_PATH` defaults to
+  `${APP_MODELS_DIR}/bge-reranker-v2-m3`; optional runtime controls are
+  `QA_RERANKER_DEVICE`, `QA_RERANKER_BATCH_SIZE`, and
+  `QA_RERANKER_MAX_LENGTH`. A missing/incomplete model or load failure is a
+  task error; the service must not silently use the former hand-written ranker.
 
 Image classifier classes:
 
@@ -307,21 +305,30 @@ Stable metadata keys:
 
 - `chunk_index`: 1-based integer position.
 - `chunk_id`: stable chunk identifier.
+- `section_chunk_index`: 1-based content-chunk position inside one section.
+- `section_path`: structural section path; it never includes physical `Part N/M`
+  labels or content-chunk positions.
+- `section_parent_path`: parent section path, empty at the root.
+- `section_level`: section depth.
+- `section_is_leaf`: whether the section has child sections. This describes the
+  section, not whether the content chunk is an image or a terminal record.
 - `text`: chunk text used for generation display.
 - `text_for_embedding`: text used for retrieval/embedding; may include accepted
   image descriptions.
-- `index_path`: tree path within the document.
 - `title_path`: human-readable heading path.
-- `parent_index_path`: parent tree path.
-- `root_index_path`: root tree path.
-- `level`: heading/tree level.
+- `fragment_group_id`, `fragment_index`, `fragment_count`: physical-split
+  identity and order. All pieces in a group are restored together at evidence
+  time.
+- `content_kind`: `text`, `image_description`, or `mixed`.
+- `source_asset_ids`: image/asset IDs that actually occurred in this chunk.
 - `path_summary`: optional concise path summary.
 - `split_type`: chunking mode.
 - `doc_id`: document identifier; execution may set or normalize this.
 - `task_id`: pipeline task ID; execution may set or normalize this.
 - `original_filename`: source filename; execution may set or normalize this.
 - `image_context_summary`: optional integrated image context summary.
-- `image_replacements`: optional integrated image placement details.
+- `image_replacements`: optional integrated image placement details local to
+  this chunk only; unrelated accepted image IDs/details must not be copied in.
 
 Rules:
 
@@ -331,6 +338,25 @@ Rules:
 - `text_for_embedding` should preserve all facts needed for retrieval.
 - Integrated image descriptions should be inserted before QA generation and
   before embedding text is built.
+- A section may own body content and child sections simultaneously. An empty
+  parent remains a structural node and does not produce duplicate aggregate
+  body text.
+- `chunk_id` includes `section_chunk_index` as part of its stable identity, so
+  equal text repeated inside one section remains independently addressable.
+- Structure completion first restores every physical fragment in a matched
+  `fragment_group_id`. Multiple hits in one section are merged only when their
+  `section_chunk_index` values are consecutive. A single atomic hit adds one
+  preceding/following section chunk only when deterministic wording signals an
+  explicit context dependency; no LLM hint or range policy participates.
+- A Markdown heading plus accepted image marker, with no other visible body,
+  is `image_description`; the heading alone does not make it `mixed`.
+- New chunks are persisted in the versioned `doc_content_chunks_v2` collection
+  (`schema_version=2`). The legacy `doc_tree_chunks` collection is retained but
+  is never queried as an implicit fallback. Historical data is migrated only
+  through `POST /doc-chunks/rebuild`, which accepts source text plus chunking
+  options, regenerates complete v2 metadata, validates and embeds all rows
+  before replacing the matching `task_id + original_filename` scope, and
+  restores the old rows if the replacement write fails.
 
 ## Contract D: QA Job Context
 
@@ -366,9 +392,7 @@ Required groups:
   `chunk_storage_fail_fast`.
 - Runtime: `llm_config`, `max_concurrency`, `chunk_max_concurrency`,
   `chunk_max_attempts`, `augment_per_qa`, `augment_max_concurrency`.
-- Retrieval: `retrieval_mode`, `semantic_top_k`, `rerank_top_n`,
-  `hybrid_weight_dense`, `hybrid_weight_lexical`,
-  `retrieval_structure_weight`, `answer_scope_policy`.
+- Retrieval: `final_evidence_k`, `evidence_token_budget`.
 - Classification: `knowledge_classifier`, `use_category_prompt_templates`.
 - Integrated image understanding: `enable_image_analysis`,
   `enable_image_classification`, `classification_confidence_threshold`,
@@ -545,12 +569,6 @@ Stable fields for primary QA items:
 - `qa_generation_unit_text`
 - `evidence_hits`
 - `evidence_chunk_ids`
-- `retrieval_query`
-- `must_have_terms`
-- `answer_scope_hint`
-- `answer_scope`
-- `effective_answer_scope`
-- `answer_scope_decision`
 - `evidence_usage`
 - `retrieval_trace`
 
@@ -563,40 +581,23 @@ Rules:
   available.
 - Evaluation should prefer `qa_generation_unit_text` as source context when it
   exists.
-- Candidate-question generation emits a question plus retrieval planning fields;
-  it does not emit a separate source anchor. `source_fact_text` is produced only
-  by final answer generation as the QA item's direct fact evidence.
+- Candidate-question generation emits the natural question and question-quality
+  fields only. Retrieval uses that question deterministically; it does not ask
+  the LLM to emit a query, mandatory terms, or an answer-scope hint.
 - LLM-facing material is separate from retrieval trace. Candidate-question
   generation receives readable source prose only. Answer generation receives
-  readable sections labelled `主材料-N`, `同章节补充-N`, or `相关补充-N`; it returns
+  readable sections labelled `主材料-N` or `检索证据-N`; it returns
   `evidence_ref` labels rather than real chunk IDs. The generation layer maps
   those labels back to `evidence_usage[].chunk_id` before persistence. Real IDs,
   title paths, ranks, and scores remain in `retrieval_trace` and debug artifacts.
 - `llm_evidence_ref_map` is an ephemeral generation-unit handoff used for that
   mapping; it is not a persisted QA item field and must not be sent to the LLM.
-- `answer_scope_hint` is the model-generated, non-authoritative evidence range
-  suggestion. It is kept for diagnostics and should not be treated as final
-  permission to use supplemental evidence.
-- `answer_scope` and `effective_answer_scope` represent the system-approved
-  final evidence range after applying `answer_scope_policy` and retrieval
-  quality checks. New consumers should prefer `effective_answer_scope`; the
-  `answer_scope` alias is preserved for compatibility.
-- `answer_scope_decision` explains why the system approved or rejected a wider
-  scope. Stable keys include `reason_code`, `reason`, `checks`, and `evidence`.
 - `retrieval_trace` is optional on old items. New primary QA items should carry
   it when generated by the same-document evidence flow. Stable diagnostic keys
-  include `retrieval_query`, `must_have_terms`, `answer_scope_hint`,
-  `answer_scope_policy`, `answer_scope`, `effective_answer_scope`,
-  `answer_scope_decision`, `retrieval_mode`, `semantic_top_k`, `rerank_top_n`,
-  hybrid weights, `raw_semantic_hits`, and `selected_evidence`.
-- Each `raw_semantic_hits` record may include `score`, `dense_score`,
-  `lexical_score`, `structure_score`, `dense_rank`, `lexical_rank`,
-  `final_rank`, `score_gap_top1_top2`, `score_gap_top1_topk`,
-  `must_term_hits`, `must_term_total`, `must_term_coverage`, `same_parent`,
-  `adjacent`, `title_overlap`, and future `rerank_score`.
-- `selected_evidence` records preserve the final selected evidence scores and
-  `retrieval_rank`. Consumers should treat missing score fields on old items as
-  unknown, not as zero.
+  include `pipeline`, `query`, `dense_hits`, `bm25_hits`, `rrf_hits`,
+  `atomic_rerank`, `window_candidates`, `selected_windows`,
+  `selected_evidence_chunk_ids`, `final_evidence_k`,
+  `evidence_token_budget`, and `evidence_tokens_estimated`.
 - Optional enrichment fields are allowed, but removal or semantic change of the
   stable fields is a boundary change.
 

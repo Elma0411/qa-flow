@@ -32,6 +32,15 @@ Important details:
 - Final chunks are passed to the QA pipeline through `pre_split_chunks` and `pre_split_chunk_meta`.
 - Field-level handoff details are governed by `INTEGRATION_CONTRACT.md`.
 
+The QA evidence path is fixed:
+
+`question normalization -> BM25 + BGE-M3 dense recall -> RRF -> atomic BGE rerank -> structural evidence windows -> window BGE rerank -> token budget -> answer`
+
+Section nodes, content chunks, and physical fragments are separate concepts.
+Do not encode `Part N/M` into a section path or materialize aggregate parent
+text. The local BGE reranker is a stateful service and must fail explicitly if
+its configured model cannot load.
+
 ## Module Ownership
 
 - `app/services/document_processing/`: document extraction, OCR models, input adapters, watermark removal, image replacement, and OCR-compatible text integration.

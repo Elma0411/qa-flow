@@ -27,7 +27,7 @@ from .easy_dataset_toc import extract_table_of_contents, generate_anchor_id, toc
 from .markdown_heading_correction import correct_markdown_heading_levels
 
 
-ENGINE_VERSION = "easy_dataset_chunking_py_20260416"
+ENGINE_VERSION = "easy_dataset_chunking_py_20260813_section_chunks_v2"
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "splitType": None,
@@ -83,6 +83,7 @@ _RE_MARKDOWN_HEADING = re.compile(
 )
 _RE_SENTENCE = re.compile(r"[^.!?。！？]+[.!?。！？]*", re.MULTILINE)
 _RE_PART_SUFFIX = re.compile(r"^(?P<head>.+?)\s+-\s+Part\s+(?P<part>\d+/\d+)$", re.IGNORECASE)
+_RE_PART_ONLY = re.compile(r"^Part\s+\d+(?:/\d+)?$", re.IGNORECASE)
 
 
 
@@ -190,8 +191,6 @@ def _build_title_path_parts(
             parts = list(prefix) + [f"[{', '.join(suffixes)}]"]
         else:
             parts = [", ".join(" > ".join(path) for path in heading_paths)]
-    if part_index is not None and total_parts and total_parts > 1:
-        parts = list(parts) + [f"Part {part_index}/{total_parts}"]
     return [str(part).strip() for part in parts if str(part).strip()]
 
 
@@ -219,8 +218,6 @@ def _heading_paths_to_summary(
             summary = " > ".join(list(prefix) + [f"[{', '.join(suffixes)}]"])
         else:
             summary = ", ".join(" > ".join(path) for path in heading_paths)
-    if part_index is not None and total_parts and total_parts > 1:
-        summary += f" - Part {part_index}/{total_parts}"
     return summary
 
 
@@ -452,6 +449,12 @@ def process_sections(
                             total_parts=len(sub_sections),
                         ),
                         "_headingPaths": heading_paths,
+                        "_sectionPosition": int(section.get("position") or 0),
+                        "_sectionHasHeading": bool(section.get("heading")),
+                        "fragmentIndex": idx,
+                        "fragmentCount": len(sub_sections),
+                        "sectionChunkIndex": idx,
+                        "_fragmentGroupKey": f"section:{int(section.get('position') or 0)}",
                     }
                 )
         else:
@@ -474,6 +477,12 @@ def process_sections(
                         document_title_hint=document_title_hint,
                     ),
                     "_headingPaths": heading_paths,
+                    "_sectionPosition": int(section.get("position") or 0),
+                    "_sectionHasHeading": bool(section.get("heading")),
+                    "fragmentIndex": 1,
+                    "fragmentCount": 1,
+                    "sectionChunkIndex": 1,
+                    "_fragmentGroupKey": f"section:{int(section.get('position') or 0)}",
                 }
             )
 
@@ -518,6 +527,12 @@ def split_markdown(
                 "summary": summary,
                 "content": content,
                 "titlePathParts": list(item.get("titlePathParts") or []),
+                "_sectionPosition": item.get("_sectionPosition"),
+                "_sectionHasHeading": bool(item.get("_sectionHasHeading")),
+                "fragmentIndex": int(item.get("fragmentIndex") or 1),
+                "fragmentCount": int(item.get("fragmentCount") or 1),
+                "sectionChunkIndex": int(item.get("sectionChunkIndex") or 1),
+                "_fragmentGroupKey": item.get("_fragmentGroupKey"),
             }
         )
     return result
@@ -589,8 +604,7 @@ def _map_split_result(parts: Sequence[Dict[str, Any]], file_name: str, split_typ
     mapped: List[Dict[str, Any]] = []
     for index, part in enumerate(parts, start=1):
         content = str(part.get("content") or "").strip()
-        mapped.append(
-            {
+        mapped_item = {
                 "name": f"{base_name}-part-{index}",
                 "fileName": file_name,
                 "content": content,
@@ -599,7 +613,17 @@ def _map_split_result(parts: Sequence[Dict[str, Any]], file_name: str, split_typ
                 "titlePathParts": list(part.get("titlePathParts") or []),
                 "splitType": split_type,
             }
-        )
+        for key in (
+            "_sectionPosition",
+            "_sectionHasHeading",
+            "fragmentIndex",
+            "fragmentCount",
+            "sectionChunkIndex",
+            "_fragmentGroupKey",
+        ):
+            if key in part:
+                mapped_item[key] = part.get(key)
+        mapped.append(mapped_item)
     return mapped
 
 
@@ -700,7 +724,11 @@ def split_content(
                 "content": part,
                 "summary": "",
                 "size": len(part),
-                "titlePathParts": [document_title_hint, f"Part {index}"],
+                "titlePathParts": [document_title_hint],
+                "sectionChunkIndex": index,
+                "fragmentIndex": 1,
+                "fragmentCount": 1,
+                "_fragmentGroupKey": f"flat:{index}",
                 "splitType": requested_split_type,
             }
             for index, part in enumerate(split_result, start=1)
@@ -719,7 +747,11 @@ def split_content(
                 "content": part,
                 "summary": "",
                 "size": len(part),
-                "titlePathParts": [document_title_hint, f"Part {index}"],
+                "titlePathParts": [document_title_hint],
+                "sectionChunkIndex": index,
+                "fragmentIndex": 1,
+                "fragmentCount": 1,
+                "_fragmentGroupKey": f"flat:{index}",
                 "splitType": requested_split_type,
             }
             for index, part in enumerate(split_result, start=1)
@@ -739,7 +771,11 @@ def split_content(
                 "content": part,
                 "summary": "",
                 "size": len(part),
-                "titlePathParts": [document_title_hint, f"Part {index}"],
+                "titlePathParts": [document_title_hint],
+                "sectionChunkIndex": index,
+                "fragmentIndex": 1,
+                "fragmentCount": 1,
+                "_fragmentGroupKey": f"flat:{index}",
                 "splitType": requested_split_type,
             }
             for index, part in enumerate(split_result, start=1)
@@ -759,7 +795,11 @@ def split_content(
                 "content": part,
                 "summary": "",
                 "size": len(part),
-                "titlePathParts": [document_title_hint, f"Part {index}"],
+                "titlePathParts": [document_title_hint],
+                "sectionChunkIndex": index,
+                "fragmentIndex": 1,
+                "fragmentCount": 1,
+                "_fragmentGroupKey": f"flat:{index}",
                 "splitType": requested_split_type,
             }
             for index, part in enumerate(split_result, start=1)
@@ -778,7 +818,11 @@ def split_content(
                 "content": part,
                 "summary": "",
                 "size": len(part),
-                "titlePathParts": [document_title_hint, f"Part {index}"],
+                "titlePathParts": [document_title_hint],
+                "sectionChunkIndex": index,
+                "fragmentIndex": 1,
+                "fragmentCount": 1,
+                "_fragmentGroupKey": f"flat:{index}",
                 "splitType": requested_split_type,
             }
             for index, part in enumerate(split_result, start=1)
@@ -847,29 +891,14 @@ def _normalize_title_parts(
         match = _RE_PART_SUFFIX.match(parts[-1])
         if match:
             head = str(match.group("head") or "").strip()
-            part = f"Part {str(match.group('part') or '').strip()}"
             parts[-1] = head
-            if part:
-                parts.append(part)
+        parts = [part for part in parts if not _RE_PART_ONLY.fullmatch(part)]
     if doc_title:
         if not parts:
-            parts = [doc_title, "Part 1"]
+            parts = [doc_title]
         elif not _same_text(parts[0], doc_title):
             parts = [doc_title] + parts
     return [part for part in parts if part]
-
-
-def _build_index_path(title_parts: Sequence[str], state: Dict[Tuple[str, str], int]) -> str:
-    numeric_parts: List[str] = []
-    current_path = ""
-    for title in title_parts:
-        key = (current_path, title)
-        if key not in state:
-            siblings = [value for (parent, _child), value in state.items() if parent == current_path]
-            state[key] = max(siblings, default=0) + 1
-        numeric_parts.append(str(state[key]))
-        current_path = ".".join(numeric_parts)
-    return current_path
 
 
 def _metrics_summary(chunks_meta: Sequence[Dict[str, Any]], chunk_size: int) -> Dict[str, Any]:
@@ -976,7 +1005,33 @@ def build_tree_chunks_easy_dataset(
         or adapter_config.get("splitType")
         or "markdown"
     )
-    title_index_state: Dict[Tuple[str, str], int] = {}
+    outline = extract_outline(str(split_result.get("normalizedContent") or raw_text))
+    section_path_by_position: Dict[int, str] = {}
+    section_leaf_by_path: Dict[str, bool] = {}
+    section_stack: List[Tuple[int, str]] = []
+    sibling_counts: Dict[str, int] = {}
+    for outline_item in outline:
+        if not isinstance(outline_item, dict):
+            continue
+        level = max(1, int(outline_item.get("level") or 1))
+        while section_stack and section_stack[-1][0] >= level:
+            section_stack.pop()
+        parent_path = section_stack[-1][1] if section_stack else ""
+        sibling_counts[parent_path] = sibling_counts.get(parent_path, 0) + 1
+        section_path = (
+            f"{parent_path}.{sibling_counts[parent_path]}"
+            if parent_path
+            else str(sibling_counts[parent_path])
+        )
+        section_path_by_position[int(outline_item.get("position") or 0)] = section_path
+        section_leaf_by_path[section_path] = True
+        if parent_path:
+            section_leaf_by_path[parent_path] = False
+        section_stack.append((level, section_path))
+    fallback_section_paths: Dict[Tuple[str, ...], str] = {}
+    fallback_section_counter = max(
+        [int(path.split(".")[0]) for path in section_leaf_by_path] or [0]
+    )
     chunks_for_llm: List[str] = []
     chunks_meta: List[Dict[str, Any]] = []
     now_ts = int(time.time())
@@ -991,15 +1046,40 @@ def build_tree_chunks_easy_dataset(
             list(chunk.get("titlePathParts") or []),
             doc_title=doc_title,
         )
-        index_path = _build_index_path(title_parts, title_index_state)
-        parent_index_path = ".".join(index_path.split(".")[:-1]) if "." in index_path else ""
-        root_index_path = index_path.split(".")[0] if index_path else ""
+        section_position = int(chunk.get("_sectionPosition") or 0)
+        section_path = section_path_by_position.get(section_position)
+        if not section_path:
+            title_key = tuple(title_parts)
+            section_path = fallback_section_paths.get(title_key)
+            if not section_path:
+                fallback_section_counter += 1
+                section_path = str(fallback_section_counter)
+                fallback_section_paths[title_key] = section_path
+                section_leaf_by_path[section_path] = True
+        section_parent_path = (
+            ".".join(section_path.split(".")[:-1]) if "." in section_path else ""
+        )
+        section_level = len([part for part in section_path.split(".") if part.strip()])
+        section_is_leaf = bool(section_leaf_by_path.get(section_path, True))
+        section_chunk_index = max(
+            1,
+            int(chunk.get("sectionChunkIndex") or chunk.get("fragmentIndex") or 1),
+        )
+        fragment_index = max(1, int(chunk.get("fragmentIndex") or 1))
+        fragment_count = max(fragment_index, int(chunk.get("fragmentCount") or 1))
         title_path = title_sep.join(title_parts)
         ancestor_parts = title_parts[:-1] if len(title_parts) >= 2 else []
         prefix = title_sep.join(ancestor_parts[-max(0, int(prefix_max_depth)) :]).strip()
         text_for_embedding = f"{prefix}\n{chunk_text}".strip() if prefix else chunk_text
+        fragment_group_key = str(chunk.get("_fragmentGroupKey") or "").strip()
+        fragment_group_id = sha1(
+            f"{task_id}|||{doc_id}|||fragment|||{section_path}|||{fragment_group_key or emitted_chunk_index}".encode("utf-8")
+        ).hexdigest()
         chunk_id = sha1(
-            f"{task_id}|||{doc_id}|||{index_path}|||{title_path}|||{chunk_text}".encode("utf-8")
+            (
+                f"{task_id}|||{doc_id}|||chunk|||{section_path}|||"
+                f"{section_chunk_index}|||{fragment_index}|||{chunk_text}"
+            ).encode("utf-8")
         ).hexdigest()
         chunks_for_llm.append(text_for_embedding)
         chunks_meta.append(
@@ -1009,12 +1089,17 @@ def build_tree_chunks_easy_dataset(
                 "task_id": task_id,
                 "original_filename": str(original_filename or "").strip() or "input.txt",
                 "chunk_index": emitted_chunk_index,
-                "index_path": index_path,
+                "section_chunk_index": section_chunk_index,
+                "section_path": section_path,
+                "section_parent_path": section_parent_path,
+                "section_level": section_level,
+                "section_is_leaf": section_is_leaf,
                 "title_path": title_path,
-                "parent_index_path": parent_index_path,
-                "root_index_path": root_index_path,
-                "level": len([part for part in index_path.split(".") if part.strip()]),
-                "is_leaf": True,
+                "fragment_group_id": fragment_group_id,
+                "fragment_index": fragment_index,
+                "fragment_count": fragment_count,
+                "content_kind": "text",
+                "source_asset_ids": [],
                 "text": chunk_text,
                 "text_for_embedding": text_for_embedding,
                 "created_at": now_ts,

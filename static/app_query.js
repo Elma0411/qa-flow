@@ -184,7 +184,7 @@ function setChunkDebugSummary(text) {
   if (el) el.textContent = String(text || '');
 }
 
-function resetChunkDebugPanel(message = '请选择左侧 leaf chunk') {
+function resetChunkDebugPanel(message = '请选择左侧内容 chunk') {
   chunkDebugState.currentChunkId = '';
   chunkDebugState.payload = null;
   chunkDebugState.qaItems = [];
@@ -212,7 +212,7 @@ function renderChunkDebugSummary(chunk, qaItems) {
   const parts = [];
   const chunkIndex = chunk && chunk.chunk_index != null ? `Chunk #${chunk.chunk_index}` : 'Chunk';
   parts.push(chunkIndex);
-  if (chunk && chunk.index_path) parts.push(`路径 ${chunk.index_path}`);
+  if (chunk && chunk.section_path) parts.push(`章节 ${chunk.section_path}`);
   if (chunk && chunk.title_path) parts.push(String(chunk.title_path));
   parts.push(`QA ${qaItems.length} 条`);
   setChunkDebugSummary(parts.join(' ｜ '));
@@ -241,7 +241,7 @@ function renderChunkView(payload) {
   kpi.className = 'chunk-debug-kpi-grid';
   [
     ['Chunk', chunk.chunk_index != null ? `#${chunk.chunk_index}` : '—'],
-    ['层级', chunk.level != null ? String(chunk.level) : '—'],
+    ['章节层级', chunk.section_level != null ? String(chunk.section_level) : '—'],
     ['QA 数', String(qaItems.length)],
     ['过滤后', String(qaItems.filter((it) => !!it.filtered).length)],
   ].forEach(([label, value]) => {
@@ -265,10 +265,14 @@ function renderChunkView(payload) {
       ['doc_id', chunk.doc_id],
       ['task_id', chunk.task_id],
       ['文件', chunk.original_filename],
-      ['index_path', chunk.index_path],
+      ['section_path', chunk.section_path],
       ['title_path', chunk.title_path],
-      ['parent_index_path', chunk.parent_index_path],
-      ['root_index_path', chunk.root_index_path],
+      ['section_parent_path', chunk.section_parent_path],
+      ['section_chunk_index', chunk.section_chunk_index],
+      ['section_is_leaf', chunk.section_is_leaf],
+      ['fragment_group_id', chunk.fragment_group_id],
+      ['fragment_index/count', `${chunk.fragment_index || 1}/${chunk.fragment_count || 1}`],
+      ['content_kind', chunk.content_kind],
       ['创建时间', fmtDebugTs(chunk.created_at)],
     ]),
   );
@@ -405,7 +409,7 @@ function renderTraceSection(title, traces) {
     meta.className = 'chunk-debug-trace-meta';
     meta.textContent = [
       trace.chunk_id ? `id ${trace.chunk_id}` : '',
-      trace.parent_index_path ? `父路径 ${trace.parent_index_path}` : '',
+      trace.section_parent_path ? `父章节 ${trace.section_parent_path}` : '',
       trace.final_rank ? `最终排序 ${trace.final_rank}` : '',
       trace.dense_rank ? `向量排序 ${trace.dense_rank}` : '',
       trace.lexical_rank ? `词项排序 ${trace.lexical_rank}` : '',
@@ -484,7 +488,7 @@ function createEvidenceCard(trace) {
   meta.textContent = [
     trace.chunk_id ? `id ${trace.chunk_id}` : '',
     trace.title_path ? `标题 ${trace.title_path}` : '',
-    trace.parent_index_path ? `父路径 ${trace.parent_index_path}` : '',
+    trace.section_parent_path ? `父章节 ${trace.section_parent_path}` : '',
     trace.retrieval_rank ? `排序 ${trace.retrieval_rank}` : '',
     trace.dense_score !== undefined && trace.dense_score !== null ? `向量 ${Number(trace.dense_score).toFixed(4)}` : '',
     trace.lexical_score !== undefined && trace.lexical_score !== null ? `词项 ${Number(trace.lexical_score).toFixed(4)}` : '',
@@ -620,35 +624,26 @@ function buildQaDetailCard(item, options = {}) {
   if (evidenceSection) {
     card.appendChild(evidenceSection);
   }
-  if (retrievalTrace.query || retrievalTrace.retrieval_query) {
-    const weightSummary = [
-      retrievalTrace.hybrid_weight_dense !== undefined && retrievalTrace.hybrid_weight_dense !== null ? `向量 ${retrievalTrace.hybrid_weight_dense}` : '',
-      retrievalTrace.hybrid_weight_lexical !== undefined && retrievalTrace.hybrid_weight_lexical !== null ? `词项 ${retrievalTrace.hybrid_weight_lexical}` : '',
-      retrievalTrace.structure_weight !== undefined && retrievalTrace.structure_weight !== null ? `结构 ${retrievalTrace.structure_weight}` : '',
-    ].filter(Boolean).join(' ｜ ');
+  if (retrievalTrace.query) {
     card.appendChild(
       createKvGrid([
         ['原始问题', retrievalTrace.query],
-        ['检索查询', retrievalTrace.retrieval_query],
-        ['必含术语', Array.isArray(retrievalTrace.must_have_terms) ? retrievalTrace.must_have_terms.join('、') : retrievalTrace.must_have_terms],
-        ['模型建议范围', translateAnswerScope(retrievalTrace.answer_scope_hint || item.answer_scope_hint)],
-        ['系统最终范围', translateAnswerScope(retrievalTrace.effective_answer_scope || retrievalTrace.answer_scope || item.effective_answer_scope || item.answer_scope)],
-        ['前端范围策略', translateAnswerScope(retrievalTrace.answer_scope_policy)],
-        ['范围裁决原因', formatAnswerScopeDecision(retrievalTrace.answer_scope_decision || item.answer_scope_decision)],
-        ['检索模式', translateRetrievalMode(retrievalTrace.retrieval_mode)],
-        ['evidence 数量', retrievalTrace.semantic_top_k],
-        ['轻量重排候选数', retrievalTrace.rerank_top_n],
-        ['权重', weightSummary],
-        ['最大上下文字符', retrievalTrace.max_unit_chars],
+        ['检索链路', retrievalTrace.pipeline],
+        ['最终证据窗口', retrievalTrace.final_evidence_k],
+        ['证据 token 预算', retrievalTrace.evidence_token_budget],
+        ['估算证据 tokens', retrievalTrace.evidence_tokens_estimated],
       ]),
     );
   }
 
-  if (safeArray(retrievalTrace.selected_evidence).length) {
-    card.appendChild(renderTraceSection('最终选中证据', retrievalTrace.selected_evidence));
+  if (safeArray(retrievalTrace.selected_windows).length) {
+    card.appendChild(renderTraceSection('最终选中窗口', retrievalTrace.selected_windows));
   }
-  if (safeArray(retrievalTrace.raw_semantic_hits).length) {
-    card.appendChild(renderTraceSection('语义召回候选', retrievalTrace.raw_semantic_hits));
+  if (safeArray(retrievalTrace.atomic_rerank).length) {
+    card.appendChild(renderTraceSection('原子块 BGE 重排', retrievalTrace.atomic_rerank));
+  }
+  if (safeArray(retrievalTrace.rrf_hits).length) {
+    card.appendChild(renderTraceSection('BM25 + dense RRF 候选', retrievalTrace.rrf_hits));
   }
 
   if (item.evaluation || item.unsupervised_evaluation) {
@@ -715,7 +710,7 @@ function renderChunkTree(tree) {
     const children = Array.isArray(node.children) ? node.children : [];
     const chunks = Array.isArray(node.chunks) ? node.chunks : [];
     const title = String(node.title || '').trim() || 'Untitled';
-    const indexPath = String(node.index_path || '').trim();
+    const indexPath = String(node.section_path || '').trim();
 
     const wrapper = document.createElement('div');
 

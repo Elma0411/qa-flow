@@ -479,33 +479,13 @@ async def batch_upload_integrated_document_pipeline(
         None,
         description="每个 chunk 生成最大尝试次数（含首次，默认 2=最多重试 1 次）",
     ),
-    retrieval_mode: str = Form(
-        "hybrid",
-        description="检索排序模式：hybrid=向量+词项+结构加权，semantic=仅向量语义排序",
-    ),
-    semantic_top_k: Optional[int] = Form(
+    final_evidence_k: Optional[int] = Form(
         None,
-        description="每个候选问题选入答案生成上下文的 evidence chunk 数（默认 3）",
+        description="最终保留的证据窗口数（默认 5）",
     ),
-    rerank_top_n: Optional[int] = Form(
+    evidence_token_budget: Optional[int] = Form(
         None,
-        description="先参与轻量重排的候选 chunk 数（默认 12）",
-    ),
-    hybrid_weight_dense: Optional[float] = Form(
-        None,
-        description="hybrid 检索中 dense 向量权重（默认 0.68）",
-    ),
-    hybrid_weight_lexical: Optional[float] = Form(
-        None,
-        description="hybrid 检索中词项匹配权重（默认 0.24）",
-    ),
-    retrieval_structure_weight: Optional[float] = Form(
-        None,
-        description="同章节/相邻 chunk/title_path 结构加权（默认 0.08）",
-    ),
-    answer_scope_policy: str = Form(
-        "source_primary",
-        description="答案证据范围：source_primary / same_section / cross_chunk",
+        description="答案证据窗口的近似 token 总预算（默认 4000）",
     ),
     llm_max_concurrent_requests: Optional[int] = Form(
         None,
@@ -670,17 +650,11 @@ async def batch_upload_integrated_document_pipeline(
         eval_concurrency = eval_max_concurrency or 8
         chunk_concurrency = chunk_max_concurrency or 8
         chunk_attempts = max(1, int(chunk_max_attempts or 2))
-        retrieval_mode = str(retrieval_mode or "hybrid").strip().lower()
-        if retrieval_mode not in {"semantic", "hybrid"}:
-            retrieval_mode = "hybrid"
-        semantic_top_k = max(0, int(semantic_top_k or 3))
-        rerank_top_n = max(1, int(rerank_top_n or 12))
-        hybrid_weight_dense = max(0.0, min(1.0, float(hybrid_weight_dense if hybrid_weight_dense is not None else 0.68)))
-        hybrid_weight_lexical = max(0.0, min(1.0, float(hybrid_weight_lexical if hybrid_weight_lexical is not None else 0.24)))
-        retrieval_structure_weight = max(0.0, min(0.5, float(retrieval_structure_weight if retrieval_structure_weight is not None else 0.08)))
-        answer_scope_policy = str(answer_scope_policy or "source_primary").strip().lower()
-        if answer_scope_policy not in {"source_primary", "same_section", "cross_chunk"}:
-            answer_scope_policy = "source_primary"
+        final_evidence_k = max(0, int(5 if final_evidence_k is None else final_evidence_k))
+        evidence_token_budget = max(
+            256,
+            int(4000 if evidence_token_budget is None else evidence_token_budget),
+        )
         llm_request_concurrency = (
             max(1, int(llm_max_concurrent_requests))
             if llm_max_concurrent_requests is not None
@@ -756,13 +730,9 @@ async def batch_upload_integrated_document_pipeline(
             "chunk_concurrency": chunk_concurrency,
             "chunk_max_attempts": chunk_attempts,
             "retrieval_config": {
-                "retrieval_mode": retrieval_mode,
-                "semantic_top_k": semantic_top_k,
-                "rerank_top_n": rerank_top_n,
-                "hybrid_weight_dense": hybrid_weight_dense,
-                "hybrid_weight_lexical": hybrid_weight_lexical,
-                "retrieval_structure_weight": retrieval_structure_weight,
-                "answer_scope_policy": answer_scope_policy,
+                "pipeline": "bm25_dense_rrf_bge_structure_v1",
+                "final_evidence_k": final_evidence_k,
+                "evidence_token_budget": evidence_token_budget,
             },
             "llm_max_concurrent_requests": llm_request_concurrency,
             "augment_concurrency": augment_concurrency,
@@ -834,13 +804,8 @@ async def batch_upload_integrated_document_pipeline(
             "max_concurrency": concurrency_limit,
             "chunk_max_concurrency": chunk_concurrency,
             "chunk_max_attempts": chunk_attempts,
-            "retrieval_mode": retrieval_mode,
-            "semantic_top_k": semantic_top_k,
-            "rerank_top_n": rerank_top_n,
-            "hybrid_weight_dense": hybrid_weight_dense,
-            "hybrid_weight_lexical": hybrid_weight_lexical,
-            "retrieval_structure_weight": retrieval_structure_weight,
-            "answer_scope_policy": answer_scope_policy,
+            "final_evidence_k": final_evidence_k,
+            "evidence_token_budget": evidence_token_budget,
             "augment_max_concurrency": augment_concurrency,
             "eval_max_concurrency": eval_concurrency,
             "question_type_mode": question_type_mode,

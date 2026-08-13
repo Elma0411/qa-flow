@@ -212,31 +212,9 @@ def _normalize_candidate_question(
         difficulty_score = None
     if difficulty_score is not None:
         difficulty_score = max(0.0, min(1.0, difficulty_score))
-    retrieval_query = str(item.get("retrieval_query") or "").strip()
-    raw_terms = item.get("must_have_terms")
-    if isinstance(raw_terms, list):
-        must_have_terms = [str(term).strip() for term in raw_terms if str(term).strip()]
-    else:
-        must_have_terms = [
-            term.strip()
-            for term in str(raw_terms or "").replace("，", ",").split(",")
-            if term.strip()
-        ]
-    answer_scope_hint = str(
-        item.get("answer_scope_hint") or item.get("answer_scope") or "source_primary"
-    ).strip().lower()
-    if answer_scope_hint not in {"source_primary", "same_section", "cross_chunk"}:
-        answer_scope_hint = "source_primary"
-
     return (
         {
             "question": question,
-            "retrieval_query": retrieval_query,
-            "must_have_terms": must_have_terms[:8],
-            "answer_scope_hint": answer_scope_hint,
-            # Backward-compatible alias. Downstream code replaces answer_scope
-            # with the system-approved effective scope before answer generation.
-            "answer_scope": answer_scope_hint,
             "question_type": question_type,
             "question_type_reason": str(item.get("question_type_reason") or "").strip(),
             "difficulty_level": difficulty_level,
@@ -444,18 +422,9 @@ def call_evidence_answer_llm(
     )
     prompt_template_key = resolve_category_prompt_template_key(prompt_template_category)
     candidate_question = str(candidate.get("question") or "").strip()
-    retrieval_query = str(candidate.get("retrieval_query") or "").strip()
-    must_have_terms = candidate.get("must_have_terms") if isinstance(candidate.get("must_have_terms"), list) else []
-    answer_scope = str(candidate.get("answer_scope") or "source_primary").strip().lower()
-    if answer_scope not in {"source_primary", "same_section", "cross_chunk"}:
-        answer_scope = "source_primary"
-    answer_scope_hint = str(candidate.get("answer_scope_hint") or answer_scope).strip().lower()
-    if answer_scope_hint not in {"source_primary", "same_section", "cross_chunk"}:
-        answer_scope_hint = "source_primary"
     question_type = str(candidate.get("question_type") or "简答题").strip() or "简答题"
     user_content = (
         f"candidate_question: {candidate_question}\n"
-        f"answer_scope: {answer_scope}\n"
         f"question_type: {question_type}\n"
         "\n"
         "可读证据材料（仅使用这些正文）：\n"
@@ -537,12 +506,6 @@ def call_evidence_answer_llm(
             language_code=language_code,
         )
         normalized_item["question"] = candidate_question
-        normalized_item["retrieval_query"] = retrieval_query
-        normalized_item["must_have_terms"] = must_have_terms
-        normalized_item["answer_scope_hint"] = answer_scope_hint
-        normalized_item["answer_scope"] = answer_scope
-        normalized_item["effective_answer_scope"] = answer_scope
-        normalized_item["answer_scope_decision"] = candidate.get("answer_scope_decision") or {}
         normalized_item["source_chunk_id"] = source_chunk.get("chunk_id")
         normalized_item["source_chunk_index"] = source_chunk.get("chunk_index")
         normalized_item["source_chunk_title_path"] = source_chunk.get("title_path")

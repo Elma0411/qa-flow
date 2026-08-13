@@ -372,8 +372,8 @@ function renderChunkDetail(chunk) {
       ? { text: `file: ${truncate(String(chunk.original_filename), 24)}`, title: String(chunk.original_filename), className: 'file' }
       : null,
     chunk?.chunk_index != null ? { text: `idx: ${chunk.chunk_index}`, className: 'theme' } : null,
-    chunk?.level != null ? { text: `level: ${chunk.level}`, className: 'theme' } : null,
-    chunk?.is_leaf != null ? { text: `leaf: ${chunk.is_leaf ? 'true' : 'false'}`, className: 'theme' } : null,
+    chunk?.section_level != null ? { text: `section level: ${chunk.section_level}`, className: 'theme' } : null,
+    chunk?.section_is_leaf != null ? { text: `section leaf: ${chunk.section_is_leaf ? 'true' : 'false'}`, className: 'theme' } : null,
   ]);
 
   if (titleParts.length) {
@@ -397,9 +397,11 @@ function renderChunkDetail(chunk) {
   }
 
   renderKv(chunkPanel, [
-    chunk?.index_path ? { k: 'index_path', v: String(chunk.index_path) } : null,
-    chunk?.parent_index_path ? { k: 'parent_index_path', v: String(chunk.parent_index_path) } : null,
-    chunk?.root_index_path ? { k: 'root_index_path', v: String(chunk.root_index_path) } : null,
+    chunk?.section_path ? { k: 'section_path', v: String(chunk.section_path) } : null,
+    chunk?.section_parent_path ? { k: 'section_parent_path', v: String(chunk.section_parent_path) } : null,
+    chunk?.section_chunk_index != null ? { k: 'section_chunk_index', v: String(chunk.section_chunk_index) } : null,
+    chunk?.fragment_group_id ? { k: 'fragment_group_id', v: String(chunk.fragment_group_id) } : null,
+    chunk?.content_kind ? { k: 'content_kind', v: String(chunk.content_kind) } : null,
     titlePath ? { k: 'title_path', v: titlePath } : null,
     chunk?.created_at != null ? { k: 'created_at', v: String(chunk.created_at) } : null,
   ].filter(Boolean));

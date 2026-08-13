@@ -117,6 +117,9 @@ POST /batch-upload-complete-pipeline-with-evaluation
 - `score_threshold`：过滤阈值，默认 `0.7`。
 - `enable_vector_storage`：是否写入问答向量库。
 - `enable_chunk_storage`：是否写入文档块树。
+- `final_evidence_k`：最终保留的检索证据窗口数，默认 `5`；设为 `0`
+  时答案只使用当前 generation unit 的主材料。
+- `evidence_token_budget`：检索证据窗口的近似 token 总预算，默认 `4000`。
 - `chunking_split_type`：切分方式，支持 `markdown`、`text`、`token`、
   `recursive`、`code`、`custom`。
 - `chunking_prefix_max_depth`：标题路径最多向上保留的层数。
@@ -133,6 +136,8 @@ curl -X POST "http://localhost:12000/batch-upload-complete-pipeline-with-evaluat
   -F "qa_detail_mode=auto" \
   -F "include_unsupervised_evaluation=true" \
   -F "evaluation_method=unsupervised_f1" \
+  -F "final_evidence_k=5" \
+  -F "evidence_token_budget=4000" \
   -F "enable_vector_storage=true" \
   -F "enable_chunk_storage=true"
 ```
@@ -166,14 +171,41 @@ Milvus 查询结果，而不是继续依赖已过期的 JSON 或 CSV 文件。
 
 ## 文档块查询
 
-文档块树和块级溯源使用以下接口：
+切块元数据把“章节节点”“内容 chunk”“物理 fragment”分开：内部章节可以有
+自己的正文，空父章节不会制造重复正文，长章节的 `Part N/M` 只记录为 fragment，
+不会成为假章节。检索固定使用 BM25 + BGE-M3 dense、RRF、本地
+`bge-reranker-v2-m3` 原子块重排、结构窗口补全和窗口二次重排；模型缺失会明确
+报错，不会退回旧手工排序。
+
+默认模型目录为 `${APP_MODELS_DIR}/bge-reranker-v2-m3`；Docker 正式与调试
+入口都可通过 `QA_RERANKER_MODEL_PATH`、`QA_RERANKER_DEVICE`、
+`QA_RERANKER_BATCH_SIZE`、`QA_RERANKER_MAX_LENGTH` 覆盖。
+
+文档块 v2 存在 `doc_content_chunks_v2` 集合，旧 `doc_tree_chunks` 保留但不作为
+查询回退。块级溯源使用以下接口：
 
 - `GET /doc-chunks/by-task/{task_id}`
 - `GET /doc-chunks/tree`
 - `GET /doc-chunks/{chunk_id}`
 - `GET /doc-chunks/{chunk_id}/qa`
+- `POST /doc-chunks/rebuild`（提交原始正文、`task_id`、文件名和切块参数，
+  服务重新切块并安全替换该任务下对应文件的 v2 索引）
 
 这些接口用于查看切块结果、树状结构、单块详情，以及某个块关联的问答。
+
+重建请求示例：
+
+```bash
+curl -X POST "http://localhost:12000/doc-chunks/rebuild" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "task_id": "历史任务ID",
+    "original_filename": "manual.md",
+    "text": "# 使用说明\n\n## 材料\n\n提交身份证明。",
+    "chunk_size": 600,
+    "split_type": "markdown"
+  }'
+```
 
 ## 管理接口
 

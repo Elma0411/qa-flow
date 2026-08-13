@@ -63,6 +63,28 @@ The structured metadata aligned with `pre_split_chunks`, used for generation,
 retrieval, storage, source attribution, and admin/search views.
 _Avoid_: Debug chunk info, optional display-only data
 
+**Section Node**:
+A structural heading location identified by `section_path`. It may own body
+content and child sections at the same time; an empty section is still a real
+structural node.
+_Avoid_: Treating every content chunk as a leaf section
+
+**Content Chunk**:
+An independently addressable body record with a stable `chunk_id` and
+`section_chunk_index`, attached to a section but not itself a tree node.
+_Avoid_: Encoding the chunk position into `section_path`
+
+**Physical Fragment**:
+One storage-sized piece of a content block. Members share
+`fragment_group_id` and are restored together before evidence use.
+_Avoid_: `Part N/M` as a heading level
+
+**Evidence Window**:
+A transient, query-specific grouping of real content chunks produced after
+atomic reranking. It has no persisted fake chunk ID; attribution remains on
+the member `chunk_id` values.
+_Avoid_: Persisted aggregate parent text
+
 **Shared Boundary**:
 A module, field set, endpoint, runtime variable, or deployment asset that both
 `dw` and `hao` work depends on.

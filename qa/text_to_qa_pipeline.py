@@ -20,7 +20,6 @@ from qa.pipeline_runtime import (
     run_one_step_unit_worker,
 )
 from qa.generation import QADocumentEvidenceIndex, build_document_chunks, plan_generation_units
-from qa.chunking import split_text
 
 DEFAULT_SOURCE_BY_LANGUAGE = {"zh": "文本内容", "en": "text content"}
 GENERIC_SOURCE_LABELS_BY_LANGUAGE = {
@@ -469,7 +468,7 @@ def process_text_to_qa_one_step(
                     "qa_mode": payload.get("qa_mode"),
                     "anchor_chunk_index": payload.get("anchor_chunk_index") or payload.get("chunk_index"),
                     "source_chunk_indexes": payload.get("source_chunk_indexes") or [],
-                    "parent_index_path": payload.get("parent_index_path"),
+                    "section_path": payload.get("section_path"),
                     "quality_child_coverage": payload.get("quality_child_coverage"),
                     "attempt_used": payload.get("attempt_used"),
                     "candidate_questions": payload.get("candidate_questions", 0),
@@ -604,4 +603,4 @@ def process_text_to_qa_one_step(
     return results
 
 
-__all__ = ["process_text_to_qa_one_step", "split_text"]
+__all__ = ["process_text_to_qa_one_step"]

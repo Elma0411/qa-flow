@@ -48,12 +48,10 @@ def _candidate_detail_mode_section(*, qa_detail_mode: str, language_code: str) -
 - Write one standalone question around one coherent reader need. Never join independent questions.
 - Related passages may support one answer only when they describe the same scenario or rule group.
 - Summary means the answer may organize related facts; it does not mean asking several questions at once.
-- Use "same_section" or "cross_chunk" only when the answer genuinely needs those passages.
 """
         return """## Detail mode: point
 - Write one natural, standalone question about one reader need. It may ask about a rule, amount, step, condition, responsibility, or prohibition.
 - Do not slice a source sentence into its first half as a question and its last half as an answer.
-- Use "source_primary" unless nearby context is genuinely needed to resolve a reference.
 """
 
     if mode == "summary":
@@ -61,12 +59,10 @@ def _candidate_detail_mode_section(*, qa_detail_mode: str, language_code: str) -
 - 每个 item 只写一个围绕同一读者需求的完整问句，禁止拼接多个独立问题。
 - 相关段落只有描述同一场景或同一规则组时，才能共同支撑一个答案。
 - “总结”是答案可以组织多个相关事实，不是一次问好几个问题。
-- 只有答案确实需要时才使用 "same_section" 或 "cross_chunk"。
 """
     return """## 粒度模式：单点
 - 每个 item 只写一个自然、独立的用户信息需求；可以问规则、金额、步骤、条件、责任或禁止事项。
 - 不要把原文一句话的前半句拆成问题、后半句拆成答案。
-- 除非确实需要补足局部指代，answer_scope_hint 使用 "source_primary"。
 """
 
 
@@ -158,17 +154,12 @@ Generate at most {max_candidates} training-data questions from the supplied sour
 
 {category_section}
 
-## Planning fields
-- Planning fields are for retrieval only. They must not make `question` more formal, longer, or source-shaped.
-- `retrieval_query`: concise evidence query containing the precise subject, action, and full condition.
-- `must_have_terms`: 1-6 precise entity/action/condition terms for evidence matching.
-- `answer_scope_hint`: `source_primary` by default; use `same_section` or `cross_chunk` only when the answer truly needs that evidence.
 - Follow `question_type_plan` when supported; otherwise skip rather than inventing a weak item.
 - question_type_plan: {plan_json}
 - Few-shot examples are style-only and must not copy facts: {examples_json}
 
 ## Required JSON fields
-`question`, `retrieval_query`, `must_have_terms`, `answer_scope_hint`, `question_type`, `question_type_reason`, `difficulty_level`, `difficulty_score`.
+`question`, `question_type`, `question_type_reason`, `difficulty_level`, `difficulty_score`.
 
 Output ONLY raw JSON: {{"items":[...]}}.
 """
@@ -196,17 +187,12 @@ Output ONLY raw JSON: {{"items":[...]}}.
 
 {category_section}
 
-## 检索规划字段
-- 检索规划字段只服务检索，不能反过来让 `question` 变得正式、冗长或像原文。
-- `retrieval_query`：用于寻找证据的短查询，保留精确对象、动作和完整条件。
-- `must_have_terms`：1 到 6 个用于证据匹配的精确实体、动作或条件术语。
-- `answer_scope_hint`：默认 `source_primary`；只有答案确实需要时才填 `same_section` 或 `cross_chunk`。
 - 在有证据支持时尽量遵循 question_type_plan；不能支持就跳过，不要硬凑。
 - question_type_plan：{plan_json}
 - few-shot 示例只学习风格，不得复用事实：{examples_json}
 
 ## 每条 JSON 必填字段
-`question`、`retrieval_query`、`must_have_terms`、`answer_scope_hint`、`question_type`、`question_type_reason`、`difficulty_level`、`difficulty_score`。
+`question`、`question_type`、`question_type_reason`、`difficulty_level`、`difficulty_score`。
 
 只输出纯 JSON：{{"items":[...]}}。
 """
@@ -245,22 +231,17 @@ def build_evidence_answer_system_prompt(
 
 ## Input
 - candidate_question
-- answer_scope
 - question_type
-- readable evidence material with 【主来源材料】, optional 【同章节上下文】, and optional 【相关补充】
+- readable evidence material with 【主来源材料】 and optional 【检索证据】
 - allowed `evidence_ref` labels; these are the only evidence identifiers you may return
 
 ## Workflow
 1. Generate the best evidence-grounded answer for candidate_question. The candidate has already been selected; do not re-filter or reject it.
-2. Apply evidence priority strictly:
-   - First: 【主来源材料】
-   - Second: 【同章节上下文】 only when the primary material has unresolved reference, omitted subject, definition, or direct local dependency
-   - Third: 【相关补充】 only when answer_scope is "cross_chunk" and the retrieved evidence directly supports the missing fact
-3. If answer_scope is "source_primary", rely on 【主来源材料】. If a requested detail is not specified, state that limitation in the answer instead of returning an empty item.
-4. If answer_scope is "same_section" or "cross_chunk", you may use selected evidence, but source_fact_text must still include a direct snippet from 【主来源材料】.
+2. Start with 【主来源材料】 and use 【检索证据】 only when it directly supports a fact needed by the question.
+3. If a requested detail is not specified in the supplied evidence, state that limitation in the answer instead of returning an empty item.
 5. Produce a direct, natural answer without saying "according to the text/reference/document".
 6. Fill evidence_usage with `evidence_ref`, a short snippet, and usage for every material section that supports the answer. Do not invent or output chunk IDs.
-7. Treat labels such as `主材料-1` and `同章节补充-1` as bookkeeping only; never copy them into question, answer, answer_explanation, or source_fact_text.
+7. Treat labels such as `主材料-1` and `检索证据-1` as bookkeeping only; never copy them into question, answer, answer_explanation, or source_fact_text.
 
 {detail_mode_section}
 
@@ -271,7 +252,7 @@ def build_evidence_answer_system_prompt(
 ## Constraints
 1. Keep question exactly the same as candidate_question.
 2. The topic must remain centered on 【主来源材料】.
-3. source_fact_text must be copied from the readable evidence material. It must contain a direct snippet from 【主来源材料】. Add supplemental snippets only when answer_scope permits them and they are necessary.
+3. source_fact_text must be copied from the readable evidence material. It must contain a direct snippet from 【主来源材料】. Add retrieved snippets only when they are necessary.
 4. qa_detail_mode=point: source_fact_text must be one atomic, standalone fact.
 5. qa_detail_mode=summary: source_fact_text may combine related snippets, but the first and most important supporting snippet must come from 【主来源材料】, and every extra snippet must be necessary.
 6. answer_explanation must be 1-2 complete, reader-facing sentences explaining why the answer applies to the question's scenario.
@@ -318,22 +299,17 @@ qa_detail_mode={qa_detail_mode}
 
 ## 输入内容
 - candidate_question
-- answer_scope
 - question_type
-- 可读证据材料，其中包含【主来源材料】、可能存在的【同章节上下文】和【相关补充】
+- 可读证据材料，其中包含【主来源材料】和可选的【检索证据】
 - 可选的 `evidence_ref` 标签；这是 evidence_usage 中唯一允许使用的证据标识
 
 ## 工作流程
 1. 为 candidate_question 生成当前证据能够支持的最佳答案，不要再次判断是否保留该题。
-2. 严格按以下证据优先级定位答案依据：
-   - 第一优先：【主来源材料】
-   - 第二优先：【同章节上下文】；仅在主来源材料存在定义缺失、主语省略、局部指代、前后条款直接依赖时使用
-   - 第三优先：【相关补充】；仅当 answer_scope 为 "cross_chunk" 且检索证据直接支撑缺失事实时使用
-3. 如果 answer_scope 为 "source_primary"，以【主来源材料】为准；若问题要求的某个细节没有说明，应在答案中明确说明未给出，而不是返回空列表。
-4. 如果 answer_scope 为 "same_section" 或 "cross_chunk"，可以使用选中的检索证据，但 source_fact_text 仍必须包含【主来源材料】直接片段。
+2. 先使用【主来源材料】，只有【检索证据】直接支撑问题所需事实时才补充使用。
+3. 如果提供的证据没有说明问题要求的某个细节，应在答案中明确说明未给出，而不是返回空列表。
 5. 生成直接、自然的答案，不要写“根据原文/根据通知/文中提到”。
 6. 填写 evidence_usage，列出每段真正支撑答案的 `evidence_ref`、短片段和用途；不得编造或输出 chunk_id。
-7. `主材料-1`、`同章节补充-1` 等标签仅用于证据追踪，不得写进 question、answer、answer_explanation 或 source_fact_text。
+7. `主材料-1`、`检索证据-1` 等标签仅用于证据追踪，不得写进 question、answer、answer_explanation 或 source_fact_text。
 
 {detail_mode_section}
 
@@ -344,7 +320,7 @@ qa_detail_mode={qa_detail_mode}
 ## 约束
 1. question 必须与 candidate_question 完全一致。
 2. 问题主题必须围绕【主来源材料】。
-3. source_fact_text 必须摘自可读证据材料，并且必须包含来自【主来源材料】的直接证据；只有 answer_scope 允许且严格必要时才补充检索上下文片段。
+3. source_fact_text 必须摘自可读证据材料，并且必须包含来自【主来源材料】的直接证据；只有严格必要时才补充检索证据片段。
 4. qa_detail_mode=point 时，source_fact_text 必须是单点、可独立成立的事实。
 5. qa_detail_mode=summary 时，source_fact_text 可以合并相关片段，但第一条、最核心的证据必须来自【主来源材料】，其余片段必须确实参与了答案成立。
 6. answer_explanation 必须是 1 到 2 句完整、面向读者的说明，解释答案为什么适用于问题场景。

@@ -129,6 +129,66 @@ def _chunk_context_around_marker(text: str, marker: str) -> Tuple[str, str]:
     return before, after
 
 
+def _apply_image_replacements_to_chunks(
+    chunks_meta: List[Dict[str, Any]],
+    replacements: Dict[str, str],
+    placement_details: List[Dict[str, Any]],
+) -> List[str]:
+    """Restore image descriptions and retain only assets owned by each chunk."""
+
+    def visible_body_without_markers(text: str) -> str:
+        restored = restore_markers_in_text(text, {}, remove_missing=True)
+        visible_lines = [
+            line
+            for line in restored.splitlines()
+            if not line.lstrip().startswith("#")
+        ]
+        return "\n".join(visible_lines).strip()
+
+    details_by_image: Dict[str, List[Dict[str, Any]]] = {}
+    for detail in placement_details or []:
+        if not isinstance(detail, dict):
+            continue
+        image_id = str(detail.get("image_id") or "").strip()
+        if image_id:
+            details_by_image.setdefault(image_id, []).append(dict(detail))
+
+    final_chunks: List[str] = []
+    for meta in chunks_meta or []:
+        original_text = str(meta.get("text") or "")
+        original_embedding_text = str(meta.get("text_for_embedding") or "")
+        source_asset_ids: List[str] = []
+        seen: set[str] = set()
+        for value in extract_marker_ids(original_text) + extract_marker_ids(original_embedding_text):
+            image_id = str(value or "").strip()
+            if image_id and image_id not in seen:
+                seen.add(image_id)
+                source_asset_ids.append(image_id)
+
+        accepted_ids = [image_id for image_id in source_asset_ids if image_id in replacements]
+        local_details = [
+            detail
+            for image_id in source_asset_ids
+            for detail in details_by_image.get(image_id, [])
+        ]
+        restored_text = restore_markers_in_text(original_text, replacements)
+        restored_embedding_text = restore_markers_in_text(original_embedding_text, replacements)
+        meta["text"] = restored_text
+        meta["text_for_embedding"] = restored_embedding_text
+        meta["source_asset_ids"] = source_asset_ids
+        if accepted_ids:
+            visible_without_descriptions = visible_body_without_markers(original_text)
+            meta["content_kind"] = "mixed" if visible_without_descriptions else "image_description"
+        else:
+            meta["content_kind"] = "text"
+        meta["image_replacements"] = {
+            "accepted_ids": accepted_ids,
+            "placement_details": local_details,
+        }
+        final_chunks.append(restored_embedding_text or restored_text)
+    return final_chunks
+
+
 def _format_image_side_context(label: str, text: str) -> str:
     value = str(text or "").strip() or "（无）"
     return f"{label}：\n{value}"
@@ -687,15 +747,11 @@ class IntegratedPipelineRunner:
                 extra={"accepted_images": 0, "checked_images": 0},
             )
 
-        final_chunks: List[str] = []
-        for meta in chunks_meta:
-            meta["text"] = restore_markers_in_text(str(meta.get("text") or ""), replacements)
-            meta["text_for_embedding"] = restore_markers_in_text(str(meta.get("text_for_embedding") or ""), replacements)
-            meta["image_replacements"] = {
-                "accepted_ids": sorted(replacements),
-                "placement_details": placement_details,
-            }
-            final_chunks.append(str(meta.get("text_for_embedding") or meta.get("text") or ""))
+        final_chunks = _apply_image_replacements_to_chunks(
+            chunks_meta,
+            replacements,
+            placement_details,
+        )
 
         final_markdown = "\n\n".join(str(meta.get("text") or "") for meta in chunks_meta if str(meta.get("text") or "").strip())
         ocr_raw_entry = ocr_result.to_dict()

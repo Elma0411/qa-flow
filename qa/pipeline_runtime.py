@@ -3,18 +3,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from qa.generation import (
-    DEFAULT_HYBRID_WEIGHT_DENSE,
-    DEFAULT_HYBRID_WEIGHT_LEXICAL,
+    DEFAULT_EVIDENCE_TOKEN_BUDGET,
+    DEFAULT_FINAL_EVIDENCE_K,
     DEFAULT_MAX_UNIT_CHARS,
-    DEFAULT_RETRIEVAL_MODE,
-    DEFAULT_RERANK_TOP_N,
-    DEFAULT_SEMANTIC_TOP_K,
-    DEFAULT_STRUCTURE_WEIGHT,
     GenerationUnit,
     QADocumentEvidenceIndex,
     build_question_type_plan,
@@ -24,7 +21,6 @@ from qa.generation import (
     normalize_question_type_weights,
     normalize_question_types,
 )
-from qa.chunking import split_text
 
 
 @dataclass
@@ -52,14 +48,9 @@ class OneStepPipelineRuntime:
     pre_split_chunks: Optional[List[str]]
     pre_split_chunk_meta: Optional[List[Dict[str, Any]]]
     candidate_multiplier: int
-    semantic_top_k: int
+    final_evidence_k: int
+    evidence_token_budget: int
     max_unit_chars: int
-    retrieval_mode: str
-    hybrid_weight_dense: float
-    hybrid_weight_lexical: float
-    retrieval_structure_weight: float
-    rerank_top_n: int
-    answer_scope_policy: str
 
 
 def parse_one_step_pipeline_runtime(config: Dict[str, Any]) -> OneStepPipelineRuntime:
@@ -155,30 +146,25 @@ def parse_one_step_pipeline_runtime(config: Dict[str, Any]) -> OneStepPipelineRu
     # requested number avoids incentivizing the model to mine every clause in a
     # source unit merely to fill an over-sampled candidate batch.
     candidate_multiplier = max(1, int(config.get("candidate_multiplier") or 1))
-    semantic_top_k = max(0, int(config.get("semantic_top_k") or DEFAULT_SEMANTIC_TOP_K))
+    final_evidence_k_value = config.get("final_evidence_k")
+    final_evidence_k = max(
+        0,
+        int(
+            DEFAULT_FINAL_EVIDENCE_K
+            if final_evidence_k_value is None
+            else final_evidence_k_value
+        ),
+    )
+    evidence_token_budget_value = config.get("evidence_token_budget")
+    evidence_token_budget = max(
+        256,
+        int(
+            DEFAULT_EVIDENCE_TOKEN_BUDGET
+            if evidence_token_budget_value is None
+            else evidence_token_budget_value
+        ),
+    )
     max_unit_chars = max(1000, int(config.get("max_unit_chars") or DEFAULT_MAX_UNIT_CHARS))
-    retrieval_mode = str(config.get("retrieval_mode") or DEFAULT_RETRIEVAL_MODE).strip().lower()
-    if retrieval_mode not in {"semantic", "hybrid"}:
-        retrieval_mode = DEFAULT_RETRIEVAL_MODE
-    try:
-        hybrid_weight_dense = float(config.get("hybrid_weight_dense", DEFAULT_HYBRID_WEIGHT_DENSE))
-    except Exception:
-        hybrid_weight_dense = DEFAULT_HYBRID_WEIGHT_DENSE
-    try:
-        hybrid_weight_lexical = float(config.get("hybrid_weight_lexical", DEFAULT_HYBRID_WEIGHT_LEXICAL))
-    except Exception:
-        hybrid_weight_lexical = DEFAULT_HYBRID_WEIGHT_LEXICAL
-    try:
-        retrieval_structure_weight = float(config.get("retrieval_structure_weight", DEFAULT_STRUCTURE_WEIGHT))
-    except Exception:
-        retrieval_structure_weight = DEFAULT_STRUCTURE_WEIGHT
-    hybrid_weight_dense = max(0.0, min(1.0, hybrid_weight_dense))
-    hybrid_weight_lexical = max(0.0, min(1.0, hybrid_weight_lexical))
-    retrieval_structure_weight = max(0.0, min(0.5, retrieval_structure_weight))
-    rerank_top_n = max(1, int(config.get("rerank_top_n") or DEFAULT_RERANK_TOP_N))
-    answer_scope_policy = str(config.get("answer_scope_policy") or "source_primary").strip().lower()
-    if answer_scope_policy not in {"source_primary", "same_section", "cross_chunk"}:
-        answer_scope_policy = "source_primary"
 
     return OneStepPipelineRuntime(
         chunk_size=chunk_size,
@@ -204,21 +190,28 @@ def parse_one_step_pipeline_runtime(config: Dict[str, Any]) -> OneStepPipelineRu
         pre_split_chunks=pre_split_chunks,
         pre_split_chunk_meta=pre_split_chunk_meta,
         candidate_multiplier=candidate_multiplier,
-        semantic_top_k=semantic_top_k,
+        final_evidence_k=final_evidence_k,
+        evidence_token_budget=evidence_token_budget,
         max_unit_chars=max_unit_chars,
-        retrieval_mode=retrieval_mode,
-        hybrid_weight_dense=hybrid_weight_dense,
-        hybrid_weight_lexical=hybrid_weight_lexical,
-        retrieval_structure_weight=retrieval_structure_weight,
-        rerank_top_n=rerank_top_n,
-        answer_scope_policy=answer_scope_policy,
     )
 
 
 def resolve_one_step_chunks(text: str, runtime: OneStepPipelineRuntime) -> List[str]:
     if runtime.pre_split_chunks:
         return list(runtime.pre_split_chunks)
-    return split_text(text, chunk_size=max(1, int(runtime.chunk_size)))
+    from qa.chunking import build_tree_chunks
+
+    inline_doc_id = hashlib.sha1(str(text or "").encode("utf-8")).hexdigest()
+    chunks, meta, _report = build_tree_chunks(
+        text,
+        chunk_size=max(1, int(runtime.chunk_size)),
+        original_filename="inline.txt",
+        task_id=f"inline-{inline_doc_id[:16]}",
+        doc_id=inline_doc_id,
+        split_type="text",
+    )
+    runtime.pre_split_chunk_meta = meta
+    return chunks
 
 
 def _dedup_chunk_pool(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -253,199 +246,6 @@ def _append_wall_interval(
             "seconds": end - start,
         }
     )
-
-
-def _normalize_answer_scope(raw: Any) -> str:
-    scope = str(raw or "").strip().lower()
-    return scope if scope in {"source_primary", "same_section", "cross_chunk"} else "source_primary"
-
-
-def _candidate_answer_scope_hint(candidate: Dict[str, Any]) -> str:
-    return _normalize_answer_scope(
-        candidate.get("answer_scope_hint") or candidate.get("answer_scope")
-    )
-
-
-def _retrieval_scope_for_hint(candidate_scope_hint: Any, policy: str) -> str:
-    requested = _normalize_answer_scope(candidate_scope_hint)
-    policy_scope = _normalize_answer_scope(policy)
-    if policy_scope == "source_primary":
-        return "source_primary"
-    if policy_scope == "same_section" and requested == "cross_chunk":
-        return "same_section"
-    if policy_scope == "same_section":
-        return requested if requested in {"source_primary", "same_section"} else "source_primary"
-    return requested
-
-
-def _safe_float(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except Exception:
-        return default
-
-
-def _scope_trace_summary(trace: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    if not isinstance(trace, dict):
-        return {}
-    return {
-        "chunk_index": trace.get("chunk_index"),
-        "title_path": trace.get("title_path"),
-        "score": trace.get("score"),
-        "dense_score": trace.get("dense_score"),
-        "lexical_score": trace.get("lexical_score"),
-        "structure_score": trace.get("structure_score"),
-        "must_term_hits": trace.get("must_term_hits"),
-        "must_term_total": trace.get("must_term_total"),
-        "must_term_coverage": trace.get("must_term_coverage"),
-        "score_gap_top1_top2": trace.get("score_gap_top1_top2"),
-        "same_parent": bool(trace.get("same_parent")),
-        "adjacent": bool(trace.get("adjacent")),
-        "title_overlap": trace.get("title_overlap"),
-        "rerank_score": trace.get("rerank_score")
-        if trace.get("rerank_score") is not None
-        else trace.get("cross_encoder_score"),
-    }
-
-
-def _term_evidence_ok(trace: Dict[str, Any]) -> bool:
-    total = int(_safe_float(trace.get("must_term_total"), 0.0))
-    if total <= 0:
-        return _safe_float(trace.get("lexical_score"), 0.0) >= 0.08
-    return (
-        _safe_float(trace.get("must_term_coverage"), 0.0) >= 0.34
-        or _safe_float(trace.get("lexical_score"), 0.0) >= 0.18
-    )
-
-
-def _gap_evidence_ok(trace: Dict[str, Any]) -> bool:
-    gap = trace.get("score_gap_top1_top2")
-    if gap is None:
-        return True
-    return (
-        _safe_float(gap, 0.0) >= 0.008
-        or _safe_float(trace.get("lexical_score"), 0.0) >= 0.24
-        or _safe_float(trace.get("structure_score"), 0.0) >= 0.45
-    )
-
-
-def _same_section_evidence_ok(trace: Dict[str, Any]) -> bool:
-    relation_ok = bool(trace.get("same_parent") or trace.get("adjacent"))
-    score_ok = (
-        _safe_float(trace.get("score"), 0.0) >= 0.38
-        or _safe_float(trace.get("structure_score"), 0.0) >= 0.45
-    )
-    return relation_ok and score_ok and _term_evidence_ok(trace) and _gap_evidence_ok(trace)
-
-
-def _cross_chunk_evidence_ok(trace: Dict[str, Any]) -> bool:
-    score_ok = _safe_float(trace.get("score"), 0.0) >= 0.42
-    rerank_score = trace.get("rerank_score")
-    rerank_ok = rerank_score is None or _safe_float(rerank_score, 0.0) >= 0.0
-    return score_ok and rerank_ok and _term_evidence_ok(trace) and _gap_evidence_ok(trace)
-
-
-def _decide_effective_answer_scope(
-    *,
-    candidate_scope_hint: Any,
-    policy: str,
-    raw_semantic_trace: Optional[List[Dict[str, Any]]],
-) -> Dict[str, Any]:
-    hint = _normalize_answer_scope(candidate_scope_hint)
-    policy_scope = _normalize_answer_scope(policy)
-    non_source = [
-        trace
-        for trace in (raw_semantic_trace or [])
-        if isinstance(trace, dict) and not trace.get("is_source_chunk")
-    ]
-    same_section_candidates = [
-        trace for trace in non_source if trace.get("same_parent") or trace.get("adjacent")
-    ]
-    best_same = same_section_candidates[0] if same_section_candidates else None
-    best_any = non_source[0] if non_source else None
-
-    decision: Dict[str, Any] = {
-        "answer_scope_hint": hint,
-        "answer_scope_policy": policy_scope,
-        "effective_answer_scope": "source_primary",
-        "reason_code": "default_source_primary",
-        "reason": "默认只使用主来源块，避免补充证据漂移。",
-        "evidence": {
-            "best_same_section": _scope_trace_summary(best_same),
-            "best_any": _scope_trace_summary(best_any),
-        },
-        "checks": {
-            "same_section_evidence_ok": _same_section_evidence_ok(best_same)
-            if best_same
-            else False,
-            "cross_chunk_evidence_ok": _cross_chunk_evidence_ok(best_any)
-            if best_any
-            else False,
-        },
-    }
-
-    if policy_scope == "source_primary":
-        decision.update(
-            {
-                "reason_code": "policy_source_primary",
-                "reason": "前端策略限制为只使用主来源块，系统未放宽证据范围。",
-            }
-        )
-        return decision
-
-    if hint == "source_primary":
-        decision.update(
-            {
-                "reason_code": "hint_source_primary",
-                "reason": "模型建议主来源块已足够，系统保持主来源块范围。",
-            }
-        )
-        return decision
-
-    same_ok = bool(decision["checks"]["same_section_evidence_ok"])
-    cross_ok = bool(decision["checks"]["cross_chunk_evidence_ok"])
-
-    if policy_scope == "cross_chunk" and hint == "cross_chunk" and best_any and cross_ok:
-        decision.update(
-            {
-                "effective_answer_scope": "cross_chunk",
-                "reason_code": "cross_chunk_evidence_approved",
-                "reason": "前端允许跨 chunk，且召回证据的综合分、关键词覆盖和分数间隔达到阈值。",
-            }
-        )
-        return decision
-
-    if hint in {"same_section", "cross_chunk"} and best_same and same_ok:
-        decision.update(
-            {
-                "effective_answer_scope": "same_section",
-                "reason_code": "same_section_evidence_approved",
-                "reason": "前端允许同章节补充，且召回证据来自同章节或相邻块，质量达到阈值。",
-            }
-        )
-        return decision
-
-    decision.update(
-        {
-            "reason_code": "evidence_not_confident",
-            "reason": "补充证据的章节关系、综合分、关键词覆盖或 top1/top2 分差不足，系统收窄到主来源块。",
-        }
-    )
-    return decision
-
-
-def _candidate_retrieval_query(candidate: Dict[str, Any], source_chunk_meta: Dict[str, Any]) -> str:
-    explicit = str(candidate.get("retrieval_query") or "").strip()
-    if explicit:
-        return explicit
-    parts = [
-        str(candidate.get("question") or "").strip(),
-        str(source_chunk_meta.get("title_path") or "").strip(),
-    ]
-    terms = candidate.get("must_have_terms")
-    if isinstance(terms, list):
-        parts.extend(str(term).strip() for term in terms if str(term).strip())
-    return "\n".join(part for part in parts if part)
 
 
 def _effective_qa_detail_mode(mode: str) -> str:
@@ -524,29 +324,30 @@ def run_one_step_chunk_worker(
         candidate_questions_total += len(candidates)
         retrieval_timing: Dict[str, float] = {}
         retrieval_started_at = time.perf_counter()
-        retrieval_payloads = [
-            {
-                "key": str(candidate.get("question") or "").strip(),
-                "query": _candidate_retrieval_query(candidate, source_chunk_meta),
-                "must_have_terms": candidate.get("must_have_terms") or [],
-                "answer_scope": _retrieval_scope_for_hint(
-                    _candidate_answer_scope_hint(candidate),
-                    runtime.answer_scope_policy,
-                ),
-            }
+        source_unit_payload = (
+            source_chunk_meta.get("_qa_source_unit")
+            if isinstance(source_chunk_meta.get("_qa_source_unit"), dict)
+            else {}
+        )
+        source_indexes = [
+            int(value)
+            for value in source_unit_payload.get("source_chunk_indexes") or [chunk_index]
+        ]
+        source_chunk_ids = [
+            str(evidence_index.get_chunk(index).get("chunk_id") or "")
+            for index in source_indexes
+        ]
+        retrieval_questions = [
+            str(candidate.get("question") or "").strip()
             for candidate in candidates
             if str(candidate.get("question") or "").strip()
         ]
         retrieval_map = evidence_index.retrieve_many(
-            retrieval_payloads,
-            source_chunk_index=chunk_index,
-            top_k=runtime.semantic_top_k,
+            retrieval_questions,
+            source_chunk_ids=source_chunk_ids,
+            final_evidence_k=runtime.final_evidence_k,
+            evidence_token_budget=runtime.evidence_token_budget,
             timing=retrieval_timing,
-            retrieval_mode=runtime.retrieval_mode,
-            hybrid_weight_dense=runtime.hybrid_weight_dense,
-            hybrid_weight_lexical=runtime.hybrid_weight_lexical,
-            structure_weight=runtime.retrieval_structure_weight,
-            rerank_top_n=runtime.rerank_top_n,
         )
         retrieval_ended_at = time.perf_counter()
         _append_wall_interval(
@@ -570,24 +371,12 @@ def run_one_step_chunk_worker(
                 continue
             seen_questions.add(question_key)
             candidates_considered += 1
-            retrieval_query = _candidate_retrieval_query(candidate, source_chunk_meta)
-            answer_scope_hint = _candidate_answer_scope_hint(candidate)
             candidate_for_answer = dict(candidate)
-            candidate_for_answer["retrieval_query"] = retrieval_query
-            candidate_for_answer["answer_scope_hint"] = answer_scope_hint
-            candidate_for_answer["must_have_terms"] = candidate.get("must_have_terms") or []
-            semantic_hits, raw_semantic_trace = retrieval_map.get(question_key, (None, None))
-            scope_decision = _decide_effective_answer_scope(
-                candidate_scope_hint=answer_scope_hint,
-                policy=runtime.answer_scope_policy,
-                raw_semantic_trace=raw_semantic_trace,
-            )
-            effective_answer_scope = str(
-                scope_decision.get("effective_answer_scope") or "source_primary"
-            )
-            candidate_for_answer["answer_scope"] = effective_answer_scope
-            candidate_for_answer["effective_answer_scope"] = effective_answer_scope
-            candidate_for_answer["answer_scope_decision"] = scope_decision
+            retrieval_result = retrieval_map.get(question_key) or {
+                "selected_windows": [],
+                "selected_chunk_ids": [],
+                "trace": {},
+            }
             _append_wall_interval(
                 wall_intervals,
                 "validation_and_bookkeeping",
@@ -596,25 +385,11 @@ def run_one_step_chunk_worker(
             unit_started_at = time.perf_counter()
             generation_unit = evidence_index.build_generation_unit(
                 source_chunk_index=chunk_index,
-                source_unit=source_chunk_meta.get("_qa_source_unit")
-                if isinstance(source_chunk_meta.get("_qa_source_unit"), dict)
-                else None,
+                source_unit=source_unit_payload,
                 question=question_key,
-                retrieval_query=retrieval_query,
-                must_have_terms=candidate_for_answer.get("must_have_terms") or [],
-                answer_scope=effective_answer_scope,
-                semantic_top_k=runtime.semantic_top_k,
-                max_unit_chars=runtime.max_unit_chars,
-                retrieval_mode=runtime.retrieval_mode,
-                hybrid_weight_dense=runtime.hybrid_weight_dense,
-                hybrid_weight_lexical=runtime.hybrid_weight_lexical,
-                structure_weight=runtime.retrieval_structure_weight,
-                rerank_top_n=runtime.rerank_top_n,
-                semantic_hits=semantic_hits,
-                raw_semantic_trace=raw_semantic_trace,
-                answer_scope_hint=answer_scope_hint,
-                answer_scope_policy=runtime.answer_scope_policy,
-                answer_scope_decision=scope_decision,
+                retrieval_result=retrieval_result,
+                final_evidence_k=runtime.final_evidence_k,
+                evidence_token_budget=runtime.evidence_token_budget,
             )
             unit_ended_at = time.perf_counter()
             retrieval_unit_seconds += unit_ended_at - unit_started_at
@@ -771,7 +546,7 @@ def run_one_step_unit_worker(
             "qa_mode": unit.qa_mode,
             "anchor_chunk_index": unit.anchor_chunk_index,
             "source_chunk_indexes": list(unit.source_chunk_indexes),
-            "parent_index_path": unit.parent_index_path,
+            "section_path": unit.section_path,
             "quality_child_coverage": unit.quality_child_coverage,
             "unit_debug": unit.to_debug_dict(),
         }
@@ -786,7 +561,7 @@ def run_one_step_unit_worker(
             item["qa_generation_unit_type"] = unit.unit_type
             item["qa_generation_unit_mode"] = unit.qa_mode
             item["qa_generation_unit_source_chunk_indexes"] = list(unit.source_chunk_indexes)
-            item["qa_generation_unit_parent_index_path"] = unit.parent_index_path
+            item["qa_generation_unit_section_path"] = unit.section_path
             item["qa_generation_unit_quality_child_coverage"] = unit.quality_child_coverage
     return payload
 

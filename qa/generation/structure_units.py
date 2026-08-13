@@ -232,7 +232,7 @@ class GenerationUnit:
     qa_mode: str
     anchor_chunk_index: int
     source_chunk_indexes: List[int]
-    parent_index_path: str
+    section_path: str
     title_path: str
     unit_text: str
     qa_budget: int
@@ -253,7 +253,7 @@ class GenerationUnit:
             "qa_mode": self.qa_mode,
             "anchor_chunk_index": self.anchor_chunk_index,
             "source_chunk_indexes": list(self.source_chunk_indexes),
-            "parent_index_path": self.parent_index_path,
+            "section_path": self.section_path,
             "title_path": self.title_path,
             "unit_text": self.unit_text,
             "qa_budget": self.qa_budget,
@@ -271,7 +271,7 @@ class GenerationUnit:
             "qa_mode": self.qa_mode,
             "anchor_chunk_index": self.anchor_chunk_index,
             "source_chunk_indexes": list(self.source_chunk_indexes),
-            "parent_index_path": self.parent_index_path,
+            "section_path": self.section_path,
             "title_path": self.title_path,
             "qa_budget": self.qa_budget,
             "child_count": self.child_count,
@@ -332,7 +332,7 @@ def build_structure_graph(document_chunks: Sequence[Dict[str, Any]]) -> Structur
     children_by_parent: Dict[str, List[int]] = defaultdict(list)
     for chunk in document_chunks:
         chunk_index = int(chunk.get("chunk_index") or 0)
-        parent_key = _safe_text(chunk.get("parent_index_path"))
+        parent_key = _safe_text(chunk.get("section_parent_path"))
         if not parent_key:
             continue
         children_by_parent[parent_key].append(chunk_index)
@@ -496,7 +496,15 @@ def _build_generation_unit(
     child_count = int(virtual_child_count or len(ordered_chunks))
     quality_child_coverage = usable_child_count / max(1, len(ordered_chunks))
     title_path = _safe_text(anchor_chunk.get("title_path"))
-    parent_index_path = _safe_text(anchor_chunk.get("parent_index_path"))
+    section_paths = {
+        _safe_text(chunk.get("section_path")) for chunk in ordered_chunks
+    }
+    section_paths.discard("")
+    section_path = (
+        next(iter(section_paths))
+        if len(section_paths) == 1
+        else _safe_text(anchor_chunk.get("section_parent_path"))
+    )
     source_meta = _source_meta_for_unit(
         anchor_chunk,
         unit_id=unit_id,
@@ -512,7 +520,7 @@ def _build_generation_unit(
         qa_mode=qa_mode,
         anchor_chunk_index=int(anchor_chunk.get("chunk_index") or 0),
         source_chunk_indexes=source_indexes,
-        parent_index_path=parent_index_path,
+        section_path=section_path,
         title_path=title_path,
         unit_text=unit_text,
         qa_budget=0,
@@ -628,6 +636,39 @@ def plan_generation_units(
 
     candidates: List[GenerationUnit] = []
     covered: set[int] = set()
+
+    # Physical fragments of one logical section must be one generation source.
+    chunks_by_section: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for chunk in chunks:
+        section_path = _safe_text(chunk.get("section_path"))
+        if section_path:
+            chunks_by_section[section_path].append(chunk)
+    for section_path, section_chunks in sorted(
+        chunks_by_section.items(),
+        key=lambda item: min(int(chunk.get("chunk_index") or 0) for chunk in item[1]),
+    ):
+        if len(section_chunks) < 2:
+            continue
+        group_chunks = [
+            chunk
+            for chunk in section_chunks
+            if quality.get(int(chunk.get("chunk_index") or 0))
+            and quality[int(chunk.get("chunk_index") or 0)].status != QUALITY_STATUS_DROP
+        ]
+        if not group_chunks:
+            continue
+        candidates.append(
+            _build_generation_unit(
+                unit_type=UNIT_TYPE_SECTION,
+                chunks=group_chunks,
+                chunk_quality=quality,
+                requested_mode=qa_detail_mode,
+                max_unit_chars=max_unit_chars,
+                reason=f"same_section:{section_path}",
+            )
+        )
+        covered.update(int(chunk.get("chunk_index") or 0) for chunk in group_chunks)
+
     for parent_key, indexes in sorted(
         graph.children_by_parent.items(),
         key=lambda item: min(item[1]) if item[1] else 10**9,
@@ -638,6 +679,7 @@ def plan_generation_units(
             chunks_by_index[index]
             for index in indexes
             if index in chunks_by_index
+            and index not in covered
             and quality.get(index)
             and quality[index].status != QUALITY_STATUS_DROP
         ]

@@ -91,9 +91,6 @@ class QAGenerationContractTests(unittest.TestCase):
                         "items": [
                             {
                                 "question": "婚前医学检查费用如何承担？",
-                                "retrieval_query": "婚前医学检查 结婚登记 费用 承担",
-                                "must_have_terms": ["婚前医学检查", "费用"],
-                                "answer_scope_hint": "source_primary",
                                 "question_type": "简答题",
                                 "difficulty_level": "中等",
                             }
@@ -184,7 +181,18 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertEqual(1, runtime.candidate_multiplier)
         self.assertEqual(3, configured_runtime.candidate_multiplier)
 
-    def test_candidate_generation_discards_source_anchor_text(self):
+    def test_zero_final_evidence_k_is_preserved(self):
+        runtime = parse_one_step_pipeline_runtime(
+            {
+                "chunk_size": 600,
+                "qa_per_chunk": 1,
+                "final_evidence_k": 0,
+            }
+        )
+
+        self.assertEqual(0, runtime.final_evidence_k)
+
+    def test_candidate_generation_discards_unrequested_planning_fields(self):
         client = _StaticChatClient(
             {
                 "items": [
@@ -217,6 +225,9 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertEqual(1, len(items))
         self.assertEqual("其中应当如何处理？", items[0]["question"])
         self.assertNotIn("source_anchor_text", items[0])
+        self.assertNotIn("retrieval_query", items[0])
+        self.assertNotIn("must_have_terms", items[0])
+        self.assertNotIn("answer_scope_hint", items[0])
 
     def test_answer_semantic_rules_do_not_drop_normalized_item(self):
         client = _StaticChatClient(
@@ -250,9 +261,6 @@ class QAGenerationContractTests(unittest.TestCase):
             candidate={
                 "question": candidate_question,
                 "source_anchor_text": "旧字段不应进入答案生成输入。",
-                "retrieval_query": "费用承担",
-                "must_have_terms": ["费用", "承担"],
-                "answer_scope": "source_primary",
                 "question_type": "简答题",
                 "difficulty_level": "中等",
             },
@@ -326,9 +334,6 @@ class QAGenerationContractTests(unittest.TestCase):
             model="test-model",
             candidate={
                 "question": "费用由谁承担？",
-                "retrieval_query": "费用 承担 责任主体",
-                "must_have_terms": ["费用", "责任主体"],
-                "answer_scope": "source_primary",
                 "question_type": "简答题",
                 "difficulty_level": "简单",
             },
@@ -381,7 +386,8 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertIn("'pipeline.retrieval'", modal_source)
 
     def test_evidence_rendering_uses_readable_refs_and_preserves_mapping(self):
-        from qa.generation.evidence_units import EvidenceHit, QADocumentEvidenceIndex
+        from qa.generation.evidence_units import QADocumentEvidenceIndex
+        from qa.retrieval import EvidenceWindow
 
         index = QADocumentEvidenceIndex(
             chunks=[
@@ -389,15 +395,17 @@ class QAGenerationContractTests(unittest.TestCase):
                     "chunk_id": "primary-id",
                     "chunk_index": 1,
                     "title_path": "内部标题 > 第一条",
-                    "parent_index_path": "1",
+                    "section_path": "1",
                     "text": "主材料事实。",
+                    "retrieval_text": "主材料事实。",
                 },
                 {
                     "chunk_id": "supplement-id",
                     "chunk_index": 2,
                     "title_path": "内部标题 > 第二条",
-                    "parent_index_path": "1",
+                    "section_path": "2",
                     "text": "补充事实。",
+                    "retrieval_text": "补充事实。",
                 },
             ],
             embeddings=[[1.0], [0.5]],
@@ -406,28 +414,31 @@ class QAGenerationContractTests(unittest.TestCase):
             source_chunk_index=1,
             source_unit={"source_chunk_indexes": [1]},
             question="主材料事实是什么？",
-            answer_scope="same_section",
-            semantic_hits=[
-                EvidenceHit(
-                    chunk_id="supplement-id",
-                    chunk_index=2,
-                    score=0.8,
-                    title_path="内部标题 > 第二条",
-                    parent_index_path="1",
-                    role="same_section_context",
-                )
-            ],
-            raw_semantic_trace=[],
+            retrieval_result={
+                "selected_windows": [
+                    EvidenceWindow(
+                        window_id="window-1",
+                        chunk_ids=("supplement-id",),
+                        reason="atomic",
+                        text="补充事实。",
+                        title_path="内部标题 > 第二条",
+                        anchor_chunk_ids=("supplement-id",),
+                    )
+                ],
+                "trace": {},
+            },
+            final_evidence_k=5,
+            evidence_token_budget=4000,
         )
 
         rendered = generation_unit["qa_generation_unit_text"]
         self.assertIn("主材料-1", rendered)
-        self.assertIn("同章节补充-1", rendered)
+        self.assertIn("检索证据-1", rendered)
         self.assertNotIn("primary-id", rendered)
         self.assertNotIn("supplement-id", rendered)
-        self.assertNotIn("内部标题", rendered)
+        self.assertIn("标题路径：内部标题 > 第二条", rendered)
         self.assertEqual("primary-id", generation_unit["llm_evidence_ref_map"]["主材料-1"]["chunk_id"])
-        self.assertEqual("supplement-id", generation_unit["llm_evidence_ref_map"]["同章节补充-1"]["chunk_id"])
+        self.assertEqual("supplement-id", generation_unit["llm_evidence_ref_map"]["检索证据-1"]["chunk_id"])
 
 
 if __name__ == "__main__":
