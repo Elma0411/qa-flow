@@ -22,7 +22,7 @@ TEMPLATE = CategoryPromptTemplate(
 1. 保留原文中的技术名词、指标、单位、等级、条件和例外，不要改写成泛泛表述。
 2. 涉及数值、频次、比例、限值、时间、范围时必须完整回答，不能只答结论。
 3. 对方法类问题，答案应包含关键步骤或判定依据；对要求类问题，答案应包含适用对象和条件。
-4. 若主来源块未给出具体要求，应如实说明，不得补充标准外内容。""",
+4. 若主来源材料未给出具体要求，应如实说明，不得补充标准外内容。""",
     candidate_en="""Applicable label: Standard.
 Default questioner: An engineer, tester, or acceptance inspector.
 Question focus:

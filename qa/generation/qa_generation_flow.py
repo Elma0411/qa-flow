@@ -246,6 +246,33 @@ def _normalize_candidate_question(
     )
 
 
+def _restore_evidence_usage_ids(
+    raw_entries: Any,
+    ref_map: Dict[str, Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Convert model-facing evidence references into persisted chunk IDs."""
+    if not isinstance(raw_entries, list):
+        return []
+    restored: List[Dict[str, Any]] = []
+    for raw_entry in raw_entries:
+        if not isinstance(raw_entry, dict):
+            continue
+        ref = str(raw_entry.get("evidence_ref") or "").strip()
+        mapped = ref_map.get(ref) if ref else None
+        if not isinstance(mapped, dict) or not str(mapped.get("chunk_id") or "").strip():
+            continue
+        entry = {
+            key: value
+            for key, value in raw_entry.items()
+            if key not in {"evidence_ref", "chunk_id"}
+        }
+        entry["chunk_id"] = mapped["chunk_id"]
+        entry["role"] = str(entry.get("role") or mapped.get("role") or "evidence")
+        entry["evidence_ref"] = ref
+        restored.append(entry)
+    return restored
+
+
 def _resolve_generation_language(prompt_language: str, text: str) -> Tuple[str, str]:
     lang = (prompt_language or "auto").strip().lower()
     if lang == "auto":
@@ -286,15 +313,10 @@ def call_candidate_question_llm(
         knowledge_category=knowledge_category,
     )
     prompt_template_key = resolve_category_prompt_template_key(knowledge_category)
-    title_path = str(source_chunk_meta.get("title_path") or "").strip()
-    user_content = (
-        "内部消歧和检索信息（不得直接照搬进 question）：\n"
-        f"chunk_id: {source_chunk_meta.get('chunk_id') or ''}\n"
-        f"title_path: {title_path}\n\n"
-        f"knowledge_category: {knowledge_category or ''}\n\n"
-        "主来源单元正文：\n"
-        f"{source_chunk_text}"
-    )
+    # Keep the candidate prompt readable. Chunk IDs, paths, and category
+    # metadata stay in the trace; they are not useful for writing a natural
+    # reader question and tend to leak into the wording.
+    user_content = "主来源材料：\n" + str(source_chunk_text or "").strip()
 
     response_type: Optional[str] = None
     response_dump: Any = None
@@ -402,6 +424,9 @@ def call_evidence_answer_llm(
     source_chunk_text = str(source_chunk.get("text") or "").strip()
     source_unit_text = str(generation_unit.get("source_unit_text") or "").strip()
     unit_text = str(generation_unit.get("qa_generation_unit_text") or "").strip()
+    evidence_ref_map = generation_unit.get("llm_evidence_ref_map")
+    if not isinstance(evidence_ref_map, dict):
+        evidence_ref_map = {}
     language_code, language_instruction = _resolve_generation_language(
         prompt_language,
         unit_text or source_chunk_text,
@@ -430,16 +455,13 @@ def call_evidence_answer_llm(
     question_type = str(candidate.get("question_type") or "简答题").strip() or "简答题"
     user_content = (
         f"candidate_question: {candidate_question}\n"
-        f"retrieval_query: {retrieval_query}\n"
-        f"must_have_terms: {json.dumps(must_have_terms, ensure_ascii=False)}\n"
         f"answer_scope: {answer_scope}\n"
         f"question_type: {question_type}\n"
-        f"question_type_reason: {candidate.get('question_type_reason') or ''}\n"
-        f"difficulty_level: {candidate.get('difficulty_level') or '中等'}\n"
-        f"difficulty_score: {candidate.get('difficulty_score') if candidate.get('difficulty_score') is not None else ''}\n\n"
-        f"knowledge_category: {prompt_template_category or ''}\n\n"
-        "qa_generation_unit_text:\n"
-        f"{unit_text}"
+        "\n"
+        "可读证据材料（仅使用这些正文）：\n"
+        f"{unit_text}\n\n"
+        "evidence_ref 可选值：\n"
+        f"{json.dumps(list(evidence_ref_map.keys()), ensure_ascii=False)}"
     )
 
     response_type: Optional[str] = None
@@ -504,9 +526,10 @@ def call_evidence_answer_llm(
         if normalized_item and raw_item:
             evidence_usage = raw_item.get("evidence_usage")
             if isinstance(evidence_usage, list):
-                normalized_item["evidence_usage"] = [
-                    entry for entry in evidence_usage if isinstance(entry, dict)
-                ][:12]
+                normalized_item["evidence_usage"] = _restore_evidence_usage_ids(
+                    evidence_usage,
+                    evidence_ref_map,
+                )[:12]
     if normalized_item:
         source_override_handler(
             normalized_item,

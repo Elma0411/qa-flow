@@ -87,7 +87,7 @@ def _answer_detail_mode_section(*, qa_detail_mode: str, language_code: str) -> s
 - qa_detail_mode=point.
 - Keep the question unchanged and answer exactly one core fact.
 - The final answer must not combine multiple independent requirements, steps, conditions, or comparisons.
-- source_fact_text must be one atomic, standalone fact copied from qa_generation_unit_text.
+- source_fact_text must be one atomic, standalone fact copied from the readable evidence material.
 - Do not use semicolons, line breaks, or multiple sentences in source_fact_text.
 - Retrieved context may clarify a local reference, but it must not become the main answer basis.
 """
@@ -106,7 +106,7 @@ def _answer_detail_mode_section(*, qa_detail_mode: str, language_code: str) -> s
 - qa_detail_mode=point。
 - question 必须保持不变，答案只能回答一个核心事实。
 - 答案不得综合多个独立要求、步骤、条件或对比关系。
-- source_fact_text 必须是从 qa_generation_unit_text 摘取的单点、可独立成立的事实。
+- source_fact_text 必须是从可读证据材料摘取的单点、可独立成立的事实。
 - source_fact_text 不得包含分号、换行或多个句子。
 - 检索上下文只能帮助消除局部指代或定义缺失，不能成为答案主体。
 """
@@ -137,31 +137,30 @@ def build_candidate_question_system_prompt(
     if language_code == "en":
         return f"""# Role: Source-grounded question writer
 
-Generate at most {max_candidates} training-data questions from the supplied primary source unit. The unit can contain one chunk or tightly connected chunks. Output fewer items, including none, when no useful question is supported. Do not answer the questions.
+Generate at most {max_candidates} training-data questions from the supplied source material. Output fewer items, including none, when no useful question is supported. Do not answer the questions.
 
 ## Language
 {language_instruction.strip()}
 
-## Write a real question
-1. First identify one reader scenario and one information need. Then write the question from that reader's perspective.
-2. The question must be answerable directly from the primary source unit, standalone, precise, and written in a normal question form.
-3. Preserve only the context a reader needs to identify the scenario. Put full legal predicates, source terminology, and retrieval detail in `retrieval_query` and `must_have_terms`.
-4. Do not copy a source clause by turning its unfinished first half into a question. Do not use citation or source language such as "according to", article numbers, document titles, section titles, "the document states", or vague references.
-5. Prefer an actionable rule, amount, step, condition, responsibility, prohibition, deadline, or exception. Skip generic background, slogans, and vague management claims.
-6. Silently check: would the intended reader naturally ask this without seeing the source? If not, rewrite or skip it.
+## Internal method; do not expose it
+1. Read the material and choose one concrete information focus that matters to a plausible reader.
+2. Identify one reader scenario and one information need. Write the question that reader would actually ask.
+3. Silently test the wording: it must be answerable from the material, standalone, and natural without the reader having seen the source. Rewrite or skip it when it sounds clause-shaped.
 
-Examples of semantic compression:
-- Clause-shaped: "For employees who legally give birth, how many additional leave days apply beyond statutory maternity leave?"
-- Natural: "How much additional maternity leave is available after childbirth?"
-- Clause-shaped: "For rural one-child or two-daughter parents participating in resident medical insurance, how is the personal contribution reduced?"
-- Natural: "What medical-insurance benefit is available to rural one-child or two-daughter families?"
+## Question rules
+- Write one complete question about one coherent need. Keep only the context needed to identify the scenario.
+- Do not convert the first half of a source sentence into a question, carry every legal predicate into the question, or imitate source syntax.
+- Do not mention sources, documents, sections, article numbers, titles, "according to", or vague references.
+- Prefer a practical rule, amount, step, condition, responsibility, prohibition, deadline, exception, mechanism, or comparison over background or slogans.
+- Example: write "How much additional maternity leave is available after childbirth?", not "For employees who legally give birth, how many additional leave days apply beyond statutory maternity leave?"
 
 {detail_mode_section}
 
 {category_section}
 
 ## Planning fields
-- `retrieval_query`: concise evidence query containing the precise subject, action, full condition, and useful title context.
+- Planning fields are for retrieval only. They must not make `question` more formal, longer, or source-shaped.
+- `retrieval_query`: concise evidence query containing the precise subject, action, and full condition.
 - `must_have_terms`: 1-6 precise entity/action/condition terms for evidence matching.
 - `answer_scope_hint`: `source_primary` by default; use `same_section` or `cross_chunk` only when the answer truly needs that evidence.
 - Follow `question_type_plan` when supported; otherwise skip rather than inventing a weak item.
@@ -174,33 +173,32 @@ Examples of semantic compression:
 Output ONLY raw JSON: {{"items":[...]}}.
 """
 
-    return f"""# 角色：基于原文的自然问题撰写者
+    return f"""# 角色：基于材料的自然问题撰写者
 
-请从提供的主来源单元中生成最多 {max_candidates} 个训练数据问题。主来源单元可能是一段，也可能是几段紧密相关的内容；没有值得问的信息时可以少出题或不出题。不要生成答案。
+请从提供的材料中生成最多 {max_candidates} 个训练数据问题。没有值得问的信息时可以少出题或不出题。不要生成答案。
 
 ## 语言要求
 {language_instruction.strip()}
 
-## 写出真实会被问的问题
-1. 先在内部确定一个读者场景和一个信息需求，再从该读者的角度写问题。
-2. 问题必须能由主来源单元直接回答，单独阅读时意思完整、对象明确，并符合日常问句形式。
-3. 问题只保留读者识别场景所需的最少上下文；完整法规前提、原文专有措辞和检索细节放入 `retrieval_query` 与 `must_have_terms`。
-4. 不要把原文条款的前半句改成问题、后半句留给答案；不要使用“根据/依据”、条号、文件名、章节名、“文中指出”等来源视角，也不要使用指代不明的词。
-5. 优先问可执行的规则、金额、步骤、条件、责任、禁止、期限或例外；跳过泛化背景、口号和空泛管理表述。
-6. 输出前静默检查：目标读者没有看过原文，也会自然地这样问吗？不会就改写或跳过。
+## 内部工作法，不要写进问题
+1. 通读材料，先选择一个对真实读者有用的具体信息焦点。
+2. 在内部确定一个读者场景和一个信息需求，再写出这个读者实际会问的一句话。
+3. 静默自检：问题能由材料回答、脱离材料也意思完整，而且读者没看过材料时仍会自然地这样问；不自然就改写或跳过。
 
-## 语义压缩示例
-- 条款式：“职工合法生育子女的，在法定产假之外可以增加多少天产假？”
-- 自然式：“生育后还能增加多少天产假？”
-- 条款式：“农村独生子女或双女户父母参加城乡居民基本医疗保险时，个人缴费如何减免？”
-- 自然式：“农村独生子女或双女户家庭参加医保有什么优惠？”
+## 问题规则
+- 每条只问一个完整、连贯的信息需求；只保留识别场景所需的最少上下文。
+- 不要把原文一句话的前半句改成问题，也不要把完整法规前提、原文句式或检索细节搬进问题。
+- 不要出现“根据/依据”、条号、文件名、章节名、“文中指出”等来源视角，也不要使用指代不明的词。
+- 优先问实际会关心的规则、金额、步骤、条件、责任、禁止、期限、例外、机制或对比；跳过背景、口号和空泛管理表述。
+- 例如写“生育后还能增加多少天产假？”，不要写“职工合法生育子女的，在法定产假之外可以增加多少天产假？”。
 
 {detail_mode_section}
 
 {category_section}
 
 ## 检索规划字段
-- `retrieval_query`：用于寻找证据的短查询，保留精确对象、动作、完整条件和必要标题语境。
+- 检索规划字段只服务检索，不能反过来让 `question` 变得正式、冗长或像原文。
+- `retrieval_query`：用于寻找证据的短查询，保留精确对象、动作和完整条件。
 - `must_have_terms`：1 到 6 个用于证据匹配的精确实体、动作或条件术语。
 - `answer_scope_hint`：默认 `source_primary`；只有答案确实需要时才填 `same_section` 或 `cross_chunk`。
 - 在有证据支持时尽量遵循 question_type_plan；不能支持就跳过，不要硬凑。
@@ -247,22 +245,22 @@ def build_evidence_answer_system_prompt(
 
 ## Input
 - candidate_question
-- retrieval_query
-- must_have_terms
 - answer_scope
 - question_type
-- qa_generation_unit_text with 【主来源块】, optional 【同章节上下文】, and optional 【相关补充】
+- readable evidence material with 【主来源材料】, optional 【同章节上下文】, and optional 【相关补充】
+- allowed `evidence_ref` labels; these are the only evidence identifiers you may return
 
 ## Workflow
 1. Generate the best evidence-grounded answer for candidate_question. The candidate has already been selected; do not re-filter or reject it.
 2. Apply evidence priority strictly:
-   - First: 【主来源块】
-   - Second: 【同章节上下文】 only when the main source has unresolved reference, omitted subject, definition, or direct local dependency
+   - First: 【主来源材料】
+   - Second: 【同章节上下文】 only when the primary material has unresolved reference, omitted subject, definition, or direct local dependency
    - Third: 【相关补充】 only when answer_scope is "cross_chunk" and the retrieved evidence directly supports the missing fact
-3. If answer_scope is "source_primary", rely on 【主来源块】. If a requested detail is not specified, state that limitation in the answer instead of returning an empty item.
-4. If answer_scope is "same_section" or "cross_chunk", you may use selected evidence, but source_fact_text must still include a direct snippet from 【主来源块】.
+3. If answer_scope is "source_primary", rely on 【主来源材料】. If a requested detail is not specified, state that limitation in the answer instead of returning an empty item.
+4. If answer_scope is "same_section" or "cross_chunk", you may use selected evidence, but source_fact_text must still include a direct snippet from 【主来源材料】.
 5. Produce a direct, natural answer without saying "according to the text/reference/document".
-6. Fill evidence_usage with the chunk_id and short snippet for every evidence chunk that materially supports the answer.
+6. Fill evidence_usage with `evidence_ref`, a short snippet, and usage for every material section that supports the answer. Do not invent or output chunk IDs.
+7. Treat labels such as `主材料-1` and `同章节补充-1` as bookkeeping only; never copy them into question, answer, answer_explanation, or source_fact_text.
 
 {detail_mode_section}
 
@@ -272,10 +270,10 @@ def build_evidence_answer_system_prompt(
 
 ## Constraints
 1. Keep question exactly the same as candidate_question.
-2. The topic must remain centered on 【主来源块】.
-3. source_fact_text must be copied from qa_generation_unit_text. It must contain a direct snippet from 【主来源块】. Add retrieved context snippets only when answer_scope permits it and they are necessary.
+2. The topic must remain centered on 【主来源材料】.
+3. source_fact_text must be copied from the readable evidence material. It must contain a direct snippet from 【主来源材料】. Add supplemental snippets only when answer_scope permits them and they are necessary.
 4. qa_detail_mode=point: source_fact_text must be one atomic, standalone fact.
-5. qa_detail_mode=summary: source_fact_text may combine related snippets, but the first and most important supporting snippet must come from 【主来源块】, and every extra snippet must be necessary.
+5. qa_detail_mode=summary: source_fact_text may combine related snippets, but the first and most important supporting snippet must come from 【主来源材料】, and every extra snippet must be necessary.
 6. answer_explanation must be 1-2 complete, reader-facing sentences explaining why the answer applies to the question's scenario.
    - Clarify the relevant rule, condition, causal link, or boundary instead of repeating source_fact_text.
    - source_fact_text and evidence_usage carry provenance. Do not turn answer_explanation into a source trace or a fragment of a source sentence.
@@ -293,7 +291,7 @@ def build_evidence_answer_system_prompt(
 ## Required fields
 - question, answer, answer_explanation, source_fact_text, source
 {kc_fields}
-- evidence_usage: list of objects with chunk_id, role, snippet, usage
+- evidence_usage: list of objects with evidence_ref, role, snippet, usage
 - question_type, question_type_reason, difficulty_level, difficulty_score, options, correct_option
 
 ## Question type
@@ -320,22 +318,22 @@ qa_detail_mode={qa_detail_mode}
 
 ## 输入内容
 - candidate_question
-- retrieval_query
-- must_have_terms
 - answer_scope
 - question_type
-- qa_generation_unit_text，其中包含【主来源块】、可能存在的【同章节上下文】和【相关补充】
+- 可读证据材料，其中包含【主来源材料】、可能存在的【同章节上下文】和【相关补充】
+- 可选的 `evidence_ref` 标签；这是 evidence_usage 中唯一允许使用的证据标识
 
 ## 工作流程
 1. 为 candidate_question 生成当前证据能够支持的最佳答案，不要再次判断是否保留该题。
 2. 严格按以下证据优先级定位答案依据：
-   - 第一优先：【主来源块】
-   - 第二优先：【同章节上下文】；仅在主来源块存在定义缺失、主语省略、局部指代、前后条款直接依赖时使用
+   - 第一优先：【主来源材料】
+   - 第二优先：【同章节上下文】；仅在主来源材料存在定义缺失、主语省略、局部指代、前后条款直接依赖时使用
    - 第三优先：【相关补充】；仅当 answer_scope 为 "cross_chunk" 且检索证据直接支撑缺失事实时使用
-3. 如果 answer_scope 为 "source_primary"，以【主来源块】为准；若问题要求的某个细节没有说明，应在答案中明确说明未给出，而不是返回空列表。
-4. 如果 answer_scope 为 "same_section" 或 "cross_chunk"，可以使用选中的检索证据，但 source_fact_text 仍必须包含【主来源块】直接片段。
+3. 如果 answer_scope 为 "source_primary"，以【主来源材料】为准；若问题要求的某个细节没有说明，应在答案中明确说明未给出，而不是返回空列表。
+4. 如果 answer_scope 为 "same_section" 或 "cross_chunk"，可以使用选中的检索证据，但 source_fact_text 仍必须包含【主来源材料】直接片段。
 5. 生成直接、自然的答案，不要写“根据原文/根据通知/文中提到”。
-6. 填写 evidence_usage，列出每个真正支撑答案的 chunk_id、短片段和用途。
+6. 填写 evidence_usage，列出每段真正支撑答案的 `evidence_ref`、短片段和用途；不得编造或输出 chunk_id。
+7. `主材料-1`、`同章节补充-1` 等标签仅用于证据追踪，不得写进 question、answer、answer_explanation 或 source_fact_text。
 
 {detail_mode_section}
 
@@ -345,15 +343,15 @@ qa_detail_mode={qa_detail_mode}
 
 ## 约束
 1. question 必须与 candidate_question 完全一致。
-2. 问题主题必须围绕【主来源块】。
-3. source_fact_text 必须摘自 qa_generation_unit_text，并且必须包含来自【主来源块】的直接证据；只有 answer_scope 允许且严格必要时才补充检索上下文片段。
+2. 问题主题必须围绕【主来源材料】。
+3. source_fact_text 必须摘自可读证据材料，并且必须包含来自【主来源材料】的直接证据；只有 answer_scope 允许且严格必要时才补充检索上下文片段。
 4. qa_detail_mode=point 时，source_fact_text 必须是单点、可独立成立的事实。
-5. qa_detail_mode=summary 时，source_fact_text 可以合并相关片段，但第一条、最核心的证据必须来自【主来源块】，其余片段必须确实参与了答案成立。
+5. qa_detail_mode=summary 时，source_fact_text 可以合并相关片段，但第一条、最核心的证据必须来自【主来源材料】，其余片段必须确实参与了答案成立。
 6. answer_explanation 必须是 1 到 2 句完整、面向读者的说明，解释答案为什么适用于问题场景。
    - 说明应补足答案中的规则、条件、因果或适用边界，而不是复述 source_fact_text。
    - 证据追踪由 source_fact_text 和 evidence_usage 完成；不要把 explanation 写成“某句原文支持某结论”或原文的半句话。
    - 第一句直接说清具体主体或规则，不要以“该优惠、该答案、此项、上述、其中、它”等指代词开头。
-   - 不要提到来源容器，例如“主来源块、原文、文本、文档、参考内容、资料、内容、描述”。
+   - 不要提到来源容器，例如“主来源材料、原文、文本、文档、参考内容、资料、内容、描述”。
    - 不好：“该优惠面向符合条件的家庭。”更好：“农村独生子女或双女户父母参加新型农村合作医疗时，减免的是个人缴费部分。”
    - 推荐写法：“补助面向符合条件的家庭，缴费减免按个人实际缴费部分计算，因此参保时只需核对家庭资格和缴费金额。”
 7. 禁止引入外部知识或常识补全。
@@ -366,7 +364,7 @@ qa_detail_mode={qa_detail_mode}
 ## 必填字段
 - question、answer、answer_explanation、source_fact_text、source
 {kc_fields}
-- evidence_usage: 对象列表，每个对象包含 chunk_id、role、snippet、usage
+- evidence_usage: 对象列表，每个对象包含 evidence_ref、role、snippet、usage
 - question_type、question_type_reason、difficulty_level、difficulty_score、options、correct_option
 
 ## 题型要求

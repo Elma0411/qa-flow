@@ -922,7 +922,7 @@
           <label>
             evidence 数量（semantic_top_k）
             <input type="number" id="semanticTopK" value="3" min="0" max="20" step="1" />
-            <small>每个候选问题放入答案上下文的检索块数量；0 表示只用主来源块。</small>
+            <small>每个候选问题最多加入的单元外补充块数量；0 表示不加入补充块。</small>
           </label>
           <label>
             轻量重排候选数（rerank_top_n）
@@ -947,7 +947,7 @@
           <label>
             前端最大证据范围（answer_scope_policy）
             <select id="answerScopePolicy">
-              <option value="source_primary" selected>source_primary（主来源块优先）</option>
+              <option value="source_primary" selected>source_primary（只用主来源单元）</option>
               <option value="same_section">same_section（允许同章节补证据）</option>
               <option value="cross_chunk">cross_chunk（允许跨 chunk 证据）</option>
             </select>

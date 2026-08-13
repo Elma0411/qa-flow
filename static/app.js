@@ -1387,6 +1387,7 @@ function openPipelineSettingsModal() {
       'pipeline.document',
       'pipeline.chunking',
       'pipeline.generation',
+      'pipeline.retrieval',
       'pipeline.evaluation',
       'pipeline.performance',
       'pipeline.output',
@@ -2170,7 +2171,7 @@ function setupWorkbenchHero() {
     items.push(createSummaryChip('流程', () => $('#pipelineProcessingMode')?.value === 'integrated' ? '一体流程' : '标准 OCR', { moduleKey: 'pipeline.document' }));
     items.push(createSummaryChip('切分', () => `${$('#chunkingSplitType')?.value || 'markdown'} / ${$('#chunkSize')?.value || 600}`, { moduleKey: 'pipeline.chunking' }));
     items.push(createSummaryChip('生成', () => `${checkedQuestionTypesSummary()} / 上限 ${$('#qaTotalLimit')?.value || 20}`, { moduleKey: 'pipeline.generation' }));
-    items.push(createSummaryChip('检索', () => `${$('#retrievalMode')?.value || 'hybrid'} / topK ${$('#semanticTopK')?.value || 3}`, { moduleKey: 'pipeline.retrieval' }));
+    items.push(createSummaryChip('检索', () => `${$('#retrievalMode')?.value || 'hybrid'} / topK ${$('#semanticTopK')?.value || 3} / ${$('#answerScopePolicy')?.value || 'source_primary'}`, { moduleKey: 'pipeline.retrieval' }));
     items.push(createSummaryChip('评估', () => pipelineEvaluationSummary(), { moduleKey: 'pipeline.evaluation' }));
     items.push(createSummaryChip('并发', () => `unit ${$('#chunkMaxConcurrency')?.value || '8'} / API ${$('#llmMaxConcurrentRequests')?.value || '默认'}`, { moduleKey: 'pipeline.performance' }));
     items.push(createSummaryChip('存储', () => pipelineStorageSummary(), { moduleKey: 'pipeline.output' }));

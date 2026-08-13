@@ -416,14 +416,8 @@ def _render_unit_text(chunks: Sequence[Dict[str, Any]], *, max_chars: int) -> st
     parts: List[str] = []
     remaining = max(1000, int(max_chars))
     for chunk in chunks:
-        title_path = _safe_text(chunk.get("title_path"))
         text = _text_for_quality(chunk)
-        chunk_id = _safe_text(chunk.get("chunk_id"))
-        chunk_index = int(chunk.get("chunk_index") or 0)
-        header = f"chunk_index：{chunk_index}\nchunk_id：{chunk_id}"
-        if title_path:
-            header += f"\ntitle_path：{title_path}"
-        rendered = f"{header}\n内容：{text}".strip()
+        rendered = text.strip()
         if len(rendered) > remaining and not parts:
             parts.append(rendered[:remaining].rstrip())
             break

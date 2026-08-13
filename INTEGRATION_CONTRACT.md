@@ -566,6 +566,14 @@ Rules:
 - Candidate-question generation emits a question plus retrieval planning fields;
   it does not emit a separate source anchor. `source_fact_text` is produced only
   by final answer generation as the QA item's direct fact evidence.
+- LLM-facing material is separate from retrieval trace. Candidate-question
+  generation receives readable source prose only. Answer generation receives
+  readable sections labelled `主材料-N`, `同章节补充-N`, or `相关补充-N`; it returns
+  `evidence_ref` labels rather than real chunk IDs. The generation layer maps
+  those labels back to `evidence_usage[].chunk_id` before persistence. Real IDs,
+  title paths, ranks, and scores remain in `retrieval_trace` and debug artifacts.
+- `llm_evidence_ref_map` is an ephemeral generation-unit handoff used for that
+  mapping; it is not a persisted QA item field and must not be sent to the LLM.
 - `answer_scope_hint` is the model-generated, non-authoritative evidence range
   suggestion. It is kept for diagnostics and should not be treated as final
   permission to use supplemental evidence.

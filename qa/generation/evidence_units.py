@@ -112,11 +112,8 @@ def _parent_title_path(title_path: str) -> str:
 
 
 def _format_chunk_for_unit(chunk: Dict[str, Any]) -> str:
-    title_path = _safe_text(chunk.get("title_path"))
     text = _safe_text(chunk.get("text")) or _safe_text(chunk.get("text_for_embedding"))
-    if title_path:
-        return f"标题路径：{title_path}\n内容：{text}".strip()
-    return f"内容：{text}".strip()
+    return text.strip()
 
 
 def build_document_chunks(
@@ -681,6 +678,10 @@ class QADocumentEvidenceIndex:
             source_unit=source_unit_payload,
             hits=selected_hits,
         )
+        llm_evidence_ref_map = self._build_llm_evidence_ref_map(
+            source_chunks=source_chunks,
+            hits=selected_hits,
+        )
         evidence_chunk_ids = [hit.chunk_id for hit in selected_hits if hit.chunk_id]
         source_chunk_ids = [
             _safe_text(chunk.get("chunk_id"))
@@ -708,6 +709,7 @@ class QADocumentEvidenceIndex:
             "evidence_hits": [hit.to_dict() for hit in selected_hits],
             "evidence_chunk_ids": evidence_chunk_ids,
             "qa_generation_unit_text": unit_text,
+            "llm_evidence_ref_map": llm_evidence_ref_map,
             "retrieval_trace": {
                 "query": _safe_text(question),
                 "retrieval_query": clean_retrieval_query,
@@ -751,30 +753,10 @@ class QADocumentEvidenceIndex:
         source_chunks = list(source_chunks or [source_chunk])
         source_unit = dict(source_unit or {})
         unit_type = _safe_text(source_unit.get("unit_type"))
-        if len(source_chunks) > 1 or unit_type in {"section", "virtual_parent"}:
-            source_title = "【主来源单元】"
-            unit_meta_parts = []
-            if source_unit.get("unit_id"):
-                unit_meta_parts.append(f"unit_id：{source_unit.get('unit_id')}")
-            if unit_type:
-                unit_meta_parts.append(f"unit_type：{unit_type}")
-            if source_unit.get("qa_mode"):
-                unit_meta_parts.append(f"qa_mode：{source_unit.get('qa_mode')}")
-            unit_body = _safe_text(source_unit.get("unit_text"))
-            if not unit_body:
-                unit_body = "\n\n".join(
-                    f"chunk_id：{_safe_text(chunk.get('chunk_id'))}\n{_format_chunk_for_unit(chunk)}"
-                    for chunk in source_chunks
-                )
-            sections: List[str] = [
-                "\n".join([source_title, *unit_meta_parts, unit_body]).strip()
-            ]
-        else:
-            sections = [
-                "【主来源块】\n"
-                + f"chunk_id：{_safe_text(source_chunk.get('chunk_id'))}\n"
-                + _format_chunk_for_unit(source_chunk)
-            ]
+        primary_parts = ["【主来源材料】"]
+        for position, chunk in enumerate(source_chunks, start=1):
+            primary_parts.append(f"主材料-{position}\n{_format_chunk_for_unit(chunk)}")
+        sections: List[str] = ["\n\n".join(primary_parts).strip()]
 
         same_section_hits = [
             hit
@@ -788,29 +770,56 @@ class QADocumentEvidenceIndex:
         ]
 
         if same_section_hits:
-            parent_title = _parent_title_path(_safe_text(source_chunk.get("title_path"))) or "同章节"
             has_auto_merge = any(hit.role == "auto_merged_section_context" for hit in same_section_hits)
             label = "自动合并同章节上下文" if has_auto_merge else "同章节上下文"
-            parts = [f"【{label}：{parent_title}】"]
-            for hit in same_section_hits:
+            parts = [f"【{label}】"]
+            for position, hit in enumerate(same_section_hits, start=1):
                 chunk = self.get_chunk(hit.chunk_index)
-                parts.append(f"chunk_id：{hit.chunk_id}\n{_format_chunk_for_unit(chunk)}")
+                parts.append(f"同章节补充-{position}\n{_format_chunk_for_unit(chunk)}")
             sections.append("\n\n".join(parts))
 
         if related_hits:
             parts = ["【相关补充】"]
-            for hit in related_hits:
+            for position, hit in enumerate(related_hits, start=1):
                 chunk = self.get_chunk(hit.chunk_index)
-                parent_title = _parent_title_path(_safe_text(chunk.get("title_path")))
-                prefix = f"父级章节：{parent_title}\n" if parent_title else ""
-                parts.append(
-                    f"chunk_id：{hit.chunk_id}\n"
-                    + prefix
-                    + _format_chunk_for_unit(chunk)
-                )
+                parts.append(f"相关补充-{position}\n{_format_chunk_for_unit(chunk)}")
             sections.append("\n\n".join(parts))
 
         return "\n\n".join(section for section in sections if section.strip()).strip()
+
+    @staticmethod
+    def _build_llm_evidence_ref_map(
+        *,
+        source_chunks: Sequence[Dict[str, Any]],
+        hits: Sequence[EvidenceHit],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Map readable evidence labels back to internal chunk metadata.
+
+        The labels are the only identifiers exposed to the answer model. Real
+        chunk IDs remain in the returned trace and are restored after parsing.
+        """
+        refs: Dict[str, Dict[str, Any]] = {}
+        for position, chunk in enumerate(source_chunks, start=1):
+            refs[f"主材料-{position}"] = {
+                "chunk_id": _safe_text(chunk.get("chunk_id")),
+                "chunk_index": _safe_int(chunk.get("chunk_index")),
+                "role": "primary_source",
+            }
+        same_position = 0
+        related_position = 0
+        for hit in hits:
+            if hit.role in {"same_section_context", "auto_merged_section_context"}:
+                same_position += 1
+                ref = f"同章节补充-{same_position}"
+            else:
+                related_position += 1
+                ref = f"相关补充-{related_position}"
+            refs[ref] = {
+                "chunk_id": hit.chunk_id,
+                "chunk_index": hit.chunk_index,
+                "role": hit.role,
+            }
+        return refs
 
 
 __all__ = [

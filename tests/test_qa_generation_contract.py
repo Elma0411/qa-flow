@@ -67,19 +67,19 @@ class QAGenerationContractTests(unittest.TestCase):
             qa_detail_mode="point",
         )
 
-        self.assertIn("先在内部确定一个读者场景和一个信息需求", zh_prompt)
+        self.assertIn("在内部确定一个读者场景和一个信息需求", zh_prompt)
         self.assertIn("请使用中文。", zh_prompt)
-        self.assertIn("不要把原文条款的前半句改成问题", zh_prompt)
-        self.assertIn("语义压缩示例", zh_prompt)
-        self.assertIn("农村独生子女或双女户家庭参加医保有什么优惠", zh_prompt)
+        self.assertIn("不要把原文一句话的前半句改成问题", zh_prompt)
+        self.assertIn("例如写", zh_prompt)
+        self.assertIn("生育后还能增加多少天产假", zh_prompt)
         self.assertIn("默认提问者：办事人", zh_prompt)
-        self.assertIn("identify one reader scenario and one information need", en_prompt)
+        self.assertIn("Identify one reader scenario and one information need", en_prompt)
         self.assertIn("Use English.", en_prompt)
-        self.assertIn("Do not copy a source clause", en_prompt)
-        self.assertIn("semantic compression", en_prompt)
+        self.assertIn("Do not convert the first half", en_prompt)
+        self.assertIn("Example: write", en_prompt)
         self.assertIn("Default questioner: An applicant", en_prompt)
 
-    def test_candidate_input_marks_title_path_as_internal_context(self):
+    def test_candidate_input_contains_only_readable_source_material(self):
         class RecordingClient:
             def __init__(self):
                 self.messages = []
@@ -120,8 +120,12 @@ class QAGenerationContractTests(unittest.TestCase):
             qa_detail_mode="point",
         )
 
-        self.assertIn("不得直接照搬进 question", client.messages[1]["content"])
-        self.assertIn("主来源单元正文", client.messages[1]["content"])
+        user_content = client.messages[1]["content"]
+        self.assertIn("主来源材料", user_content)
+        self.assertIn("结婚登记前参加婚前医学检查的费用按规定承担。", user_content)
+        self.assertNotIn("chunk-1", user_content)
+        self.assertNotIn("title_path", user_content)
+        self.assertNotIn("婚姻登记 > 婚前医学检查", user_content)
 
     def test_answer_prompt_does_not_reject_candidate_as_quality_decision(self):
         zh_prompt = build_evidence_answer_system_prompt(
@@ -141,6 +145,10 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertIn("Do not output an empty items list as a quality decision", en_prompt)
         self.assertIn("exactly one item", en_prompt)
         self.assertNotIn('{"items":[]}', en_prompt)
+        self.assertNotIn("- retrieval_query\n", zh_prompt)
+        self.assertNotIn("- must_have_terms\n", zh_prompt)
+        self.assertNotIn("- retrieval_query\n", en_prompt)
+        self.assertNotIn("- must_have_terms\n", en_prompt)
 
     def test_answer_prompt_requires_standalone_reader_explanation(self):
         zh_prompt = build_evidence_answer_system_prompt(
@@ -157,6 +165,7 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertIn("1 到 2 句完整、面向读者的说明", zh_prompt)
         self.assertIn("不是证据追踪，也不是原文句子的后半截", zh_prompt)
         self.assertIn("source_fact_text 和 evidence_usage 完成", zh_prompt)
+        self.assertIn("标签仅用于证据追踪", zh_prompt)
         self.assertIn("不要以“该优惠、该答案、此项、上述、其中、它”等指代词开头", zh_prompt)
         self.assertIn("农村独生子女或双女户父母参加新型农村合作医疗时", zh_prompt)
         self.assertIn("办理流程、申请手续、主管机关或期限不得自行补全", zh_prompt)
@@ -219,6 +228,14 @@ class QAGenerationContractTests(unittest.TestCase):
                         "answer_explanation": "其中给出了处理主体。",
                         "source_fact_text": "这条事实并未出现在证据中。",
                         "source": "模型来源",
+                        "evidence_usage": [
+                            {
+                                "evidence_ref": "主材料-1",
+                                "role": "primary_source",
+                                "snippet": "费用由责任主体承担。",
+                                "usage": "支持费用承担结论",
+                            }
+                        ],
                         "question_type": "简答题",
                         "difficulty_level": "中等",
                     }
@@ -246,9 +263,16 @@ class QAGenerationContractTests(unittest.TestCase):
                     "text": "费用由责任主体承担。",
                 },
                 "source_unit_text": "费用由责任主体承担。",
-                "qa_generation_unit_text": "【主来源块】费用由责任主体承担。",
+                "qa_generation_unit_text": "【主来源材料】\n主材料-1\n费用由责任主体承担。",
                 "evidence_chunk_ids": [],
                 "qa_generation_unit_id": "unit-1",
+                "llm_evidence_ref_map": {
+                    "主材料-1": {
+                        "chunk_id": "chunk-1",
+                        "chunk_index": 1,
+                        "role": "primary_source",
+                    }
+                },
             },
             qa_detail_mode="summary",
             prompt_language="zh",
@@ -262,6 +286,148 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertEqual(candidate_question, item["question"])
         self.assertEqual("这条事实并未出现在证据中。", item["source_fact_text"])
         self.assertNotIn("source_anchor_text", item)
+        self.assertEqual("chunk-1", item["evidence_usage"][0]["chunk_id"])
+        self.assertEqual("主材料-1", item["evidence_usage"][0]["evidence_ref"])
+
+    def test_answer_input_hides_internal_metadata_and_planning_fields(self):
+        class RecordingClient:
+            def __init__(self):
+                self.messages = []
+
+            def create_chat_completion_text(self, **kwargs):
+                self.messages = kwargs["messages"]
+                return json.dumps(
+                    {
+                        "items": [
+                            {
+                                "question": "费用由谁承担？",
+                                "answer": "费用由责任主体承担。",
+                                "answer_explanation": "责任主体承担相关费用。",
+                                "source_fact_text": "费用由责任主体承担。",
+                                "source": "文本内容",
+                                "question_type": "简答题",
+                                "difficulty_level": "简单",
+                                "evidence_usage": [
+                                    {
+                                        "evidence_ref": "主材料-1",
+                                        "snippet": "费用由责任主体承担。",
+                                        "usage": "支持答案",
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+
+        client = RecordingClient()
+        item, reason = call_evidence_answer_llm(
+            client=client,
+            model="test-model",
+            candidate={
+                "question": "费用由谁承担？",
+                "retrieval_query": "费用 承担 责任主体",
+                "must_have_terms": ["费用", "责任主体"],
+                "answer_scope": "source_primary",
+                "question_type": "简答题",
+                "difficulty_level": "简单",
+            },
+            generation_unit={
+                "source_chunk": {
+                    "chunk_id": "secret-chunk-id",
+                    "chunk_index": 42,
+                    "title_path": "内部���题 > 不应出现",
+                    "text": "费用由责任主体承担。",
+                },
+                "source_unit_text": "费用由责任主体承担。",
+                "qa_generation_unit_text": "【主来源材料】\n主材料-1\n费用由责任主体承担。",
+                "evidence_chunk_ids": ["supplement-id"],
+                "qa_generation_unit_id": "unit-1",
+                "llm_evidence_ref_map": {
+                    "主材料-1": {
+                        "chunk_id": "secret-chunk-id",
+                        "chunk_index": 42,
+                        "role": "primary_source",
+                    }
+                },
+            },
+            qa_detail_mode="point",
+            prompt_language="zh",
+            request_timeout=10,
+            item_normalizer_with_reason=validate_and_normalize_item_with_reason,
+            source_override_handler=lambda *_args, **_kwargs: None,
+        )
+
+        self.assertEqual("ok", reason)
+        self.assertIsNotNone(item)
+        user_content = client.messages[1]["content"]
+        self.assertIn("主材料-1", user_content)
+        self.assertIn("费用由责任主体承担。", user_content)
+        self.assertNotIn("secret-chunk-id", user_content)
+        self.assertNotIn("内部标题", user_content)
+        self.assertNotIn("retrieval_query", user_content)
+        self.assertNotIn("must_have_terms", user_content)
+        self.assertEqual("secret-chunk-id", item["evidence_usage"][0]["chunk_id"])
+
+    def test_pipeline_settings_includes_retrieval_module(self):
+        from pathlib import Path
+
+        app_js = (Path(__file__).resolve().parents[1] / "static" / "app.js").read_text(
+            encoding="utf-8"
+        )
+        start = app_js.index("function openPipelineSettingsModal()")
+        end = app_js.index("function createModuleCard", start)
+        modal_source = app_js[start:end]
+        self.assertIn("'pipeline.retrieval'", modal_source)
+
+    def test_evidence_rendering_uses_readable_refs_and_preserves_mapping(self):
+        from qa.generation.evidence_units import EvidenceHit, QADocumentEvidenceIndex
+
+        index = QADocumentEvidenceIndex(
+            chunks=[
+                {
+                    "chunk_id": "primary-id",
+                    "chunk_index": 1,
+                    "title_path": "内部标题 > 第一条",
+                    "parent_index_path": "1",
+                    "text": "主材料事实。",
+                },
+                {
+                    "chunk_id": "supplement-id",
+                    "chunk_index": 2,
+                    "title_path": "内部标题 > 第二条",
+                    "parent_index_path": "1",
+                    "text": "补充事实。",
+                },
+            ],
+            embeddings=[[1.0], [0.5]],
+        )
+        generation_unit = index.build_generation_unit(
+            source_chunk_index=1,
+            source_unit={"source_chunk_indexes": [1]},
+            question="主材料事实是什么？",
+            answer_scope="same_section",
+            semantic_hits=[
+                EvidenceHit(
+                    chunk_id="supplement-id",
+                    chunk_index=2,
+                    score=0.8,
+                    title_path="内部标题 > 第二条",
+                    parent_index_path="1",
+                    role="same_section_context",
+                )
+            ],
+            raw_semantic_trace=[],
+        )
+
+        rendered = generation_unit["qa_generation_unit_text"]
+        self.assertIn("主材料-1", rendered)
+        self.assertIn("同章节补充-1", rendered)
+        self.assertNotIn("primary-id", rendered)
+        self.assertNotIn("supplement-id", rendered)
+        self.assertNotIn("内部标题", rendered)
+        self.assertEqual("primary-id", generation_unit["llm_evidence_ref_map"]["主材料-1"]["chunk_id"])
+        self.assertEqual("supplement-id", generation_unit["llm_evidence_ref_map"]["同章节补充-1"]["chunk_id"])
 
 
 if __name__ == "__main__":

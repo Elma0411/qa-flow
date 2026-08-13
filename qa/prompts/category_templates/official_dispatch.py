@@ -22,7 +22,7 @@ TEMPLATE = CategoryPromptTemplate(
 1. 答案应明确任务对象、责任主体、完成时间、提交材料或执行动作。
 2. 如果问题涉及工作安排，答案不能只写“加强落实/统筹推进”，必须落到具体动作或成果。
 3. 对报告类内容，答案要区分“已完成情况、存在问题、下一步计划”，不要混写。
-4. 若主来源块没有给出具体任务，应说明未给出具体任务，不得编造。""",
+4. 若主来源材料没有给出具体任务，应说明未给出具体任务，不得编造。""",
     candidate_en="""Applicable labels: Company and government dispatches.
 Default questioner: A responsible manager or handler who must execute, submit, or verify a task.
 Question focus:
