@@ -7,6 +7,29 @@ function normalizeItems(items) {
   });
 }
 
+function displayedUnsupervisedScores(item) {
+  const raw = item?.unsupervised_evaluation?.scores || item?.unsupervised_scores || {};
+  const apiuseUi = ui();
+  if (apiuseUi && typeof apiuseUi.filterUnsupervisedScores === 'function') {
+    return apiuseUi.filterUnsupervisedScores(raw);
+  }
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const filtered = {};
+  const validUnitScore = (value) => {
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 0 && number <= 1 ? number : 0;
+  };
+  ['faithfulness', 'answerability', 'coverage_score'].forEach((key) => {
+    filtered[key] = validUnitScore(source[key]);
+  });
+  if (source.answerability === undefined || source.answerability === null || source.answerability === '') {
+    filtered.answerability = validUnitScore(source.p);
+  }
+  filtered.average_score =
+    (filtered.faithfulness + filtered.answerability + filtered.coverage_score) / 3;
+  return filtered;
+}
+
 // 本地 JSON 选择并解析
 const localJsonInput = $('#localJsonInput');
 if (localJsonInput) {
@@ -105,30 +128,22 @@ function renderQaResults(data, includeDetails) {
     const meta = document.createElement('div');
     meta.className = 'qa-meta';
     const simCount = Array.isArray(it.similar_questions) ? it.similar_questions.length : 0;
-    const scores = it?.unsupervised_evaluation?.scores || null;
+    const scores = displayedUnsupervisedScores(it);
     const faithfulness =
       scores && typeof scores.faithfulness === 'number' ? scores.faithfulness : null;
     const answerability =
       scores && typeof scores.answerability === 'number' ? scores.answerability : null;
     const coverageScore =
       scores && typeof scores.coverage_score === 'number' ? scores.coverage_score : null;
-    const coverageSelf =
-      scores && typeof scores.coverage_self === 'number' ? scores.coverage_self : null;
-    const covSoft =
-      scores && typeof scores.coverage_recall_soft === 'number' ? scores.coverage_recall_soft : null;
-    const unsupF1 =
-      scores && typeof scores.unsupervised_f1 === 'number' ? scores.unsupervised_f1 : null;
+    const averageScore =
+      scores && typeof scores.average_score === 'number' ? scores.average_score : null;
     const metricParts = [];
-    if (typeof faithfulness === 'number') metricParts.push(`忠实度: ${faithfulness.toFixed(2)}`);
-    if (typeof answerability === 'number') metricParts.push(`可回答性: ${answerability.toFixed(2)}`);
-    if (typeof coverageScore === 'number') metricParts.push(`Coverage: ${coverageScore.toFixed(2)}`);
-    if (typeof coverageSelf === 'number') metricParts.push(`CoverageSelf: ${coverageSelf.toFixed(2)}`);
-    if (typeof covSoft === 'number') metricParts.push(`Rg: ${covSoft.toFixed(2)}`);
-    if (typeof unsupF1 === 'number') metricParts.push(`F1: ${unsupF1.toFixed(2)}`);
+    if (typeof faithfulness === 'number') metricParts.push(`faithfulness: ${faithfulness.toFixed(2)}`);
+    if (typeof answerability === 'number') metricParts.push(`answerability: ${answerability.toFixed(2)}`);
+    if (typeof coverageScore === 'number') metricParts.push(`coverage_score: ${coverageScore.toFixed(2)}`);
+    if (typeof averageScore === 'number') metricParts.push(`平均分: ${averageScore.toFixed(2)}`);
     const metricPart = metricParts.length ? ` | ${metricParts.join(' | ')}` : '';
-    meta.textContent = `主题: ${it.theme || '未分类'} | 分数: ${
-      it.average_score ?? ''
-    }${metricPart} | 文件: ${it.original_filename || ''}${simCount ? ` | 相似问: ${simCount}` : ''}`;
+    meta.textContent = `主题: ${it.theme || '未分类'}${metricPart ? ` | ${metricPart}` : ''} | 文件: ${it.original_filename || ''}${simCount ? ` | 相似问: ${simCount}` : ''}`;
 
     const more = document.createElement('details');
     more.className = 'more';
@@ -165,12 +180,15 @@ function renderMeta(obj) {
 }
 
 function renderMetaFromConsolidated(json) {
+  const unsupervisedScores = displayedUnsupervisedScores({
+    unsupervised_scores: json.unsupervised_scores || {},
+  });
   const meta = {
     task: json.task || {},
     model: json.model || {},
     counts: json.counts || {},
     timing: json.timing || {},
-    unsupervised_scores: json.unsupervised_scores || {},
+    unsupervised_scores: unsupervisedScores,
     theme_distribution: json.theme_distribution || {},
   };
   renderMeta(meta);
@@ -204,47 +222,38 @@ function renderDetailPanel(it, includeDetails) {
   const panel = document.createElement('div');
   panel.className = 'detail-panel';
 
-  const unsupScores = it?.unsupervised_evaluation?.scores || null;
+  const unsupScores = displayedUnsupervisedScores(it);
   const pSingle =
     unsupScores && typeof unsupScores.answerability === 'number' ? unsupScores.answerability : null;
+  const averageScore =
+    unsupScores && typeof unsupScores.average_score === 'number' ? unsupScores.average_score : null;
 
   const badges = document.createElement('div');
   badges.className = 'badges';
   badges.innerHTML = `
     <span class="badge theme">${escapeHtml(it.theme || '未分类')}</span>
     ${
-      typeof it.average_score === 'number'
-        ? `<span class="badge score">分数 ${it.average_score.toFixed(2)}</span>`
-        : ''
-    }
-    ${
-      it?.unsupervised_evaluation?.scores &&
-      typeof it.unsupervised_evaluation.scores.faithfulness === 'number'
-        ? `<span class="badge faith">忠实度 ${it.unsupervised_evaluation.scores.faithfulness.toFixed(
+      typeof unsupScores.faithfulness === 'number'
+        ? `<span class="badge faith">faithfulness ${unsupScores.faithfulness.toFixed(
             2,
           )}</span>`
         : ''
     }
     ${
-      it?.unsupervised_evaluation?.scores &&
       typeof pSingle === 'number'
-        ? `<span class="badge faith">可回答性 ${pSingle.toFixed(2)}</span>`
+        ? `<span class="badge faith">answerability ${pSingle.toFixed(2)}</span>`
         : ''
     }
     ${
-      it?.unsupervised_evaluation?.scores &&
-      typeof it.unsupervised_evaluation.scores.coverage_score === 'number'
-        ? `<span class="badge score">Coverage ${it.unsupervised_evaluation.scores.coverage_score.toFixed(
+      typeof unsupScores.coverage_score === 'number'
+        ? `<span class="badge score">coverage_score ${unsupScores.coverage_score.toFixed(
             2,
           )}</span>`
         : ''
     }
     ${
-      it?.unsupervised_evaluation?.scores &&
-      typeof it.unsupervised_evaluation.scores.unsupervised_f1 === 'number'
-        ? `<span class="badge score">F1 ${it.unsupervised_evaluation.scores.unsupervised_f1.toFixed(
-            2,
-          )}</span>`
+      typeof averageScore === 'number'
+        ? `<span class="badge score">平均分 ${averageScore.toFixed(2)}</span>`
         : ''
     }
     ${
@@ -281,38 +290,17 @@ function renderDetailPanel(it, includeDetails) {
   if (it.difficulty_level) addKv(kv, '难度', it.difficulty_level);
   if (it.answer_explanation) addKv(kv, '答案解析', it.answer_explanation);
   if (it.evaluation_method) addKv(kv, '评估方式', it.evaluation_method);
-  if (
-    it?.unsupervised_evaluation?.scores &&
-    typeof it.unsupervised_evaluation.scores.faithfulness === 'number'
-  ) {
-    addKv(kv, '忠实度', it.unsupervised_evaluation.scores.faithfulness.toFixed(4));
+  if (typeof unsupScores.faithfulness === 'number') {
+    addKv(kv, 'faithfulness', unsupScores.faithfulness.toFixed(4));
   }
-  if (it?.unsupervised_evaluation?.scores && typeof it.unsupervised_evaluation.scores.answerability === 'number') {
-    addKv(kv, '可回答性', it.unsupervised_evaluation.scores.answerability.toFixed(4));
+  if (typeof unsupScores.answerability === 'number') {
+    addKv(kv, 'answerability', unsupScores.answerability.toFixed(4));
   }
-  if (
-    it?.unsupervised_evaluation?.scores &&
-    typeof it.unsupervised_evaluation.scores.coverage_score === 'number'
-  ) {
-    addKv(kv, 'Coverage', it.unsupervised_evaluation.scores.coverage_score.toFixed(4));
+  if (typeof unsupScores.coverage_score === 'number') {
+    addKv(kv, 'coverage_score', unsupScores.coverage_score.toFixed(4));
   }
-  if (
-    it?.unsupervised_evaluation?.scores &&
-    typeof it.unsupervised_evaluation.scores.coverage_self === 'number'
-  ) {
-    addKv(kv, 'CoverageSelf', it.unsupervised_evaluation.scores.coverage_self.toFixed(4));
-  }
-  if (
-    it?.unsupervised_evaluation?.scores &&
-    typeof it.unsupervised_evaluation.scores.coverage_recall_soft === 'number'
-  ) {
-    addKv(kv, '覆盖召回(组级R)', it.unsupervised_evaluation.scores.coverage_recall_soft.toFixed(4));
-  }
-  if (
-    it?.unsupervised_evaluation?.scores &&
-    typeof it.unsupervised_evaluation.scores.unsupervised_f1 === 'number'
-  ) {
-    addKv(kv, '无监督F1', it.unsupervised_evaluation.scores.unsupervised_f1.toFixed(4));
+  if (typeof averageScore === 'number') {
+    addKv(kv, '平均分', averageScore.toFixed(4));
   }
   if (Array.isArray(it.similar_questions) && it.similar_questions.length) {
     const lines = it.similar_questions
@@ -352,11 +340,14 @@ function renderDetailPanel(it, includeDetails) {
 
     if (it.unsupervised_evaluation && it.unsupervised_evaluation.scores) {
       const s = it.unsupervised_evaluation.scores || {};
-      const keep = ['faithfulness', 'answerability', 'coverage_score', 'coverage_self', 'coverage_recall_soft', 'unsupervised_f1'];
-      const filtered = {};
-      keep.forEach((k) => {
-        if (typeof s[k] === 'number') filtered[k] = s[k];
-      });
+      const apiuseUi = ui();
+      const filtered = apiuseUi && typeof apiuseUi.filterUnsupervisedScores === 'function'
+        ? apiuseUi.filterUnsupervisedScores(s)
+        : {
+            faithfulness: s.faithfulness,
+            answerability: s.answerability,
+            coverage_score: s.coverage_score,
+          };
       ev.appendChild(renderScoreGroup('Unsupervised', filtered));
     }
     panel.appendChild(ev);

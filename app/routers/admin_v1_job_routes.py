@@ -43,6 +43,7 @@ from app.services.evaluation import (
 from app.services.gpu import admit_gpu_job, release_gpu_job
 from app.services.unsupervised_evaluation import (
     UNSUPERVISED_EVALUATION_AVAILABLE,
+    compute_unsupervised_average_score,
     execute_unsupervised_suite_blocking,
 )
 
@@ -190,22 +191,8 @@ async def create_unsupervised_evaluation_job(payload: UnsupervisedEvaluationJobR
                         "unsupervised",
                         "unsupervised_f1",
                     }:
-                        score_key = "unsupervised_f1"
-                        score_value = (scores or {}).get(score_key)
-                        method_name = "unsupervised_f1"
-                        if not isinstance(score_value, (int, float, str)):
-                            score_key = "faithfulness"
-                            score_value = (scores or {}).get(score_key)
-                            method_name = "faithfulness"
-                        if not isinstance(score_value, (int, float, str)):
-                            score_key = "answerability"
-                            score_value = (scores or {}).get(score_key)
-                            method_name = "answerability"
-                        try:
-                            rec["average_score"] = float(score_value) if score_value is not None else -1.0
-                        except Exception:
-                            rec["average_score"] = -1.0
-                        rec["evaluation_method"] = method_name
+                        rec["average_score"] = compute_unsupervised_average_score(scores)
+                        rec["evaluation_method"] = "unsupervised_f1"
 
                     updated_records.append(rec)
                     updated_ids.append(qa_id)

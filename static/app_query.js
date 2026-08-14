@@ -18,8 +18,15 @@ const chunkQaDetailModal = $('#chunkQaDetailModal');
 const chunkQaDetailModalClose = $('#chunkQaDetailModalClose');
 if (chunkQaDetailOverlay) chunkQaDetailOverlay.addEventListener('click', closeQaDetailModal);
 if (chunkQaDetailModalClose) chunkQaDetailModalClose.addEventListener('click', closeQaDetailModal);
+const chunkTextDetailOverlay = $('#chunkTextDetailOverlay');
+const chunkTextDetailModalClose = $('#chunkTextDetailModalClose');
+if (chunkTextDetailOverlay) chunkTextDetailOverlay.addEventListener('click', closeChunkTextModal);
+if (chunkTextDetailModalClose) chunkTextDetailModalClose.addEventListener('click', closeChunkTextModal);
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') closeQaDetailModal();
+  if (event.key === 'Escape') {
+    closeChunkTextModal();
+    closeQaDetailModal();
+  }
 });
 if (chunkDocSelect) {
   chunkDocSelect.addEventListener('change', () => {
@@ -91,15 +98,30 @@ function createKvGrid(rows) {
   return grid;
 }
 
-function createCodeSection(title, text) {
+function createCodeSection(title, text, options = {}) {
   const section = document.createElement('section');
   section.className = 'chunk-debug-section';
   const heading = document.createElement('h4');
   heading.className = 'chunk-debug-section-title';
   heading.textContent = title;
-  const body = document.createElement('div');
-  body.className = 'chunk-debug-code';
+  const expandable = options.expandable === true;
+  if (expandable) {
+    const hint = document.createElement('span');
+    hint.className = 'chunk-debug-expand-hint';
+    hint.textContent = '点击放大查看';
+    heading.appendChild(hint);
+  }
+  const body = document.createElement(expandable ? 'button' : 'div');
+  body.className = `chunk-debug-code${expandable ? ' chunk-debug-code--expandable' : ''}`;
   body.textContent = String(text || '').trim() || '-';
+  if (expandable) {
+    body.type = 'button';
+    body.setAttribute('aria-label', '点击放大查看完整 Chunk 正文');
+    body.title = '点击放大查看完整 Chunk 正文';
+    body.addEventListener('click', () => {
+      if (typeof options.onOpen === 'function') options.onOpen();
+    });
+  }
   section.appendChild(heading);
   section.appendChild(body);
   return section;
@@ -137,7 +159,7 @@ function openQaDetailModal(item) {
   body.innerHTML = '';
   body.appendChild(buildQaDetailCard(item, { modal: true }));
   if (title) {
-    title.textContent = String(item && item.question || '').trim() || 'QA 详情';
+    title.textContent = String(item && item.question || '').trim() || '问答对详情';
   }
   overlay.hidden = false;
   modal.hidden = false;
@@ -159,6 +181,48 @@ function closeQaDetailModal() {
     overlay.hidden = true;
     modal.hidden = true;
   }, 160);
+}
+
+function openChunkTextModal(chunk) {
+  const modal = $('#chunkTextDetailModal');
+  const overlay = $('#chunkTextDetailOverlay');
+  const body = $('#chunkTextDetailModalBody');
+  const title = $('#chunkTextDetailModalTitle');
+  const path = $('#chunkTextDetailModalPath');
+  if (!modal || !overlay || !body) return;
+
+  body.textContent = String(chunk && chunk.text || '').trim() || '-';
+  if (title) title.textContent = 'Chunk 正文';
+  if (path) {
+    path.textContent = [chunk && chunk.title_path, chunk && chunk.section_path]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+      .join(' ｜ ') || '当前内容块';
+  }
+  overlay.hidden = false;
+  modal.hidden = false;
+  overlay.classList.add('is-open');
+  modal.classList.add('is-open');
+  modal.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('drawer-open');
+  if (chunkTextDetailModalClose) chunkTextDetailModalClose.focus({ preventScroll: true });
+}
+
+function closeChunkTextModal() {
+  const modal = $('#chunkTextDetailModal');
+  const overlay = $('#chunkTextDetailOverlay');
+  if (!modal || !overlay || modal.hidden) return;
+  overlay.classList.remove('is-open');
+  modal.classList.remove('is-open');
+  modal.setAttribute('aria-hidden', 'true');
+  if (!document.querySelector('.chunk-qa-modal.is-open')) {
+    document.body.classList.remove('drawer-open');
+  }
+  window.setTimeout(() => {
+    if (modal.classList.contains('is-open')) return;
+    overlay.hidden = true;
+    modal.hidden = true;
+  }, 180);
 }
 
 function switchChunkDebugView(view) {
@@ -271,7 +335,12 @@ function renderChunkView(payload) {
       ['创建时间', fmtDebugTs(chunk.created_at)],
     ]),
   );
-  card.appendChild(createCodeSection('正文', chunk.text));
+  card.appendChild(
+    createCodeSection('正文', chunk.text, {
+      expandable: true,
+      onOpen: () => openChunkTextModal(chunk),
+    }),
+  );
 
   const qaSection = document.createElement('section');
   qaSection.className = 'chunk-debug-section';
@@ -294,7 +363,16 @@ function renderChunkView(payload) {
       headTitle.textContent = `${index + 1}. ${String(item.question || '').trim() || '未命名问题'}`;
       const score = document.createElement('div');
       score.className = 'chunk-debug-trace-score';
-      score.textContent = `平均分 ${toScoreText(item.average_score)}`;
+      const scores = ui().filterUnsupervisedScores
+        ? ui().filterUnsupervisedScores(item?.unsupervised_evaluation?.scores || item?.unsupervised_scores || {})
+        : (item?.unsupervised_evaluation?.scores || {});
+      score.textContent = [
+        typeof scores.faithfulness === 'number' ? `faithfulness ${toScoreText(scores.faithfulness)}` : '',
+        typeof scores.answerability === 'number' ? `answerability ${toScoreText(scores.answerability)}` : '',
+        typeof scores.coverage_score === 'number' ? `coverage ${toScoreText(scores.coverage_score)}` : '',
+        typeof scores.average_score === 'number' ? `平均分 ${toScoreText(scores.average_score)}` : '',
+      ].filter(Boolean).join(' · ');
+      if (!score.textContent) score.remove();
       head.appendChild(headTitle);
       head.appendChild(score);
       block.appendChild(head);
@@ -315,7 +393,7 @@ function renderChunkView(payload) {
       if (evidenceDisclosure) block.appendChild(evidenceDisclosure);
       const actions = document.createElement('div');
       actions.className = 'chunk-debug-item-actions';
-      actions.appendChild(createSmallActionButton('打开完整详情', () => openQaDetailModal(item)));
+      actions.appendChild(createSmallActionButton('打开问答对详情', () => openQaDetailModal(item)));
       block.appendChild(actions);
       list.appendChild(block);
     });
@@ -348,7 +426,6 @@ function renderQaList(qaItems) {
     meta.textContent = [
       item.question_type ? `题型 ${item.question_type}` : '',
       item.knowledge_category ? `分类 ${item.knowledge_category}` : '',
-      `平均分 ${toScoreText(item.average_score)}`,
       item.filtered ? '已过滤' : '保留',
     ]
       .filter(Boolean)
@@ -569,7 +646,7 @@ function buildQaDetailCard(item, options = {}) {
 
   const title = document.createElement('h3');
   title.className = 'chunk-debug-title';
-  title.textContent = 'QA 详情';
+  title.textContent = '问答对详情';
   card.appendChild(title);
 
   if (!options.modal) {
@@ -584,7 +661,6 @@ function buildQaDetailCard(item, options = {}) {
       item.question_type ? `题型：${item.question_type}` : '',
       item.qa_generation_unit_mode ? `场景：${item.qa_generation_unit_mode}` : '',
       item.knowledge_category ? `分类：${item.knowledge_category}` : '',
-      `平均分：${toScoreText(item.average_score)}`,
       item.filtered ? '状态：已过滤' : '状态：保留',
       item.is_augmented ? '增广项' : '主项',
     ]),
@@ -677,8 +753,14 @@ function buildQaDetailCard(item, options = {}) {
       evaluationWrap.appendChild(renderScoreGroup('Local', item.evaluation.local.scores));
     }
     if (item.unsupervised_evaluation && item.unsupervised_evaluation.scores) {
+      const scores = item.unsupervised_evaluation.scores;
       evaluationWrap.appendChild(
-        renderScoreGroup('Unsupervised', item.unsupervised_evaluation.scores),
+        renderScoreGroup(
+          'Unsupervised',
+          ui().filterUnsupervisedScores
+            ? ui().filterUnsupervisedScores(scores)
+            : scores,
+        ),
       );
     }
     card.appendChild(evaluationWrap);

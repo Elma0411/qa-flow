@@ -11,6 +11,7 @@ from fastapi import APIRouter, Form, HTTPException, Query
 from app.core.config import CONFIG
 from app.core.logger import logger
 from app.services import milvus as milvus_service
+from app.services.unsupervised_evaluation import compute_unsupervised_average_score
 
 router = APIRouter()
 
@@ -62,6 +63,11 @@ async def query_qa(
                     continue
                 items = data.get("items", [])
                 for item in items:
+                    item = dict(item)
+                    unsup = item.get("unsupervised_evaluation") or {}
+                    unsup_scores = unsup.get("scores") if isinstance(unsup, dict) else {}
+                    if isinstance(unsup_scores, dict) and unsup_scores:
+                        item["average_score"] = compute_unsupervised_average_score(unsup_scores)
                     if only_filtered and not item.get("filtered", False):
                         continue
                     avg_score = item.get("average_score")
@@ -134,13 +140,11 @@ async def get_task_qa(
         filter_expressions: List[str] = [f'task_id == "{task_id}"']
         if only_filtered:
             filter_expressions.append("filtered == true")
-        if min_avg_score > 0.0:
-            filter_expressions.append(f"average_score >= {min_avg_score}")
         filter_expr = " and ".join(filter_expressions)
         milvus_service.milvus_client.load()
         source_field = _resolve_milvus_source_field()
         start_idx = (page - 1) * page_size
-        rows = milvus_service.milvus_client.query(
+        all_rows = milvus_service.milvus_client.query(
             expr=filter_expr,
             output_fields=[
                 "id",
@@ -176,14 +180,38 @@ async def get_task_qa(
                 "is_augmented",
                 "variant_of",
             ],
-            offset=start_idx,
-            limit=page_size,
+            offset=0,
+            limit=16384,
         )
+        rows = []
+        for row in all_rows or []:
+            raw_scores = row.get("unsupervised_scores")
+            try:
+                parsed_scores = json.loads(raw_scores or "{}") if isinstance(raw_scores, str) else raw_scores
+            except json.JSONDecodeError:
+                parsed_scores = {}
+            effective_average = row.get("average_score")
+            if isinstance(parsed_scores, dict) and parsed_scores:
+                effective_average = compute_unsupervised_average_score(parsed_scores)
+            if min_avg_score > 0.0:
+                try:
+                    if float(effective_average or 0.0) < float(min_avg_score):
+                        continue
+                except Exception:
+                    continue
+            row = dict(row)
+            row["average_score"] = effective_average
+            rows.append(row)
+        recomputed_total_items = len(rows) if min_avg_score > 0.0 else None
+        rows = rows[start_idx : start_idx + page_size]
         try:
             count_rows = milvus_service.milvus_client.query(
                 expr=filter_expr, output_fields=["id"], limit=16384
             )
-            total_items = len(count_rows)
+            if min_avg_score > 0.0:
+                total_items = int(recomputed_total_items or 0)
+            else:
+                total_items = len(count_rows)
         except Exception as exc:
             logger.warning("统计总数失败，将使用估算值: %s", exc)
             total_items = start_idx + len(rows)
@@ -434,7 +462,22 @@ async def get_file_qa(
             total_items = start_idx + len(rows)
         items: List[Dict[str, Any]] = []
         category_counts: Dict[str, int] = {}
-        for r in rows:
+        normalized_rows: List[Dict[str, Any]] = []
+        for raw_row in rows or []:
+            r = dict(raw_row)
+            raw_scores = r.get("unsupervised_scores")
+            try:
+                parsed_scores = (
+                    json.loads(raw_scores or "{}")
+                    if isinstance(raw_scores, str)
+                    else raw_scores
+                )
+            except (json.JSONDecodeError, TypeError):
+                parsed_scores = {}
+            if isinstance(parsed_scores, dict) and parsed_scores:
+                r["average_score"] = compute_unsupervised_average_score(parsed_scores)
+            normalized_rows.append(r)
+        for r in normalized_rows:
             if include_details:
                 try:
                     llm_scores = (

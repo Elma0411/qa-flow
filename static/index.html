@@ -11,9 +11,9 @@
       href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@300;400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/ui/styles.css?v=2026-08-14-2" />
+    <link rel="stylesheet" href="/ui/styles.css?v=2026-08-14-7" />
   </head>
-  <body>
+  <body class="app-shell qa-workbench-redesign">
     <a class="skip-link" href="#main">跳到内容</a>
     <header>
       <div class="header-row">
@@ -26,7 +26,7 @@
             <span>文档解析 · 问答生成 · 质量评测</span>
           </div>
         </div>
-        <h1 class="app-shell-page-title">问答对生成与浏览控制台</h1>
+        <h1 class="app-shell-page-title">问答对生成</h1>
         <div class="header-actions">
           <nav class="nav">
             <a class="active" href="/ui/index.html" aria-current="page">流水线</a>
@@ -850,7 +850,7 @@
               max="1"
               step="0.05"
             />
-            <small>开启过滤时生效，低于该平均分的主问答会被过滤。</small>
+            <small>开启过滤时生效；平均分 = faithfulness、answerability、coverage_score 三项的算术平均，低于该值的主问答会被过滤。</small>
           </label>
           <label>
             <input type="checkbox" id="enableVectorStorage" checked />
@@ -1044,7 +1044,7 @@
             <div id="chunkDebugPanelQa" class="chunk-debug-view" data-debug-view-panel="qa">
               <div class="chunk-debug-qa-layout">
                 <div class="chunk-debug-qa-list-box">
-                  <div class="hint" style="margin: 0 0 6px 0">QA 列表</div>
+                  <div class="hint" style="margin: 0 0 6px 0">QA 列表（点击打开大窗）</div>
                   <div id="chunkDebugQaList" class="chunk-debug-qa-list"></div>
                 </div>
               </div>
@@ -1126,13 +1126,13 @@
       <div class="drawer-header chunk-qa-modal-header">
         <div>
           <div class="hint" style="margin: 0 0 3px 0">QA 检索生成详情</div>
-          <h2 class="drawer-title" id="chunkQaDetailModalTitle">请选择一条 QA</h2>
+          <h2 class="drawer-title" id="chunkQaDetailModalTitle">请选择一条问答对</h2>
         </div>
         <button
           type="button"
           class="icon-btn drawer-close"
           id="chunkQaDetailModalClose"
-          aria-label="关闭 QA 详情"
+          aria-label="关闭问答对详情"
           title="关闭"
         >
           <span aria-hidden="true">×</span>
@@ -1141,11 +1141,43 @@
       <div id="chunkQaDetailModalBody" class="chunk-qa-modal-body"></div>
     </aside>
 
-    <script src="/ui/ui.js?v=2026-07-03-3"></script>
+    <div id="chunkTextDetailOverlay" class="drawer-overlay" hidden></div>
+    <aside
+      id="chunkTextDetailModal"
+      class="chunk-qa-modal chunk-text-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="chunkTextDetailModalTitle"
+      aria-describedby="chunkTextDetailModalPath"
+      aria-hidden="true"
+      hidden
+    >
+      <div class="drawer-header chunk-qa-modal-header">
+        <div>
+          <div class="hint" style="margin: 0 0 3px 0">Chunk 正文预览</div>
+          <h2 class="drawer-title" id="chunkTextDetailModalTitle">Chunk 正文</h2>
+          <div class="chunk-text-modal-path" id="chunkTextDetailModalPath">当前内容块</div>
+        </div>
+        <button
+          type="button"
+          class="icon-btn drawer-close"
+          id="chunkTextDetailModalClose"
+          aria-label="关闭 Chunk 正文预览"
+          title="关闭"
+        >
+          <span aria-hidden="true">×</span>
+        </button>
+      </div>
+      <div class="chunk-qa-modal-body chunk-text-modal-body">
+        <div id="chunkTextDetailModalBody" class="chunk-text-modal-content"></div>
+      </div>
+    </aside>
+
+    <script src="/ui/ui.js?v=2026-08-14-5"></script>
     <script src="/ui/app_runtime.js?v=2026-07-03-1"></script>
     <script src="/ui/app_config.js?v=2026-06-25-1"></script>
-    <script src="/ui/app_render.js?v=2026-07-03-1"></script>
-    <script src="/ui/app_query.js?v=2026-08-14-1"></script>
+    <script src="/ui/app_render.js?v=2026-08-14-4"></script>
+    <script src="/ui/app_query.js?v=2026-08-14-5"></script>
     <script src="/ui/app.js?v=2026-08-14-2"></script>
     <script>
       (function () {

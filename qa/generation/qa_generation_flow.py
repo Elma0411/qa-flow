@@ -26,6 +26,14 @@ from qa.validation import normalize_difficulty_level, normalize_question_type
 ALLOWED_QUESTION_TYPES = {"简答题", "单选题", "判断题", "计算题"}
 
 
+class _ScenarioPlannerResult(list):
+    """List-compatible planner result carrying non-prompt audit metadata."""
+
+    def __init__(self, items: List[Dict[str, Any]], debug_metadata: Optional[Dict[str, Any]] = None):
+        super().__init__(items)
+        self.debug_metadata = dict(debug_metadata or {})
+
+
 def normalize_question_types(raw: Any) -> Optional[List[str]]:
     if raw is None:
         return None
@@ -230,7 +238,11 @@ def _restore_evidence_usage_ids(
     raw_entries: Any,
     ref_map: Dict[str, Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Convert model-facing evidence references into persisted chunk IDs."""
+    """Convert model-facing refs into auditable source pointers.
+
+    The model no longer needs to return free-form snippets or usage prose.
+    The mapped chunk/path is authoritative and is restored by the backend.
+    """
     if not isinstance(raw_entries, list):
         return []
     restored: List[Dict[str, Any]] = []
@@ -241,15 +253,15 @@ def _restore_evidence_usage_ids(
         mapped = ref_map.get(ref) if ref else None
         if not isinstance(mapped, dict) or not str(mapped.get("chunk_id") or "").strip():
             continue
-        entry = {
-            key: value
-            for key, value in raw_entry.items()
-            if key not in {"evidence_ref", "chunk_id"}
-        }
-        entry["chunk_id"] = mapped["chunk_id"]
-        entry["role"] = str(mapped.get("role") or "evidence")
-        entry["evidence_ref"] = ref
-        restored.append(entry)
+        restored.append(
+            {
+                "evidence_ref": ref,
+                "role": str(mapped.get("role") or "evidence"),
+                "chunk_id": mapped["chunk_id"],
+                "chunk_index": mapped.get("chunk_index"),
+                "title_path": mapped.get("title_path"),
+            }
+        )
     return restored
 
 
@@ -259,8 +271,14 @@ def _primary_usage_covers_bound_materials(
     source_unit: Dict[str, Any],
     source_chunks: List[Dict[str, Any]],
 ) -> bool:
-    material_ids = [str(value) for value in source_unit.get("material_ids") or [] if str(value)]
-    if len(material_ids) <= 1:
+    required_material_ids = [
+        str(value)
+        for value in source_unit.get("required_material_ids")
+        or source_unit.get("material_ids")
+        or []
+        if str(value)
+    ]
+    if len(required_material_ids) <= 1:
         return True
     raw_mapping = source_unit.get("material_source_chunk_indexes")
     if not isinstance(raw_mapping, dict):
@@ -271,7 +289,7 @@ def _primary_usage_covers_bound_materials(
         if isinstance(chunk, dict)
     }
     cited = set(primary_ids)
-    for material_id in material_ids:
+    for material_id in required_material_ids:
         indexes = raw_mapping.get(material_id)
         if not isinstance(indexes, list):
             return False
@@ -295,6 +313,89 @@ def _resolve_generation_language(prompt_language: str, text: str) -> Tuple[str, 
     return lang, build_language_instruction(lang)
 
 
+def _prompt_title_path(value: Any) -> str:
+    """Return only a human-readable node path; never expose internal IDs."""
+    return str(value or "").strip()
+
+
+def _planning_material_ref(position: int) -> str:
+    number = max(1, int(position))
+    letters: List[str] = []
+    while number:
+        number, remainder = divmod(number - 1, 26)
+        letters.append(chr(ord("A") + remainder))
+    return "主材料-" + "".join(reversed(letters))
+
+
+def _prompt_paths_from_meta(meta: Optional[Dict[str, Any]]) -> List[str]:
+    source_meta = meta if isinstance(meta, dict) else {}
+    values: List[Any] = []
+    for key in ("qa_generation_unit_material_paths", "source_material_paths"):
+        raw = source_meta.get(key)
+        if isinstance(raw, list):
+            values.extend(raw)
+    values.extend(
+        [
+            source_meta.get("qa_generation_unit_title_path"),
+            source_meta.get("source_material_path"),
+            source_meta.get("title_path"),
+        ]
+    )
+    paths: List[str] = []
+    for value in values:
+        path = _prompt_title_path(value)
+        if path and path not in paths:
+            paths.append(path)
+    return paths
+
+
+def _format_source_material_for_prompt(
+    text: str,
+    meta: Optional[Dict[str, Any]],
+) -> str:
+    paths = _prompt_paths_from_meta(meta)
+    path_lines = "\n".join(f"- {path}" for path in paths) or "- 未标注章节"
+    return (
+        "主材料节点路径：\n"
+        f"{path_lines}\n\n"
+        "主材料正文：\n"
+        f"{str(text or '').strip()}"
+    )
+
+
+def _ensure_evidence_paths_for_prompt(
+    unit_text: str,
+    generation_unit: Dict[str, Any],
+) -> str:
+    """Add readable paths for hand-built/legacy units missing the new markers."""
+    text = str(unit_text or "").strip()
+    if "节点路径：" in text or "主材料节点路径：" in text:
+        return text
+    chunks = generation_unit.get("source_chunks")
+    if not isinstance(chunks, list):
+        chunks = []
+    paths: List[str] = []
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        path = _prompt_title_path(chunk.get("title_path"))
+        if path and path not in paths:
+            paths.append(path)
+    source_chunk = generation_unit.get("source_chunk")
+    if isinstance(source_chunk, dict):
+        path = _prompt_title_path(source_chunk.get("title_path"))
+        if path and path not in paths:
+            paths.append(path)
+    path_lines = "\n".join(f"- {path}" for path in paths) or "- 未标注章节"
+    if not text:
+        text = str(
+            generation_unit.get("source_unit_text")
+            or (source_chunk.get("text") if isinstance(source_chunk, dict) else "")
+            or ""
+        ).strip()
+    return f"【主材料节点路径】\n{path_lines}\n\n{text}".strip()
+
+
 def call_scenario_planner_llm(
     *,
     client: Any,
@@ -305,11 +406,21 @@ def call_scenario_planner_llm(
     prompt_language: str,
     request_timeout: int,
     debug_writer: Optional[Callable[[Dict[str, Any]], None]] = None,
+    planning_batch_index: Optional[int] = None,
+    planning_batch_count: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
-    """Plan typed scenarios whose material IDs can be validated deterministically."""
+    """Plan typed scenarios using opaque aliases mapped back by the backend."""
     if requested_count <= 0 or not section_materials:
-        return []
-    readable_materials = [material.to_prompt_dict() for material in section_materials]
+        return _ScenarioPlannerResult([], {"items_raw_count": 0, "items_validated_count": 0})
+    readable_materials = [
+        material.to_prompt_dict(material_ref=_planning_material_ref(index))
+        for index, material in enumerate(section_materials, start=1)
+    ]
+    material_by_ref = {
+        str(readable["material_ref"]): material
+        for readable, material in zip(readable_materials, section_materials)
+    }
+    material_by_id = {str(material.material_id): material for material in section_materials}
     joined_text = "\n\n".join(str(item.get("content") or "") for item in readable_materials)
     language_code, language_instruction = _resolve_generation_language(
         prompt_language,
@@ -342,6 +453,16 @@ def call_scenario_planner_llm(
                     "qa_detail_mode": qa_detail_mode,
                     "requested_count": requested_count,
                     "material_count": len(readable_materials),
+                    "planning_batch_index": planning_batch_index,
+                    "planning_batch_count": planning_batch_count,
+                    "planning_materials": [
+                        {
+                            "material_ref": item.get("material_ref"),
+                            "node_path": item.get("node_path"),
+                            "parent_node_path": item.get("parent_node_path"),
+                        }
+                        for item in readable_materials
+                    ],
                     "system_prompt": system_prompt,
                     "user_content": user_content,
                     "parse_error": str(exc),
@@ -349,7 +470,6 @@ def call_scenario_planner_llm(
             )
         raise
     raw_items = _parse_json_items(raw)
-    allowed_ids = {str(material.material_id) for material in section_materials}
     expected_scenario_type = str(qa_detail_mode or "").strip().lower()
     normalized: List[Dict[str, Any]] = []
     dropped: Dict[str, int] = {}
@@ -363,15 +483,52 @@ def call_scenario_planner_llm(
             continue
         intent = str(item.get("intent") or "").strip()
         reader_need = str(item.get("reader_need") or "").strip()
+        def resolve_refs(raw_values: Any, *, legacy_ids: bool = False) -> Tuple[List[str], int]:
+            values = raw_values if isinstance(raw_values, list) else []
+            resolved: List[str] = []
+            unknown = 0
+            for value in values:
+                token = str(value or "").strip()
+                material = material_by_id.get(token) if legacy_ids else material_by_ref.get(token)
+                if material is None:
+                    # Accept old internal IDs only for old response shapes; the
+                    # new model-facing contract never exposes them.
+                    material = material_by_id.get(token)
+                if material is None:
+                    unknown += 1
+                    continue
+                material_id = str(material.material_id)
+                if material_id not in resolved:
+                    resolved.append(material_id)
+            return resolved, unknown
+
+        has_new_refs = any(
+            key in item for key in ("required_material_refs", "optional_material_refs")
+        )
+        required_material_ids, unknown_required = resolve_refs(
+            item.get("required_material_refs") if has_new_refs else item.get("material_ids"),
+            legacy_ids=not has_new_refs,
+        )
+        optional_material_ids, unknown_optional = resolve_refs(
+            item.get("optional_material_refs"),
+        )
+        if unknown_required or unknown_optional:
+            dropped["unknown_material_ref"] = dropped.get("unknown_material_ref", 0) + (
+                unknown_required + unknown_optional
+            )
+        if not has_new_refs and required_material_ids:
+            # Legacy material_ids represented all bound materials as required.
+            optional_material_ids = []
         material_ids: List[str] = []
-        for value in item.get("material_ids") or []:
-            material_id = str(value or "").strip()
-            if material_id in allowed_ids and material_id not in material_ids:
+        for material_id in [*required_material_ids, *optional_material_ids]:
+            if material_id not in material_ids:
                 material_ids.append(material_id)
         if not intent or not reader_need or not material_ids:
             dropped["missing_required_field"] = dropped.get("missing_required_field", 0) + 1
             continue
-        if scenario_type == "point" and len(material_ids) != 1:
+        if scenario_type == "point" and (
+            len(required_material_ids) != 1 or optional_material_ids
+        ):
             dropped["point_requires_one_material"] = dropped.get("point_requires_one_material", 0) + 1
             continue
         normalized.append(
@@ -380,6 +537,28 @@ def call_scenario_planner_llm(
                 "intent": intent,
                 "reader_need": reader_need,
                 "material_ids": material_ids,
+                "required_material_ids": required_material_ids,
+                "optional_material_ids": optional_material_ids,
+                "required_material_refs": [
+                    _planning_material_ref(
+                        next(
+                            index
+                            for index, material in enumerate(section_materials, start=1)
+                            if str(material.material_id) == material_id
+                        )
+                    )
+                    for material_id in required_material_ids
+                ],
+                "optional_material_refs": [
+                    _planning_material_ref(
+                        next(
+                            index
+                            for index, material in enumerate(section_materials, start=1)
+                            if str(material.material_id) == material_id
+                        )
+                    )
+                    for material_id in optional_material_ids
+                ],
             }
         )
     if debug_writer:
@@ -390,6 +569,16 @@ def call_scenario_planner_llm(
                 "qa_detail_mode": qa_detail_mode,
                 "requested_count": requested_count,
                 "material_count": len(readable_materials),
+                "planning_batch_index": planning_batch_index,
+                "planning_batch_count": planning_batch_count,
+                "planning_materials": [
+                    {
+                        "material_ref": item.get("material_ref"),
+                        "node_path": item.get("node_path"),
+                        "parent_node_path": item.get("parent_node_path"),
+                    }
+                    for item in readable_materials
+                ],
                 "system_prompt": system_prompt,
                 "user_content": user_content,
                 "raw_response": raw,
@@ -398,7 +587,15 @@ def call_scenario_planner_llm(
                 "dropped_validation_reasons": dropped,
             }
         )
-    return normalized
+    return _ScenarioPlannerResult(
+        normalized,
+        {
+            "raw_response": raw,
+            "items_raw_count": len(raw_items),
+            "items_validated_count": len(normalized),
+            "dropped_validation_reasons": dropped,
+        },
+    )
 
 
 def call_question_editor_llm(
@@ -413,15 +610,24 @@ def call_question_editor_llm(
     prompt_language: str,
     request_timeout: int,
     chunk_index: Optional[int] = None,
+    source_material_path: Optional[str] = None,
+    source_material_paths: Optional[List[str]] = None,
     debug_writer: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Tuple[Optional[Dict[str, Any]], str]:
     """Run one semantic editor decision; code validates only its output shape."""
     original_question = str(candidate.get("question") or "").strip()
     if not original_question:
         return None, "missing_question"
+    readable_source_material = _format_source_material_for_prompt(
+        source_material,
+        {
+            "source_material_path": source_material_path,
+            "source_material_paths": source_material_paths or [],
+        },
+    )
     language_code, language_instruction = _resolve_generation_language(
         prompt_language,
-        source_material or original_question,
+        readable_source_material or original_question,
     )
     system_prompt = build_question_editor_system_prompt(
         language_code=language_code,
@@ -434,7 +640,7 @@ def call_question_editor_llm(
         "reader_need": reader_need,
         "question_type": candidate.get("question_type"),
         "original_question": original_question,
-        "source_material": source_material,
+        "source_material": readable_source_material,
     }
     user_content = json.dumps(payload, ensure_ascii=False)
     try:
@@ -540,16 +746,18 @@ def call_candidate_question_llm(
         knowledge_category=knowledge_category,
     )
     prompt_template_key = resolve_category_prompt_template_key(knowledge_category)
-    # Keep the candidate prompt readable. Chunk IDs, paths, and category
-    # metadata stay in the trace; they are not useful for writing a natural
-    # reader question and tend to leak into the wording.
+    # Keep internal IDs in the trace, but give the model the readable node
+    # path so a local fragment is not mistaken for a self-contained context.
     scenario_intent = str(source_chunk_meta.get("qa_generation_unit_scenario_intent") or "").strip()
     reader_need = str(source_chunk_meta.get("qa_generation_unit_reader_need") or "").strip()
+    readable_source_material = _format_source_material_for_prompt(
+        source_chunk_text,
+        source_chunk_meta,
+    )
     user_content = (
         f"scenario_intent: {scenario_intent}\n"
         f"reader_need: {reader_need}\n\n"
-        "主来源材料：\n"
-        + str(source_chunk_text or "").strip()
+        + readable_source_material
     )
 
     response_type: Optional[str] = None
@@ -658,12 +866,13 @@ def call_evidence_answer_llm(
     source_chunk_text = str(source_chunk.get("text") or "").strip()
     source_unit_text = str(generation_unit.get("source_unit_text") or "").strip()
     unit_text = str(generation_unit.get("qa_generation_unit_text") or "").strip()
+    prompt_unit_text = _ensure_evidence_paths_for_prompt(unit_text, generation_unit)
     evidence_ref_map = generation_unit.get("llm_evidence_ref_map")
     if not isinstance(evidence_ref_map, dict):
         evidence_ref_map = {}
     language_code, language_instruction = _resolve_generation_language(
         prompt_language,
-        unit_text or source_chunk_text,
+        prompt_unit_text or source_chunk_text,
     )
     use_fixed_knowledge_category = bool(str(fixed_knowledge_category or "").strip())
     prompt_template_category = (
@@ -684,7 +893,7 @@ def call_evidence_answer_llm(
         f"question_type: {question_type}\n"
         "\n"
         "可读证据材料（仅使用这些正文）：\n"
-        f"{unit_text}\n\n"
+        f"{prompt_unit_text}\n\n"
         "evidence_ref 可选值：\n"
         f"{json.dumps(list(evidence_ref_map.keys()), ensure_ascii=False)}"
     )

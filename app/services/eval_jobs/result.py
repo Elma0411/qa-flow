@@ -8,8 +8,8 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.config import CONFIG
+from app.services.unsupervised_evaluation import compute_unsupervised_average_score
 from .common import (
-    _safe_float,
     _sanitize_task_token,
     _write_json,
     iter_scored_items,
@@ -34,10 +34,11 @@ def read_scored_items_page(
         if threshold_value is not None:
             ue = row.get("unsupervised_evaluation") or {}
             scores = ue.get("scores") if isinstance(ue, dict) else {}
-            uf1 = scores.get("unsupervised_f1") if isinstance(scores, dict) else None
-            filtered = _safe_float(uf1, 0.0) >= float(threshold_value)
+            average_score = compute_unsupervised_average_score(scores)
+            filtered = average_score >= float(threshold_value)
             row = dict(row)
             row["filtered"] = bool(filtered)
+            row["average_score"] = average_score
         if total >= safe_offset and len(items) < safe_limit:
             items.append(row)
         total += 1
@@ -65,9 +66,8 @@ def ingest_scored_items_to_milvus(
     for row in iter_scored_items(scored_jsonl_path):
         ue = row.get("unsupervised_evaluation") or {}
         scores = ue.get("scores") if isinstance(ue, dict) else {}
-        uf1 = scores.get("unsupervised_f1") if isinstance(scores, dict) else None
-        uf1_val = _safe_float(uf1, 0.0)
-        if uf1_val < threshold_value:
+        average_score = compute_unsupervised_average_score(scores)
+        if average_score < threshold_value:
             continue
 
         evaluation = (
@@ -87,14 +87,14 @@ def ingest_scored_items_to_milvus(
                 "question_type": row.get("question_type") or "简答题",
                 "answer_explanation": row.get("answer_explanation") or "",
                 "filtered": True,
-                "average_score": uf1_val,
+                "average_score": average_score,
                 "evaluation_method": "unsupervised_f1",
                 "evaluation": evaluation,
                 "unsupervised_evaluation": ue,
                 "text_for_embedding": row.get("text_for_embedding")
                 or f"{row.get('question', '')} [SEP] {row.get('answer', '')}",
                 "created_at": created_at,
-                "filter_basis": "unsupervised_f1",
+                "filter_basis": "average_score",
                 "is_primary": True,
                 "is_augmented": False,
             }

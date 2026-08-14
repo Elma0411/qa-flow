@@ -8,6 +8,8 @@ import os
 import re
 from typing import Any, Dict, Iterable
 
+from app.services.unsupervised_evaluation import compute_unsupervised_average_score
+
 
 def _safe_float(val: Any, default: float = 0.0) -> float:
     try:
@@ -35,14 +37,16 @@ def _unsupervised_scores_from_suite_summary(summary: Dict[str, Any]) -> Dict[str
     raw = summary.get("scores") or {}
     if not isinstance(raw, dict):
         raw = {}
-    return {
+    scores = {
         "faithfulness": _safe_float(raw.get("faithfulness"), 0.0),
-        "answerability": _safe_float(raw.get("p"), 0.0),
+        "answerability": _safe_float(raw.get("answerability", raw.get("p")), 0.0),
         "coverage_recall_soft": _safe_float(raw.get("r_soft"), 0.0),
         "coverage_self": _safe_float(raw.get("coverage_self"), 0.0),
         "coverage_score": _safe_float(raw.get("coverage_score"), 0.0),
         "unsupervised_f1": _safe_float(raw.get("f1"), 0.0),
     }
+    scores["average_score"] = compute_unsupervised_average_score(scores)
+    return scores
 
 
 def _chunk(items: list[Dict[str, Any]], size: int) -> list[list[Dict[str, Any]]]:

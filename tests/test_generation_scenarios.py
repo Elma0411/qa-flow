@@ -46,6 +46,58 @@ class _ScenarioClient:
 
 
 class GenerationScenarioTests(unittest.TestCase):
+    def test_planner_receives_batch_context_and_records_it(self):
+        chunks = [
+            _chunk(index, f"1.{index}", f"文档>第{index}节", f"第{index}节规定了事实{index}。")
+            for index in range(1, 4)
+        ]
+        contexts = []
+
+        def planner(materials, count, mode, **kwargs):
+            contexts.append((mode, kwargs.get("planning_batch_index"), kwargs.get("planning_batch_count")))
+            return [
+                {
+                    "scenario_type": "point",
+                    "intent": f"询问{materials[0].material_id}",
+                    "reader_need": f"了解{materials[0].material_id}",
+                    "material_ids": [materials[0].material_id],
+                }
+            ] if materials and count else []
+
+        plan = plan_generation_units(
+            chunks,
+            qa_total_limit=2,
+            qa_per_chunk=1,
+            qa_detail_mode="point",
+            chunk_size=600,
+            scenario_planning_batch_chars=500,
+            scenario_planner=planner,
+        )
+
+        self.assertTrue(contexts)
+        self.assertTrue(all(index is not None and count is not None for _, index, count in contexts))
+        self.assertTrue(plan.summary()["scenario_planner_batch_details"]["point"])
+
+    def test_planner_batch_error_is_recorded_and_point_fallback_continues(self):
+        chunk = _chunk(1, "1.1", "文档>材料", "应提交身份证明。")
+
+        def planner(_materials, _count, _mode, **_kwargs):
+            raise RuntimeError("planner timeout")
+
+        plan = plan_generation_units(
+            [chunk],
+            qa_total_limit=1,
+            qa_per_chunk=1,
+            qa_detail_mode="point",
+            chunk_size=600,
+            scenario_planner=planner,
+        )
+
+        self.assertEqual(1, len(plan.units))
+        detail = plan.summary()["scenario_planner_batch_details"]["point"][0]
+        self.assertIn("planner timeout", detail["error"])
+        self.assertEqual("llm_point_pool_underfilled", plan.units[0].debug["raw_scenario"]["fallback_reason"])
+
     def test_scenario_llm_validation_keeps_typed_candidate_pools_separate(self):
         chunk = _chunk(1, "1.1", "文档>材料", "应提交身份证明。")
         captured = []

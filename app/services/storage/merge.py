@@ -98,11 +98,12 @@ def merge_consolidated_entries(
         else None
     )
 
-    filter_basis = (
-        evaluation_method
-        if (filter_by_threshold and evaluation_method in ("llm", "local", "faithfulness", "answerability", "unsupervised_f1"))
-        else None
-    )
+    if filter_by_threshold and evaluation_method in ("faithfulness", "answerability", "unsupervised_f1", "unsupervised"):
+        filter_basis = "average_score"
+    elif filter_by_threshold and evaluation_method in ("llm", "local"):
+        filter_basis = evaluation_method
+    else:
+        filter_basis = None
 
     params: Dict[str, Any] = {
         "chunk_size": chunk_size,

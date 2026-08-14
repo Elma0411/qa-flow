@@ -13,6 +13,10 @@ from .model_options import (
     resolve_evaluation_model_path,
     validate_evaluation_model_name,
 )
+from .common import (
+    UNSUPERVISED_AVERAGE_METRICS,
+    compute_unsupervised_average_score,
+)
 from .service import (
     execute_unsupervised_answerability_blocking,
     execute_unsupervised_coverage_recall_blocking,
@@ -55,6 +59,8 @@ __all__ = [
     "normalize_evaluation_model_name",
     "resolve_evaluation_model_path",
     "validate_evaluation_model_name",
+    "UNSUPERVISED_AVERAGE_METRICS",
+    "compute_unsupervised_average_score",
     "execute_unsupervised_answerability_blocking",
     "execute_unsupervised_coverage_recall_blocking",
     "execute_unsupervised_faithfulness_blocking",

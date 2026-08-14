@@ -191,8 +191,83 @@ function setRowSelected(id) {
   });
 }
 
+function getQaDetailPanel() {
+  return $('#adminQaDetailModalBody') || $('#qaDetailPanel');
+}
+
+function filterDisplayedUnsupervisedScores(scores) {
+  const apiuseUi = ui();
+  if (apiuseUi && typeof apiuseUi.filterUnsupervisedScores === 'function') {
+    return apiuseUi.filterUnsupervisedScores(scores);
+  }
+  const source = scores && typeof scores === 'object' ? scores : {};
+  const filtered = {};
+  const validUnitScore = (value) => {
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 0 && number <= 1 ? number : 0;
+  };
+  ['faithfulness', 'answerability', 'coverage_score'].forEach((key) => {
+    filtered[key] = validUnitScore(source[key]);
+  });
+  if (source.answerability === undefined || source.answerability === null || source.answerability === '') {
+    filtered.answerability = validUnitScore(source.p);
+  }
+  filtered.average_score =
+    (filtered.faithfulness + filtered.answerability + filtered.coverage_score) / 3;
+  return filtered;
+}
+
+function sanitizeDetailForDisplay(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const result = { ...value };
+  const ue = result.unsupervised_evaluation;
+  if (ue && typeof ue === 'object') {
+    result.unsupervised_evaluation = {
+      ...ue,
+      scores: filterDisplayedUnsupervisedScores(ue.scores),
+    };
+  }
+  if (typeof result.unsupervised_scores === 'string') {
+    try {
+      result.unsupervised_scores = JSON.stringify(
+        filterDisplayedUnsupervisedScores(JSON.parse(result.unsupervised_scores)),
+      );
+    } catch {
+      result.unsupervised_scores = '';
+    }
+  } else if (result.unsupervised_scores && typeof result.unsupervised_scores === 'object') {
+    result.unsupervised_scores = filterDisplayedUnsupervisedScores(result.unsupervised_scores);
+  }
+  return result;
+}
+
+function setQaDetailModalOpen(isOpen) {
+  const overlay = $('#adminQaDetailOverlay');
+  const modal = $('#adminQaDetailModal');
+  if (!overlay || !modal) return;
+  if (isOpen) {
+    overlay.hidden = false;
+    modal.hidden = false;
+    window.requestAnimationFrame(() => {
+      overlay.classList.add('is-open');
+      modal.classList.add('is-open');
+      modal.setAttribute('aria-hidden', 'false');
+      document.body.classList.add('drawer-open');
+    });
+    return;
+  }
+  overlay.classList.remove('is-open');
+  modal.classList.remove('is-open');
+  modal.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('drawer-open');
+  window.setTimeout(() => {
+    overlay.hidden = true;
+    modal.hidden = true;
+  }, 180);
+}
+
 function setQaDetailPlaceholder(text) {
-  const qaPanel = $('#qaDetailPanel');
+  const qaPanel = getQaDetailPanel();
   if (!qaPanel) return;
   qaPanel.classList.add('muted');
   qaPanel.textContent = text || '';
@@ -213,7 +288,7 @@ function setRawDetail(jsonObj) {
     return;
   }
   try {
-    rawPanel.textContent = JSON.stringify(jsonObj, null, 2);
+    rawPanel.textContent = JSON.stringify(sanitizeDetailForDisplay(jsonObj), null, 2);
   } catch {
     rawPanel.textContent = String(jsonObj);
   }
@@ -268,7 +343,7 @@ function renderScoreGroup(panel, title, scores, reasons) {
 }
 
 function renderQaDetail(data) {
-  const qaPanel = $('#qaDetailPanel');
+  const qaPanel = getQaDetailPanel();
   if (!qaPanel) return;
   qaPanel.classList.remove('muted');
   qaPanel.innerHTML = '';
@@ -277,8 +352,12 @@ function renderQaDetail(data) {
   const taskId = String(data?.task_id || '');
   const filename = String(data?.original_filename || '');
   const filtered = formatTriBool(data?.filtered);
-  const avg = typeof data?.average_score === 'number' ? data.average_score.toFixed(4) : '';
   const faith = typeof data?.faithfulness === 'number' ? data.faithfulness.toFixed(4) : '';
+  const detailScores = filterDisplayedUnsupervisedScores(
+    data?.unsupervised_evaluation?.scores || data?.unsupervised_scores || {},
+  );
+  const average =
+    typeof detailScores.average_score === 'number' ? detailScores.average_score.toFixed(4) : '';
   const isAug = data?.is_augmented === true;
   const source = data?.source != null ? String(data.source) : '';
 
@@ -286,8 +365,8 @@ function renderQaDetail(data) {
     { text: `id: ${truncate(qaId, 16)}`, title: qaId, className: 'theme' },
     taskId ? { text: `task: ${truncate(taskId, 16)}`, title: taskId, className: 'theme' } : null,
     filename ? { text: `file: ${truncate(filename, 24)}`, title: filename, className: 'file' } : null,
-    avg ? { text: `avg: ${avg}`, className: 'score' } : null,
     faith ? { text: `faith: ${faith}`, className: 'faith' } : null,
+    average ? { text: `平均分: ${average}`, className: 'score' } : null,
     filtered ? { text: `filtered: ${filtered}`, className: 'theme' } : null,
     isAug ? { text: '增广 (augmented)', className: 'theme' } : null,
     data?.qa_generation_unit_mode
@@ -384,7 +463,7 @@ function renderQaDetail(data) {
     const explainWrap = document.createElement('div');
     explainWrap.className = 'evaluation';
     const h4 = document.createElement('h4');
-    h4.textContent = '无监督四维评分解释';
+    h4.textContent = '无参考评分解释';
     explainWrap.appendChild(h4);
 
     const apiuseUi = ui();
@@ -392,7 +471,14 @@ function renderQaDetail(data) {
       explainWrap.appendChild(apiuseUi.renderUnsupervisedExplain(data, { includeQa: false, includeRaw: false }));
     } else {
       const pre = document.createElement('pre');
-      pre.textContent = JSON.stringify(ue, null, 2);
+      pre.textContent = JSON.stringify(
+        {
+          method: ue.method,
+          scores: filterDisplayedUnsupervisedScores(ue.scores),
+        },
+        null,
+        2,
+      );
       explainWrap.appendChild(pre);
     }
 
@@ -648,25 +734,28 @@ function renderTable(items, isSearch = false) {
   const list = Array.isArray(items) ? items : [];
   list.forEach((it) => {
     const id = it.id;
-    const avg =
-      typeof it.average_score === 'number' && it.average_score >= 0
-        ? it.average_score.toFixed(4)
-        : '';
-    const faith =
-      typeof it.faithfulness === 'number' && it.faithfulness >= 0
-        ? it.faithfulness.toFixed(4)
-        : '';
     const unsupScores =
       it.unsupervised_scores ||
       (it.unsupervised_evaluation && it.unsupervised_evaluation.scores) ||
       null;
+    const displayedScores = filterDisplayedUnsupervisedScores(unsupScores);
+    const faith =
+        typeof displayedScores.faithfulness === 'number'
+          ? displayedScores.faithfulness.toFixed(4)
+        : typeof it.faithfulness === 'number' && it.faithfulness >= 0
+          ? it.faithfulness.toFixed(4)
+          : '';
     const ans =
-      unsupScores && typeof unsupScores.answerability === 'number'
-        ? unsupScores.answerability.toFixed(4)
+      typeof displayedScores.answerability === 'number'
+        ? displayedScores.answerability.toFixed(4)
         : '';
-    const f1 =
-      unsupScores && typeof unsupScores.unsupervised_f1 === 'number'
-        ? unsupScores.unsupervised_f1.toFixed(4)
+    const coverage =
+      typeof displayedScores.coverage_score === 'number'
+        ? displayedScores.coverage_score.toFixed(4)
+        : '';
+    const average =
+      typeof displayedScores.average_score === 'number'
+        ? displayedScores.average_score.toFixed(4)
         : '';
     const filtered = formatFiltered(it.filtered);
     const active = it.admin?.is_active === false ? 'false' : 'true';
@@ -674,7 +763,6 @@ function renderTable(items, isSearch = false) {
     const a = truncate(it.answer, 70);
     const cat = truncate(it.knowledge_category || '', 24);
     const file = truncate(it.original_filename || '', 18);
-    const sim = typeof it.similarity_score === 'number' ? it.similarity_score.toFixed(4) : null;
     const augPrefix = it.is_augmented === true ? '[增广] ' : '';
 
     const tr = document.createElement('tr');
@@ -718,17 +806,17 @@ function renderTable(items, isSearch = false) {
     });
     tdChk.appendChild(chk);
 
-    const tdAvg = document.createElement('td');
-    tdAvg.textContent = sim !== null ? `${avg} (sim=${sim})` : avg;
-
     const tdFaith = document.createElement('td');
     tdFaith.textContent = faith;
 
     const tdAns = document.createElement('td');
     tdAns.textContent = ans;
 
-    const tdF1 = document.createElement('td');
-    tdF1.textContent = f1;
+    const tdCov = document.createElement('td');
+    tdCov.textContent = coverage;
+
+    const tdAverage = document.createElement('td');
+    tdAverage.textContent = average;
 
     const tdFiltered = document.createElement('td');
     tdFiltered.textContent = filtered;
@@ -757,10 +845,10 @@ function renderTable(items, isSearch = false) {
     tdOp.appendChild(btn);
 
     tr.appendChild(tdChk);
-    tr.appendChild(tdAvg);
     tr.appendChild(tdFaith);
     tr.appendChild(tdAns);
-    tr.appendChild(tdF1);
+    tr.appendChild(tdCov);
+    tr.appendChild(tdAverage);
     tr.appendChild(tdFiltered);
     tr.appendChild(tdActive);
     tr.appendChild(tdQ);
@@ -791,6 +879,7 @@ async function loadDetail(id) {
     if (!resp.ok) throw new Error(data?.detail || resp.statusText);
     renderQaDetail(data);
     setRawDetail(data);
+    setQaDetailModalOpen(true);
   } catch (err) {
     setQaDetailPlaceholder('详情获取失败：' + String(err));
     setChunkDetailPlaceholder('');
@@ -1139,6 +1228,11 @@ async function cancelOneJob(jobId) {
 }
 
 function bindEvents() {
+  $('#adminQaDetailOverlay')?.addEventListener('click', () => setQaDetailModalOpen(false));
+  $('#adminQaDetailModalClose')?.addEventListener('click', () => setQaDetailModalOpen(false));
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') setQaDetailModalOpen(false);
+  });
   $('#btnLoadList')?.addEventListener('click', () => setQueryMode(QUERY_MODE_LIST));
   $('#btnSemanticSearch')?.addEventListener('click', () => setQueryMode(QUERY_MODE_SEMANTIC));
   $('#btnRunListQuery')?.addEventListener('click', loadList);
@@ -1155,7 +1249,8 @@ function bindEvents() {
     $('#fPageSize').value = '20';
     clearSelection();
     clearRowSelected();
-    setQaDetailPlaceholder('点击列表中的「详情」查看');
+    setQaDetailModalOpen(false);
+    setQaDetailPlaceholder('点击列表中的「详情」打开大窗');
     setChunkDetailPlaceholder('等待选择 QA…');
     setRawDetail(null);
     setStatus('');

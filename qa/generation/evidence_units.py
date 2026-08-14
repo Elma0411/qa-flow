@@ -24,6 +24,10 @@ def _safe_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _prompt_title_path(chunk: Dict[str, Any]) -> str:
+    return _safe_text(chunk.get("title_path")) or "未标注章节"
+
+
 def build_document_chunks(
     pre_split_chunks: Sequence[str],
     chunk_meta_list: Optional[Sequence[Dict[str, Any]]] = None,
@@ -170,6 +174,54 @@ class QADocumentEvidenceIndex:
         ] or [source_chunk_index]
         source_chunks = [self.get_chunk(index) for index in source_indexes]
         source_ids = [_safe_text(chunk.get("chunk_id")) for chunk in source_chunks]
+
+        # The planner binds materials, not individual chunks. Keep that
+        # distinction visible to the answer model: required materials are the
+        # only sources that can satisfy Summary coverage; optional materials
+        # are context and must not turn an otherwise valid answer into a drop.
+        material_chunk_indexes = source_unit_payload.get(
+            "material_source_chunk_indexes"
+        )
+        if not isinstance(material_chunk_indexes, dict):
+            material_chunk_indexes = {}
+        required_material_ids = [
+            _safe_text(value)
+            for value in source_unit_payload.get("required_material_ids")
+            or source_unit_payload.get("material_ids")
+            or []
+            if _safe_text(value)
+        ]
+        optional_material_ids = [
+            _safe_text(value)
+            for value in source_unit_payload.get("optional_material_ids") or []
+            if _safe_text(value)
+        ]
+        required_indexes = {
+            _safe_int(index)
+            for material_id in required_material_ids
+            for index in (material_chunk_indexes.get(material_id) or [])
+            if _safe_int(index) in self._chunks_by_index
+        }
+        optional_indexes = {
+            _safe_int(index)
+            for material_id in optional_material_ids
+            for index in (material_chunk_indexes.get(material_id) or [])
+            if _safe_int(index) in self._chunks_by_index
+        }
+        # Legacy callers do not carry material-level mappings. Their complete
+        # source unit remains required so old persisted/debug payloads keep the
+        # same evidence behavior.
+        if not required_indexes:
+            required_indexes = set(source_indexes)
+        optional_indexes -= required_indexes
+        required_chunks = [
+            chunk for chunk in source_chunks
+            if _safe_int(chunk.get("chunk_index")) in required_indexes
+        ]
+        optional_chunks = [
+            chunk for chunk in source_chunks
+            if _safe_int(chunk.get("chunk_index")) in optional_indexes
+        ]
         windows = list(retrieval_result.get("selected_windows") or [])
 
         evidence_chunks: List[Dict[str, Any]] = []
@@ -183,14 +235,31 @@ class QADocumentEvidenceIndex:
 
         sections: List[str] = ["【主来源材料】"]
         ref_map: Dict[str, Dict[str, Any]] = {}
-        for position, chunk in enumerate(source_chunks, start=1):
+        for position, chunk in enumerate(required_chunks, start=1):
             label = f"主材料-{position}"
-            sections.append(f"{label}\n{_safe_text(chunk.get('text'))}")
+            sections.append(
+                f"{label}\n节点路径：{_prompt_title_path(chunk)}\n"
+                f"正文：{_safe_text(chunk.get('text'))}"
+            )
             ref_map[label] = {
                 "chunk_id": chunk.get("chunk_id"),
                 "chunk_index": chunk.get("chunk_index"),
                 "title_path": chunk.get("title_path"),
                 "role": "primary_source",
+            }
+        if optional_chunks:
+            sections.append("【可选主材料】")
+        for position, chunk in enumerate(optional_chunks, start=1):
+            label = f"可选材料-{position}"
+            sections.append(
+                f"{label}\n节点路径：{_prompt_title_path(chunk)}\n"
+                f"正文：{_safe_text(chunk.get('text'))}"
+            )
+            ref_map[label] = {
+                "chunk_id": chunk.get("chunk_id"),
+                "chunk_index": chunk.get("chunk_index"),
+                "title_path": chunk.get("title_path"),
+                "role": "optional_source",
             }
         if evidence_chunks:
             sections.append("【检索证据】")
@@ -198,8 +267,9 @@ class QADocumentEvidenceIndex:
                 label = f"检索证据-{position}"
                 title_path = _safe_text(chunk.get("title_path"))
                 rendered = _safe_text(chunk.get("text"))
-                if title_path:
-                    rendered = f"标题路径：{title_path}\n{rendered}"
+                rendered = (
+                    f"节点路径：{title_path or '未标注章节'}\n正文：{rendered}"
+                )
                 sections.append(f"{label}\n{rendered}")
                 ref_map[label] = {
                     "chunk_id": chunk.get("chunk_id"),

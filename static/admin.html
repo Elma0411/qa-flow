@@ -11,9 +11,9 @@
       href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@300;400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/ui/styles.css?v=2026-08-14-2" />
+    <link rel="stylesheet" href="/ui/styles.css?v=2026-08-14-7" />
   </head>
-  <body>
+  <body class="app-shell qa-workbench-redesign">
     <a class="skip-link" href="#main">跳到内容</a>
     <header>
       <div class="header-row">
@@ -270,7 +270,7 @@
               </div>
             </form>
             <div class="muted">
-              套件包含：忠实度（NLI）、可回答性（抽取式 QA + no-answer）、覆盖召回（embedding 覆盖）与无监督F1。
+              页面只展示 faithfulness、answerability、coverage_score 及三项算术平均分；内部计算字段继续保留在后端，不在界面展开。
             </div>
           </fieldset>
         </div>
@@ -283,10 +283,10 @@
             <thead>
               <tr>
                 <th style="width: 30px"><input type="checkbox" id="chkAll" aria-label="全选/全不选" /></th>
-                <th style="width: 110px">avg</th>
-                <th style="width: 110px">faith</th>
-                <th style="width: 110px">ans</th>
-                <th style="width: 110px">f1</th>
+                <th style="width: 140px">faithfulness</th>
+                <th style="width: 140px">answerability</th>
+                <th style="width: 140px">coverage_score</th>
+                <th style="width: 110px">平均分</th>
                 <th style="width: 120px">保留（filtered）</th>
                 <th style="width: 70px">active</th>
                 <th>question</th>
@@ -309,10 +309,6 @@
         <h2>4. 详情</h2>
         <div class="admin-detail-grid">
           <div class="admin-detail-box">
-            <div class="hint" style="margin: 0 0 6px 0">QA 详情</div>
-            <div id="qaDetailPanel" class="detail-panel muted">点击列表中的「详情」查看</div>
-          </div>
-          <div class="admin-detail-box">
             <div class="hint" style="margin: 0 0 6px 0">Chunk 溯源</div>
             <div id="chunkDetailPanel" class="detail-panel muted">等待选择 QA…</div>
           </div>
@@ -332,7 +328,27 @@
       </section>
     </main>
 
-    <script src="/ui/ui.js?v=2026-07-03-3"></script>
-    <script src="/ui/admin.js?v=2026-08-14-1"></script>
+    <div id="adminQaDetailOverlay" class="drawer-overlay" hidden></div>
+    <aside
+      id="adminQaDetailModal"
+      class="drawer admin-qa-detail-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="adminQaDetailModalTitle"
+      aria-hidden="true"
+      hidden
+    >
+      <div class="drawer-header">
+        <div>
+          <h2 class="drawer-title" id="adminQaDetailModalTitle">问答对详情</h2>
+          <p class="settings-modal-desc">点击列表中的问答对后，在这里查看正文、溯源和允许展示的无参考评分。</p>
+        </div>
+        <button type="button" class="icon-btn drawer-close" id="adminQaDetailModalClose" aria-label="关闭问答对详情">×</button>
+      </div>
+      <div id="adminQaDetailModalBody" class="drawer-body"></div>
+    </aside>
+
+    <script src="/ui/ui.js?v=2026-08-14-5"></script>
+    <script src="/ui/admin.js?v=2026-08-14-4"></script>
   </body>
 </html>

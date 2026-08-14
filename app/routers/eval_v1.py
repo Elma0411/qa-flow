@@ -511,7 +511,12 @@ class IngestRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     dataset_name: str = Field(..., description="数据集名称（用于 task_id 与 ID 命名空间）")
-    threshold: float = Field(0.7, ge=0.0, le=1.0, description="unsupervised_f1 阈值")
+    threshold: float = Field(
+        0.7,
+        ge=0.0,
+        le=1.0,
+        description="faithfulness、answerability、coverage_score 三项平均分阈值",
+    )
     enable_vector_storage: bool = Field(True, description="是否写入 Milvus 向量字段")
 
 

@@ -3127,12 +3127,17 @@ function chunkReasonParts(chunk) {
   Object.keys(stats).forEach((key) => {
     parts.push(`${translatedDropReason(key)}：${stats[key]}`);
   });
+  const skipReason = String(chunk && chunk.skip_reason || '').trim();
+  if (skipReason && !parts.some((part) => part.includes(skipReason))) {
+    parts.push(`跳过：${translatedDropReason(skipReason)}`);
+  }
   if (chunk && chunk.error) parts.push(`错误：${chunk.error}`);
   return parts;
 }
 
 function pipelineDebugEventLabel(event) {
   const labels = {
+    scenario_planner_llm_call: '场景规划',
     candidate_question_llm_call: '候选题生成',
     evidence_answer_llm_call: '答案生成',
   };
@@ -3364,14 +3369,14 @@ function appendRawRecordDetail(parent, label, value) {
   parent.appendChild(detail);
 }
 
-function renderRawResponseRecords(container, data, chunkIndex) {
+function renderRawResponseRecords(container, data, scopeLabel) {
   const records = Array.isArray(data?.records) ? data.records : [];
   container.replaceChildren();
   const head = document.createElement('div');
   head.className = 'raw-response-head';
   const title = document.createElement('h3');
   title.id = 'rawResponseModalTitle';
-  title.textContent = `chunk ${chunkIndex} 的模型原始响应`;
+  title.textContent = `${scopeLabel || '本次调用'}的模型原始响应`;
   const close = document.createElement('button');
   close.type = 'button';
   close.className = 'secondary';
@@ -3391,7 +3396,7 @@ function renderRawResponseRecords(container, data, chunkIndex) {
   if (!records.length) {
     const empty = document.createElement('div');
     empty.className = 'pipeline-debug-empty';
-    empty.textContent = '这个 chunk 暂无模型原始响应，可能任务尚未执行到该阶段，或调试文件已清理。';
+    empty.textContent = '暂无模型原始响应，可能任务尚未执行到该阶段，或调试文件已清理。';
     container.appendChild(empty);
     return;
   }
@@ -3468,7 +3473,7 @@ async function openChunkDebugRawModal(chunkIndex) {
     const data = await fetchJson(
       `${getApiBaseUrl()}/pipeline-tasks/${encodeURIComponent(taskId)}/debug-jsonl?${params.toString()}`,
     );
-    renderRawResponseRecords(modal, data, chunkIndex);
+    renderRawResponseRecords(modal, data, `chunk ${chunkIndex}`);
   } catch (err) {
     modal.replaceChildren();
     const head = document.createElement('div');
@@ -3476,6 +3481,55 @@ async function openChunkDebugRawModal(chunkIndex) {
     const title = document.createElement('h3');
     title.id = 'rawResponseModalTitle';
     title.textContent = '模型原始响应不可用';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'secondary';
+    close.textContent = '关闭';
+    close.addEventListener('click', closeRawResponseModal);
+    head.append(title, close);
+    const empty = document.createElement('div');
+    empty.className = 'pipeline-debug-empty';
+    empty.textContent = String(err.message || err);
+    modal.append(head, empty);
+  }
+}
+
+async function openPlannerDebugRawModal(scenarioType, batchIndex) {
+  const taskId = String(latestPipelineStatus?.task_id || lastTaskId || '').trim();
+  const normalizedType = String(scenarioType || '').trim().toLowerCase();
+  const normalizedBatch = String(batchIndex ?? '').trim();
+  if (!taskId) {
+    notify('请先加载一个流水线任务', 'warning');
+    return;
+  }
+  if (!normalizedType || !normalizedBatch) {
+    notify('场景规划批次信息不完整', 'warning');
+    return;
+  }
+  const { overlay, modal } = ensureRawResponseModal();
+  overlay.hidden = false;
+  modal.classList.add('is-open');
+  modal.replaceChildren();
+  const loading = document.createElement('div');
+  loading.className = 'raw-response-loading';
+  loading.textContent = '正在读取场景规划原始响应…';
+  modal.appendChild(loading);
+  try {
+    const params = new URLSearchParams();
+    params.set('event', 'scenario_planner_llm_call');
+    params.set('planning_batch_index', normalizedBatch);
+    params.set('planning_scenario_type', normalizedType);
+    const data = await fetchJson(
+      `${getApiBaseUrl()}/pipeline-tasks/${encodeURIComponent(taskId)}/debug-jsonl?${params.toString()}`,
+    );
+    renderRawResponseRecords(modal, data, `场景规划 ${normalizedType} 批次 ${normalizedBatch}`);
+  } catch (err) {
+    modal.replaceChildren();
+    const head = document.createElement('div');
+    head.className = 'raw-response-head';
+    const title = document.createElement('h3');
+    title.id = 'rawResponseModalTitle';
+    title.textContent = '场景规划原始响应不可用';
     const close = document.createElement('button');
     close.type = 'button';
     close.className = 'secondary';
@@ -3523,6 +3577,116 @@ function appendChunkTableCell(row, text, className = '') {
   cell.textContent = text;
   row.appendChild(cell);
   return cell;
+}
+
+function plannerScenarioTypeText(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'point') return '单点题';
+  if (normalized === 'summary') return '总结题';
+  return normalized || '未知类型';
+}
+
+function plannerPathText(value) {
+  if (!Array.isArray(value)) return String(value || '').trim() || '无';
+  const paths = value.map((item) => String(item || '').trim()).filter(Boolean);
+  return paths.length ? paths.join('；') : '无';
+}
+
+function renderPlannerBatchDetails(unitPlanSummary) {
+  const grouped = unitPlanSummary && typeof unitPlanSummary.scenario_planner_batch_details === 'object'
+    ? unitPlanSummary.scenario_planner_batch_details
+    : {};
+  const batches = [];
+  Object.entries(grouped).forEach(([scenarioType, details]) => {
+    if (!Array.isArray(details)) return;
+    details.forEach((detail) => {
+      if (detail && typeof detail === 'object') {
+        batches.push({ scenarioType, ...detail });
+      }
+    });
+  });
+  if (!batches.length) return null;
+  batches.sort((left, right) => {
+    const leftIndex = Number(left.batch_index);
+    const rightIndex = Number(right.batch_index);
+    if (Number.isFinite(leftIndex) && Number.isFinite(rightIndex)) return leftIndex - rightIndex;
+    if (Number.isFinite(leftIndex)) return -1;
+    if (Number.isFinite(rightIndex)) return 1;
+    return String(left.batch_index || '').localeCompare(String(right.batch_index || ''));
+  });
+
+  const section = document.createElement('section');
+  section.className = 'pipeline-debug-section';
+  const title = document.createElement('h4');
+  title.textContent = '场景规划批次';
+  section.appendChild(title);
+  const hint = document.createElement('div');
+  hint.className = 'pipeline-debug-empty';
+  hint.textContent = '每个批次按逻辑 section 规划；模型原始响应可按类型和批次单独查看。';
+  section.appendChild(hint);
+
+  const list = document.createElement('div');
+  list.className = 'pipeline-debug-batch-list';
+  batches.forEach((batch) => {
+    const card = document.createElement('article');
+    card.className = 'pipeline-debug-batch-card';
+    const head = document.createElement('div');
+    head.className = 'pipeline-debug-batch-head';
+    const heading = document.createElement('strong');
+    heading.textContent = `${plannerScenarioTypeText(batch.scenarioType)} · 批次 ${batch.batch_index ?? '?'}`;
+    head.appendChild(heading);
+    const rawButton = document.createElement('button');
+    rawButton.type = 'button';
+    rawButton.className = 'secondary compact';
+    rawButton.textContent = '查看原始响应';
+    rawButton.addEventListener('click', () => openPlannerDebugRawModal(batch.scenarioType, batch.batch_index));
+    head.appendChild(rawButton);
+    card.appendChild(head);
+
+    const metrics = document.createElement('div');
+    metrics.className = 'pipeline-debug-kv-grid';
+    appendTextMetric(metrics, '请求数量', batch.requested_count);
+    appendTextMetric(metrics, '返回数量', batch.returned_count);
+    appendTextMetric(metrics, '校验通过', batch.validated_count ?? batch.returned_count);
+    appendTextMetric(metrics, '材料数量', batch.material_count);
+    appendTextMetric(metrics, '批次总数', batch.batch_count);
+    card.appendChild(metrics);
+
+    const paths = document.createElement('div');
+    paths.className = 'pipeline-debug-batch-paths';
+    appendTextMetric(paths, '材料路径', plannerPathText(batch.material_paths));
+    if (batch.error) appendTextMetric(paths, '批次错误', batch.error);
+    const dropped = batch.dropped_reasons && typeof batch.dropped_reasons === 'object'
+      ? Object.entries(batch.dropped_reasons).map(([key, value]) => `${translatedDropReason(key)}：${value}`).join('；')
+      : '';
+    if (dropped) appendTextMetric(paths, '丢弃原因', dropped);
+    card.appendChild(paths);
+
+    const scenarios = Array.isArray(batch.scenarios) ? batch.scenarios : [];
+    if (scenarios.length) {
+      const scenarioList = document.createElement('div');
+      scenarioList.className = 'pipeline-debug-scenario-list';
+      scenarios.forEach((scenario, index) => {
+        const scenarioCard = document.createElement('div');
+        scenarioCard.className = 'pipeline-debug-scenario';
+        const scenarioTitle = document.createElement('strong');
+        scenarioTitle.textContent = `场景 ${index + 1} · ${plannerScenarioTypeText(scenario.scenario_type)}`;
+        scenarioCard.appendChild(scenarioTitle);
+        const scenarioMeta = document.createElement('div');
+        scenarioMeta.className = 'pipeline-debug-scenario-meta';
+        appendTextMetric(scenarioMeta, 'scenario_intent', scenario.scenario_intent);
+        appendTextMetric(scenarioMeta, 'reader_need', scenario.reader_need);
+        appendTextMetric(scenarioMeta, 'required 路径', plannerPathText(scenario.required_material_paths));
+        appendTextMetric(scenarioMeta, 'optional 路径', plannerPathText(scenario.optional_material_paths));
+        scenarioCard.appendChild(scenarioMeta);
+        scenarioList.appendChild(scenarioCard);
+      });
+      card.appendChild(scenarioList);
+    }
+    list.appendChild(card);
+  });
+  section.appendChild(list);
+  return section;
 }
 
 function renderPipelineDebugStatus(status, options = {}) {
@@ -3632,6 +3796,7 @@ function renderPipelineDebugStatus(status, options = {}) {
   );
   appendTextMetric(genMeta, '总题数上限', firstNumber(detail.qa_total_limit, safeStatus.qa_total_limit));
   appendTextMetric(genMeta, '上限范围', detail.qa_total_limit_scope || safeStatus.qa_total_limit_scope || 'per_file');
+  appendTextMetric(genMeta, '预算丢弃 unit', unitPlanSummary.dropped_unit_count_by_budget ?? 0);
   appendTextMetric(genMeta, 'unit 最大尝试次数', safeStatus.chunk_max_attempts);
   appendTextMetric(genMeta, 'LLM/VLM API 请求并发', safeStatus.llm_max_concurrent_requests || 'Docker 环境默认');
   const retrievalConfig = safeStatus.retrieval_config || {};
@@ -3645,6 +3810,9 @@ function renderPipelineDebugStatus(status, options = {}) {
   appendTextMetric(genMeta, '证据 token 预算', retrievalConfig.evidence_token_budget ?? '4000');
   generation.appendChild(genMeta);
   root.appendChild(generation);
+
+  const plannerDetails = renderPlannerBatchDetails(unitPlanSummary);
+  if (plannerDetails) root.appendChild(plannerDetails);
 
   const units = (timing.generation_unit_details || timing.generation_chunk_details || []).slice().sort((a, b) => {
     return Number(a && (a.unit_index || a.anchor_chunk_index || a.chunk_index) || 0)

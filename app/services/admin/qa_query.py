@@ -16,6 +16,7 @@ from .qa_common import (
     _resolve_source_field,
 )
 from app.services.debug import get_debug_map
+from app.services.unsupervised_evaluation import compute_unsupervised_average_score
 
 
 def _build_milvus_expr(
@@ -54,8 +55,9 @@ def _build_milvus_expr(
         parts.append(f"filtered == {str(bool(filtered)).lower()}")
     if evaluated is not None:
         parts.append('evaluation_method != ""' if evaluated else 'evaluation_method == ""')
-    if min_avg_score is not None:
-        parts.append(f"average_score >= {float(min_avg_score)}")
+    # Apply the threshold after reading unsupervised_scores.  Older Milvus
+    # rows stored unsupervised_f1 in average_score, so filtering in the query
+    # expression would silently use the obsolete definition.
     return " and ".join(parts) if parts else 'id != ""'
 
 
@@ -123,6 +125,16 @@ def list_qa_items(
         qa_id = str(row.get("id") or "")
         if not qa_id:
             continue
+        unsup_scores = _parse_json_field(row.get("unsupervised_scores"))
+        average_score = row.get("average_score")
+        if unsup_scores:
+            average_score = compute_unsupervised_average_score(unsup_scores)
+        if min_avg_score is not None:
+            try:
+                if float(average_score or 0.0) < float(min_avg_score):
+                    continue
+            except Exception:
+                continue
         meta = meta_map.get(qa_id) or _default_admin_meta(qa_id)
         if is_active is not None and bool(meta.is_active) != bool(is_active):
             continue
@@ -152,11 +164,11 @@ def list_qa_items(
                 "question_type": row.get("question_type"),
                 "difficulty_level": row.get("difficulty_level"),
                 "filtered": row.get("filtered"),
-                "average_score": row.get("average_score"),
+                "average_score": average_score,
                 "faithfulness": row.get("faithfulness"),
                 "evaluation_method": row.get("evaluation_method"),
                 "unsupervised_method": row.get("unsupervised_method"),
-                "unsupervised_scores": _parse_json_field(row.get("unsupervised_scores")),
+                "unsupervised_scores": unsup_scores,
                 "evaluated": _is_evaluated(row),
                 "created_at": row.get("created_at"),
                 "filter_basis": row.get("filter_basis"),
@@ -273,6 +285,9 @@ def get_qa_item(qa_id: str) -> Dict[str, Any]:
             "scores": unsup_scores,
             "meta": unsup_meta,
         }
+    average_score = row.get("average_score")
+    if unsup_scores:
+        average_score = compute_unsupervised_average_score(unsup_scores)
 
     similar_questions: List[Dict[str, Any]] = []
     try:
@@ -285,6 +300,7 @@ def get_qa_item(qa_id: str) -> Dict[str, Any]:
                 "question_type",
                 "answer_explanation",
                 "average_score",
+                "unsupervised_scores",
                 "filtered",
                 "evaluation_method",
                 "created_at",
@@ -305,8 +321,16 @@ def get_qa_item(qa_id: str) -> Dict[str, Any]:
                         "answer": variant.get("answer"),
                         "question_type": variant.get("question_type"),
                         "answer_explanation": variant.get("answer_explanation"),
-                        "score": variant.get("average_score"),
-                        "average_score": variant.get("average_score"),
+                        "score": (
+                            compute_unsupervised_average_score(variant.get("unsupervised_scores"))
+                            if _parse_json_field(variant.get("unsupervised_scores"))
+                            else variant.get("average_score")
+                        ),
+                        "average_score": (
+                            compute_unsupervised_average_score(variant.get("unsupervised_scores"))
+                            if _parse_json_field(variant.get("unsupervised_scores"))
+                            else variant.get("average_score")
+                        ),
                         "filtered": variant.get("filtered"),
                         "evaluation_method": variant.get("evaluation_method"),
                         "created_at": variant.get("created_at"),
@@ -341,7 +365,7 @@ def get_qa_item(qa_id: str) -> Dict[str, Any]:
         "difficulty_level": row.get("difficulty_level"),
         "difficulty_score": row.get("difficulty_score"),
         "filtered": row.get("filtered"),
-        "average_score": row.get("average_score"),
+        "average_score": average_score,
         "faithfulness": row.get("faithfulness"),
         "evaluation_method": row.get("evaluation_method"),
         "evaluated": _is_evaluated(row),

@@ -1697,6 +1697,46 @@ pre {
   overflow-wrap: anywhere;
 }
 
+.pipeline-debug-batch-list,
+.pipeline-debug-scenario-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.pipeline-debug-batch-card,
+.pipeline-debug-scenario {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-2) 34%, transparent);
+}
+
+.pipeline-debug-batch-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pipeline-debug-batch-head strong,
+.pipeline-debug-scenario > strong {
+  overflow-wrap: anywhere;
+}
+
+.pipeline-debug-batch-paths,
+.pipeline-debug-scenario-meta {
+  display: grid;
+  gap: 8px;
+}
+
+.pipeline-debug-scenario {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--surface) 40%, transparent);
+}
+
 .pipeline-debug-empty {
   color: var(--muted);
   font-size: 12px;
@@ -4686,18 +4726,6 @@ body.qa-workbench-redesign pre {
   }
 }
 
-body.qa-workbench-redesign.app-shell main,
-body.qa-workbench-redesign .app-workbar {
-  width: calc(100% - 224px);
-}
-
-@media (max-width: 900px) {
-  body.qa-workbench-redesign.app-shell main,
-  body.qa-workbench-redesign .app-workbar {
-    width: 100%;
-  }
-}
-
 /* 2026-07-03 pipeline information architecture pass */
 body.qa-workbench-redesign .pipeline-workbench {
   display: block;
@@ -5201,6 +5229,12 @@ body.qa-workbench-redesign .settings-tab-panel .module-settings-shell {
 .review-grid {
   align-items: stretch;
   min-height: 0;
+}
+
+@media (min-width: 901px) and (max-width: 1180px) {
+  .review-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
 }
 
 .review-panel {
@@ -6307,5 +6341,419 @@ body.qa-workbench-redesign.app-shell > header {
   body.qa-workbench-redesign .settings-modal--workspace .settings-modal-footer {
     padding-left: 16px;
     padding-right: 48px;
+  }
+}
+
+/* Final viewport contract: keep body as the normal scroll owner. */
+html {
+  overflow-y: auto;
+}
+
+body.qa-workbench-redesign {
+  min-height: 100dvh;
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: var(--bg);
+}
+
+body.qa-workbench-redesign.drawer-open {
+  overflow: hidden;
+}
+
+/* Apply the desktop workbench shell before ui.js runs, so the sidebar does not
+   flash into the document flow or lose its dark surface on first paint. */
+body.qa-workbench-redesign > header {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: 224px;
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  z-index: 50;
+  background: var(--sidebar-bg, #073f4d);
+}
+
+body.app-shell > header,
+body.qa-workbench-redesign.app-shell > header {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: 224px;
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  z-index: 50;
+}
+
+body.app-shell main,
+body.qa-workbench-redesign.app-shell main,
+body.app-shell .app-workbar,
+body.qa-workbench-redesign .app-workbar {
+  width: calc(100% - 224px);
+  max-width: none;
+  margin-left: 224px;
+  box-sizing: border-box;
+}
+
+body.app-shell main,
+body.qa-workbench-redesign.app-shell main {
+  min-height: 0;
+  padding-bottom: 48px;
+}
+
+body.app-shell .app-workbar,
+body.qa-workbench-redesign .app-workbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+}
+
+/* Fixed-height review cards keep both borders aligned; each content area owns its scroll. */
+.review-grid {
+  align-items: stretch;
+  min-height: 0;
+}
+
+.review-panel--chunk,
+.review-panel--qa {
+  height: min(74dvh, 820px) !important;
+  max-height: min(74dvh, 820px) !important;
+  min-height: 0;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.review-panel--chunk > h2,
+.review-panel--qa > h2,
+.review-panel--chunk > .form-grid {
+  flex: 0 0 auto;
+}
+
+.review-panel--chunk > .chunk-tree-grid {
+  flex: 1 1 auto;
+  height: auto !important;
+  max-height: none !important;
+  min-height: 0;
+  overflow: hidden !important;
+}
+
+.review-panel--chunk .chunk-tree-box,
+.review-panel--chunk .chunk-debug-panel,
+.review-panel--chunk .chunk-debug-view.is-active,
+.review-panel--chunk #chunkDebugChunkView,
+.review-panel--chunk #chunkDebugPanelQa {
+  height: auto !important;
+  max-height: none !important;
+  min-height: 0;
+  overflow: hidden !important;
+}
+
+.review-panel--chunk #chunkTree,
+.review-panel--chunk .chunk-debug-panel .chunk-debug-view,
+.review-panel--chunk #chunkDebugQaList {
+  min-height: 0;
+  overflow: auto !important;
+  scrollbar-gutter: stable;
+}
+
+.review-panel--chunk .chunk-debug-view.is-active {
+  display: flex !important;
+  flex-direction: column;
+}
+
+/* The chunk debug template is a long detail view. Keep the tab wrapper
+   bounded, but let the rendered Chunk 信息 card own vertical scrolling. */
+.review-panel--chunk #chunkDebugPanelChunk {
+  min-height: 0;
+  overflow: hidden !important;
+}
+
+.review-panel--chunk #chunkDebugChunkView {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto !important;
+  max-height: none !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
+}
+
+.review-panel--chunk .chunk-debug-trace-list {
+  max-height: min(360px, 42vh) !important;
+  overflow: auto !important;
+}
+
+.review-panel--qa > #qaResults {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto !important;
+  max-height: none !important;
+  overflow: auto !important;
+  display: block;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
+}
+
+/* The QA list opens the detail modal; no blank permanent detail column. */
+.chunk-debug-qa-layout {
+  display: block;
+  height: 100% !important;
+  max-height: 100% !important;
+  min-height: 0;
+  overflow: hidden !important;
+}
+
+.chunk-debug-qa-detail-box {
+  display: none !important;
+}
+
+.chunk-debug-qa-list-box > #chunkDebugQaList {
+  height: 100% !important;
+  max-height: 100% !important;
+  min-height: 0;
+  overflow: auto !important;
+}
+
+@media (max-width: 1180px) {
+  .review-panel--chunk,
+  .review-panel--qa {
+    height: min(70dvh, 720px) !important;
+    max-height: min(70dvh, 720px) !important;
+  }
+}
+
+@media (max-width: 760px) {
+  .review-panel--chunk,
+  .review-panel--qa {
+    height: min(72dvh, 680px) !important;
+    max-height: min(72dvh, 680px) !important;
+  }
+}
+
+/* Improve the contrast of labels before colons and key/value fields. */
+body.qa-workbench-redesign label {
+  color: var(--text);
+  font-weight: 650;
+}
+
+body.qa-workbench-redesign label small,
+body.qa-workbench-redesign .hint,
+body.qa-workbench-redesign .muted {
+  color: var(--muted);
+}
+
+body.qa-workbench-redesign .kv-k,
+body.qa-workbench-redesign .metric {
+  color: var(--text);
+  font-weight: 650;
+  text-align: left;
+}
+
+body.qa-workbench-redesign .kv {
+  grid-template-columns: minmax(150px, 220px) minmax(0, 1fr);
+}
+
+body.qa-workbench-redesign .card,
+body.qa-workbench-redesign .workbench-main,
+body.qa-workbench-redesign .workbench-side,
+body.qa-workbench-redesign .review-panel,
+body.qa-workbench-redesign .tool-card,
+body.qa-workbench-redesign .module-settings-card {
+  border-radius: 16px;
+  border-color: var(--border);
+  box-shadow: var(--shadow-sm);
+}
+
+.admin-qa-detail-modal {
+  width: min(920px, calc(100vw - 32px));
+  max-height: min(88dvh, 860px);
+  border-radius: 18px;
+}
+
+.admin-qa-detail-modal .drawer-body {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.admin-detail-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (min-width: 761px) {
+  body.app-shell > header,
+  body.qa-workbench-redesign.app-shell > header {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: 224px;
+    height: 100dvh;
+    max-height: 100dvh;
+    border-right: 1px solid rgba(231, 243, 243, 0.12);
+    border-bottom: 0;
+  }
+
+  body.app-shell .header-row,
+  body.qa-workbench-redesign.app-shell .header-row {
+    min-height: calc(100dvh - 24px);
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  body.app-shell .header-actions,
+  body.qa-workbench-redesign.app-shell .header-actions {
+    flex-direction: column;
+    align-items: stretch;
+    margin-top: 22px;
+  }
+
+  body.app-shell .nav,
+  body.qa-workbench-redesign.app-shell .nav {
+    flex-direction: column;
+    align-items: stretch;
+    overflow: visible;
+  }
+}
+
+@media (max-width: 760px) {
+  body.app-shell > header,
+  body.qa-workbench-redesign.app-shell > header {
+    position: sticky;
+    inset: auto;
+    width: 100%;
+    height: auto;
+    max-height: none;
+    overflow: visible;
+    border-right: 0;
+    border-bottom: 1px solid rgba(231, 243, 243, 0.12);
+  }
+
+  body.app-shell main,
+  body.qa-workbench-redesign.app-shell main,
+  body.app-shell .app-workbar,
+  body.qa-workbench-redesign .app-workbar {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  body.app-shell main,
+  body.qa-workbench-redesign.app-shell main {
+    padding: 14px 12px 36px;
+  }
+
+  body.qa-workbench-redesign .app-workbar {
+    padding: 9px 12px;
+  }
+
+  body.qa-workbench-redesign .kv {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-qa-detail-modal {
+    width: calc(100vw - 16px);
+    max-height: calc(100dvh - 16px);
+    border-radius: 16px;
+  }
+}
+
+/* 2026-08-14-7: make the Chunk body preview discoverable and reviewable at full size. */
+.chunk-debug-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.chunk-debug-expand-hint {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.chunk-debug-code--expandable {
+  display: block;
+  width: 100%;
+  margin: 0;
+  text-align: left;
+  font: inherit;
+  cursor: zoom-in;
+  transition: border-color 180ms var(--ease-out), background 180ms var(--ease-out), transform 180ms var(--ease-out);
+}
+
+.chunk-debug-code--expandable:hover {
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--border));
+  background: color-mix(in srgb, var(--accent) 5%, var(--code-bg));
+  transform: translateY(-1px);
+}
+
+.chunk-debug-code--expandable:active {
+  transform: translateY(0) scale(0.998);
+}
+
+.chunk-debug-code--expandable:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent) 42%, transparent);
+  outline-offset: 2px;
+}
+
+.chunk-text-modal-path {
+  max-width: min(900px, 70vw);
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.chunk-text-modal-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chunk-text-modal-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px 20px;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border-radius: 14px;
+  background: var(--code-bg);
+  color: var(--code-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.78;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+@media (max-width: 760px) {
+  .chunk-debug-section-title {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .chunk-text-modal-path {
+    max-width: calc(100vw - 88px);
+  }
+
+  .chunk-text-modal-body {
+    padding: 12px;
+  }
+
+  .chunk-text-modal-content {
+    padding: 14px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chunk-debug-code--expandable {
+    transition: none;
   }
 }

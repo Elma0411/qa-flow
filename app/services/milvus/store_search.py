@@ -21,6 +21,7 @@ from .meta import (
     _utf8_size,
 )
 from app.services.debug import upsert_qa_debug_items
+from app.services.unsupervised_evaluation import compute_unsupervised_average_score
 
 
 def store_qa_payload_to_milvus(
@@ -198,6 +199,10 @@ def store_qa_payload_to_milvus(
                         faithfulness = float(faithfulness_raw)
                     except Exception:
                         faithfulness = -1.0
+                if ue_scores and any(
+                    key in ue_scores for key in ("faithfulness", "answerability", "coverage_score", "p")
+                ):
+                    avg_score = compute_unsupervised_average_score(ue_scores)
                 primary_row: Dict[str, Any] = {
                     "id": item.get("id", "") or "",
                     "task_id": item.get("task_id", "") or "",
@@ -386,8 +391,6 @@ def search_qa_pairs_in_milvus(
             filter_expressions.append(f'task_id == "{task_id}"')
         if only_filtered is not None:
             filter_expressions.append(f"filtered == {str(only_filtered).lower()}")
-        if min_avg_score is not None:
-            filter_expressions.append(f"average_score >= {min_avg_score}")
         effective_categories = categories or themes
         if effective_categories:
             cate_expr = " or ".join([f'{category_field} == \"{cate}\"' for cate in effective_categories])
@@ -437,11 +440,12 @@ def search_qa_pairs_in_milvus(
         ]
         if allowed_fields is not None:
             output_fields = [f for f in output_fields if f in allowed_fields]
+        search_limit = max(int(top_k), 1000) if min_avg_score is not None else int(top_k)
         results = _rt.milvus_client.search(
             data=[query_embedding],
             anns_field="embedding_vector",
             param=search_params,
-            limit=top_k,
+            limit=search_limit,
             expr=filter_expr,
             output_fields=output_fields,
         )
@@ -457,6 +461,19 @@ def search_qa_pairs_in_milvus(
                 unsup_method_raw = entity.get("unsupervised_method") if entity else None
                 unsup_scores_raw = entity.get("unsupervised_scores") if entity else None
                 unsup_meta_raw = entity.get("unsupervised_meta") if entity else None
+                try:
+                    unsup_scores = json.loads(unsup_scores_raw or "{}") if isinstance(unsup_scores_raw, str) else (unsup_scores_raw or {})
+                except json.JSONDecodeError:
+                    unsup_scores = {}
+                average_score = entity.get("average_score")
+                if isinstance(unsup_scores, dict) and unsup_scores:
+                    average_score = compute_unsupervised_average_score(unsup_scores)
+                if min_avg_score is not None:
+                    try:
+                        if float(average_score or 0.0) < float(min_avg_score):
+                            continue
+                    except Exception:
+                        continue
                 search_results.append(
                     {
                         "id": entity.get("id"),
@@ -479,7 +496,7 @@ def search_qa_pairs_in_milvus(
                         "embed_model": entity.get("embed_model"),
                         "embed_dim": entity.get("embed_dim"),
                         "filtered": entity.get("filtered"),
-                        "average_score": entity.get("average_score"),
+                        "average_score": average_score,
                         "faithfulness": entity.get("faithfulness"),
                         "evaluation_method": entity.get("evaluation_method"),
                         "llm_scores": json.loads(llm_scores_raw or "{}"),
@@ -503,6 +520,7 @@ def search_qa_pairs_in_milvus(
                         "variant_of": entity.get("variant_of"),
                     }
                 )
+        search_results = search_results[: int(top_k)]
         return {
             "success": True,
             "message": f"找到{len(search_results)}条相关结果",

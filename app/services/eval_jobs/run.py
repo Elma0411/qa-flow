@@ -24,6 +24,7 @@ from .common import (
 from app.services.evaluation import execute_local_evaluation_blocking
 from app.services.unsupervised_evaluation import (
     UNSUPERVISED_EVALUATION_AVAILABLE,
+    compute_unsupervised_average_score,
     execute_unsupervised_suite_blocking,
     resolve_evaluation_model_path,
 )
@@ -320,8 +321,7 @@ def evaluate_dataset_job(
 
         ue = row.get("unsupervised_evaluation") or {}
         scores = ue.get("scores") if isinstance(ue, dict) else {}
-        uf1 = scores.get("unsupervised_f1") if isinstance(scores, dict) else None
-        row["average_score"] = _safe_float(uf1, 0.0)
+        row["average_score"] = compute_unsupervised_average_score(scores)
         row["evaluation_method"] = "unsupervised_f1"
 
     scored_path = os.path.join(outputs_dir, f"eval_job_{job_id}_scored.jsonl")
@@ -337,6 +337,7 @@ def evaluate_dataset_job(
             "coverage_self": float(unsup_scores["coverage_self"]),
             "coverage_score": float(unsup_scores["coverage_score"]),
             "unsupervised_f1": float(unsup_scores["unsupervised_f1"]),
+            "average_score": float(unsup_scores["average_score"]),
         },
     }
 

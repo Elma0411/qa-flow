@@ -481,7 +481,11 @@ Rules:
   `SummaryScenario` candidates. Point scenarios bind exactly one section
   material and one fact need. Summary scenarios bind one material with a real
   multi-fact enumeration or multiple materials that jointly serve one reader
-  need. Every material ID is validated against the supplied material catalog.
+  need. Every material reference is validated against the supplied material
+  catalog. A Point has exactly one `required_material`; a Summary has one or
+  more `required_materials` and may have `optional_materials`. Summary
+  coverage checks inspect only required materials; an optional material that is
+  not cited is not a failure.
   In `qa_detail_mode=auto`, the planner builds both pools and the allocator
   targets 35% summary scenarios; missing summary capacity flows to point
   scenarios rather than being fabricated. Explicit `point` or `summary` mode
@@ -492,11 +496,12 @@ Rules:
   Pool selection and punctuation-insensitive final-question de-duplication are
   document-wide. If a planner call underfills the point pool, deterministic
   one-material point scenarios fill only the missing capacity; summary
-  scenarios are never synthesized as fallback. No frontend/request batch-size
-  control is exposed. A planner response is accepted only into the matching
-  Point/Summary pool; a mismatched `scenario_type` is discarded. One section
-  material may still contribute several Point scenarios when their intents
-  cover distinct facts.
+  scenarios are never synthesized as fallback. Planner calls use internal
+  character-bounded batches and a bounded concurrency setting passed from the
+  pipeline runtime; no frontend/request batch-size control is exposed. A
+  planner response is accepted only into the matching Point/Summary pool; a
+  mismatched `scenario_type` is discarded. One section material may still
+  contribute several Point scenarios when their intents cover distinct facts.
 - Point and summary scenarios use distinct question-generation instructions.
   Every generated candidate then passes through one question-editor LLM call
   that returns `keep`, `rewrite`, or `drop`. The editor may naturalize wording,
@@ -516,7 +521,10 @@ Rules:
   facts from one paragraph or a tightly connected passage group; unrelated
   questions must be emitted as separate items rather than concatenated.
 - Answer `evidence_usage` references are resolved back through the exact
-  `主材料-N` mapping. `source_chunk_id`, `source_chunk_index`, and
+  `主材料-N` mapping. The model may return only `evidence_ref` and `role`;
+  the backend appends the audited `chunk_id`, `chunk_index`, and `title_path`.
+  Persistence removes legacy/free-form `snippet` and `usage` fields.
+  `source_chunk_id`, `source_chunk_index`, and
   `source_chunk_title_path` identify the first directly cited primary chunk;
   `source_chunk_ids`, `source_chunk_indexes`, and
   `source_chunk_title_paths` retain the complete ordered primary-evidence set
@@ -533,6 +541,12 @@ Rules:
   `scenario_candidates_by_type` and `scenario_selected_by_type`, each keyed by
   `point` and `summary`; the latter is the actual allocation after auto mode
   yields unavailable Summary slots to Point.
+- `unit_plan_summary.scenario_planner_batch_details` is the planner audit
+  surface. Each detail records the batch index/count, scenario type, material
+  paths, requested/returned/validated counts, required/optional paths for each
+  scenario, `scenario_intent`, `reader_need`, dropped reasons, and any batch
+  error. The complete model prompt and `raw_response` remain in the registered
+  task debug JSONL and are available through the task-scoped debug endpoint.
 - `doc_handoff` means document preprocessing has produced `file_contents` /
   `pre_split_chunks` for QA; it is not the terminal state of the full pipeline.
 
@@ -558,6 +572,20 @@ Optional request fields:
 The job result stores the normalized model names under
 `unsupervised.models`. This records the requested override (`auto` when no
 override was supplied); it does not copy model weights into job artifacts.
+
+Unsupervised display/filter contract:
+
+- Ordinary evaluation pages expose only `faithfulness`, `answerability`,
+  `coverage_score`, and their arithmetic mean.
+- `average_score` is always
+  `(faithfulness + answerability + coverage_score) / 3`. Missing, malformed,
+  non-finite, or out-of-range values contribute `0`; the denominator remains
+  `3`. Legacy `p` is accepted only as an input spelling of answerability.
+- Backend filtering, consolidated fields, dataset import, and ordinary UI
+  display use this same `average_score`. `unsupervised_f1`, `coverage_self`,
+  and `coverage_recall_soft` remain internal diagnostic fields and are not the
+  threshold basis. A filtered record identifies `filter_basis` as
+  `average_score`.
 
 ## Contract D1: Standalone Document Job Status
 
@@ -712,7 +740,11 @@ records.
 Public endpoints:
 
 - `GET /pipeline-tasks/{task_id}/debug-jsonl`
-  - Query: optional `chunk_index`, optional `event`.
+  - Query: optional `chunk_index`, optional `event`, optional
+    `planning_batch_index`, and optional `planning_scenario_type` (`point` or
+    `summary`).
+  - Planner raw responses can therefore be inspected for one scenario type and
+    one planning batch without exposing internal IDs in the model request.
   - Reads only debug JSONL basenames already registered in the task status.
   - Returns matching debug records, debug file basenames, filters, and
     `artifacts_expire_at`.

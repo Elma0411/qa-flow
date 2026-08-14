@@ -61,6 +61,7 @@ from app.services.storage import (
 )
 from app.services.unsupervised_evaluation import (
     UNSUPERVISED_EVALUATION_AVAILABLE,
+    compute_unsupervised_average_score,
     execute_unsupervised_suite_blocking,
     resolve_evaluation_model_path,
 )
@@ -1158,19 +1159,10 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                         method_key = evaluation_method
                         if method_key == "unsupervised":
                             method_key = "unsupervised_f1"
-                        score_key = {
-                            "faithfulness": "faithfulness",
-                            "answerability": "answerability",
-                            "unsupervised_f1": "unsupervised_f1",
-                        }.get(method_key, "faithfulness")
                         for primary in qa_data:
                             ue = primary.get("unsupervised_evaluation") or {}
                             scores = ue.get("scores") if isinstance(ue, dict) else {}
-                            raw = scores.get(score_key) if isinstance(scores, dict) else None
-                            try:
-                                val = float(raw) if raw is not None else 0.0
-                            except Exception:
-                                val = 0.0
+                            val = compute_unsupervised_average_score(scores)
                             primary["average_score"] = val
                             primary["evaluation_method"] = method_key
                             eval_scores_map[_parent_key(primary)] = val

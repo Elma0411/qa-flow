@@ -13,6 +13,46 @@ from app.core.config import (
     LOCAL_EVALUATION_METRICS,
     LOCAL_EVALUATION_AVG_METRICS,
 )
+from app.services.unsupervised_evaluation import compute_unsupervised_average_score
+
+
+def _sanitize_evidence_usage(raw_value: Any) -> List[Dict[str, Any]]:
+    """Keep only the auditable evidence contract at the persistence boundary.
+
+    ``snippet`` and free-form ``usage`` were model-controlled fields in older
+    artifacts.  The current contract trusts only the backend-resolved ref and
+    source pointer, so they must not be persisted or shown as authoritative
+    provenance.
+    """
+    if not isinstance(raw_value, list):
+        return []
+    cleaned: List[Dict[str, Any]] = []
+    seen: set[Tuple[str, str, str]] = set()
+    for raw_entry in raw_value:
+        if not isinstance(raw_entry, dict):
+            continue
+        evidence_ref = str(raw_entry.get("evidence_ref") or "").strip()
+        chunk_id = str(raw_entry.get("chunk_id") or "").strip()
+        if not evidence_ref and not chunk_id:
+            continue
+        role = str(raw_entry.get("role") or "evidence").strip() or "evidence"
+        key = (evidence_ref, chunk_id, role)
+        if key in seen:
+            continue
+        seen.add(key)
+        entry: Dict[str, Any] = {
+            "evidence_ref": evidence_ref,
+            "role": role,
+        }
+        if chunk_id:
+            entry["chunk_id"] = chunk_id
+        if raw_entry.get("chunk_index") is not None:
+            entry["chunk_index"] = raw_entry.get("chunk_index")
+        title_path = str(raw_entry.get("title_path") or "").strip()
+        if title_path:
+            entry["title_path"] = title_path
+        cleaned.append(entry)
+    return cleaned
 
 
 def _build_fact_maps(
@@ -206,11 +246,12 @@ def build_consolidated_entry(
         use_filtered = False
 
     # filter_basis at run level
-    filter_basis = (
-        evaluation_method
-        if (filter_applied and evaluation_method in ("llm", "local", "faithfulness", "answerability", "unsupervised_f1"))
-        else None
-    )
+    if filter_applied and evaluation_method in ("faithfulness", "answerability", "unsupervised_f1", "unsupervised"):
+        filter_basis = "average_score"
+    elif filter_applied and evaluation_method in ("llm", "local"):
+        filter_basis = evaluation_method
+    else:
+        filter_basis = None
 
     created_items: List[Dict[str, Any]] = []
 
@@ -253,7 +294,13 @@ def build_consolidated_entry(
         local_scores = (local_map.get(key) or {}).get("scores")
 
         avg_score = merged.get("average_score")
-        if avg_score is None:
+        ue = merged.get("unsupervised_evaluation") or {}
+        ue_scores = ue.get("scores") if isinstance(ue, dict) else {}
+        if evaluation_method in ("faithfulness", "answerability", "unsupervised_f1", "unsupervised") and isinstance(ue_scores, dict):
+            # Unsupervised filtering is defined by the three visible metrics;
+            # never reuse an older stored F1 as the item's average score.
+            avg_score = compute_unsupervised_average_score(ue_scores)
+        elif avg_score is None:
             if evaluation_method == "llm" and llm_scores:
                 vals = [
                     v
@@ -270,20 +317,8 @@ def build_consolidated_entry(
                     for v in [local_scores.get(m)]
                 ]
                 avg_score = (sum(vals) / len(vals)) if vals else None
-            elif evaluation_method in ("faithfulness", "answerability", "unsupervised_f1"):
-                ue = merged.get("unsupervised_evaluation") or {}
-                ue_scores = ue.get("scores") if isinstance(ue, dict) else {}
-                key_map = {
-                    "faithfulness": "faithfulness",
-                    "answerability": "answerability",
-                    "unsupervised_f1": "unsupervised_f1",
-                }
-                score_key = key_map.get(evaluation_method, "faithfulness")
-                raw = ue_scores.get(score_key) if isinstance(ue_scores, dict) else None
-                try:
-                    avg_score = float(raw) if raw is not None else None
-                except Exception:
-                    avg_score = None
+            elif evaluation_method in ("faithfulness", "answerability", "unsupervised_f1", "unsupervised"):
+                avg_score = compute_unsupervised_average_score(ue_scores)
 
         # Derive answer_explanation (优先用 merged 自带，其次用 LLM reasons 里比较有用的一个)
         answer_explanation = merged.get("answer_explanation")
@@ -376,7 +411,7 @@ def build_consolidated_entry(
             "effective_answer_scope": merged.get("effective_answer_scope")
             or merged.get("answer_scope"),
             "answer_scope_decision": merged.get("answer_scope_decision") or {},
-            "evidence_usage": merged.get("evidence_usage") or [],
+            "evidence_usage": _sanitize_evidence_usage(merged.get("evidence_usage")),
             "retrieval_trace": merged.get("retrieval_trace"),
             "filtered": filtered_flag,
             "average_score": avg_score,

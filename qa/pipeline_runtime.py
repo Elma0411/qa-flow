@@ -11,6 +11,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from qa.generation import (
     DEFAULT_EVIDENCE_TOKEN_BUDGET,
     DEFAULT_FINAL_EVIDENCE_K,
+    DEFAULT_SCENARIO_PLANNING_BATCH_CHARS,
+    DEFAULT_SCENARIO_PLANNING_MAX_CONCURRENCY,
     GenerationUnit,
     QADocumentEvidenceIndex,
     build_question_type_plan,
@@ -49,6 +51,8 @@ class OneStepPipelineRuntime:
     pre_split_chunk_meta: Optional[List[Dict[str, Any]]]
     final_evidence_k: int
     evidence_token_budget: int
+    scenario_planning_batch_chars: int
+    scenario_planning_max_concurrency: int
 
 
 def parse_one_step_pipeline_runtime(config: Dict[str, Any]) -> OneStepPipelineRuntime:
@@ -158,6 +162,22 @@ def parse_one_step_pipeline_runtime(config: Dict[str, Any]) -> OneStepPipelineRu
             else evidence_token_budget_value
         ),
     )
+    scenario_planning_batch_chars = max(
+        1000,
+        int(
+            DEFAULT_SCENARIO_PLANNING_BATCH_CHARS
+            if config.get("scenario_planning_batch_chars") is None
+            else config.get("scenario_planning_batch_chars")
+        ),
+    )
+    scenario_planning_max_concurrency = max(
+        1,
+        int(
+            DEFAULT_SCENARIO_PLANNING_MAX_CONCURRENCY
+            if config.get("scenario_planning_max_concurrency") is None
+            else config.get("scenario_planning_max_concurrency")
+        ),
+    )
 
     return OneStepPipelineRuntime(
         chunk_size=chunk_size,
@@ -184,6 +204,8 @@ def parse_one_step_pipeline_runtime(config: Dict[str, Any]) -> OneStepPipelineRu
         pre_split_chunk_meta=pre_split_chunk_meta,
         final_evidence_k=final_evidence_k,
         evidence_token_budget=evidence_token_budget,
+        scenario_planning_batch_chars=scenario_planning_batch_chars,
+        scenario_planning_max_concurrency=scenario_planning_max_concurrency,
     )
 
 
@@ -286,28 +308,37 @@ def run_one_step_chunk_worker(
     candidate_questions_total = 0
     candidates_considered = 0
     skipped_empty_or_duplicate = 0
+    candidate_retry_used = False
     for attempt_index in range(1, max_attempts + 1):
         attempt_used_total = attempt_index
         candidate_started_at = time.perf_counter()
-        candidates = call_candidate_question_llm(
-            client=client,
-            model=runtime.model,
-            source_chunk_text=chunk_text,
-            source_chunk_meta=source_chunk_meta,
-            candidate_count=candidate_count,
-            prompt_language=runtime.prompt_language,
-            question_type_plan=plan_full,
-            few_shot_examples=runtime.few_shot_examples,
-            request_timeout=runtime.request_timeout,
-            qa_detail_mode=effective_qa_detail_mode,
-            knowledge_category=(
-                runtime.fixed_knowledge_category
-                if runtime.use_category_prompt_templates
-                else None
-            ),
-            chunk_index=chunk_index,
-            debug_writer=debug_writer,
-        )
+        candidate_generation_error = ""
+        try:
+            candidates = call_candidate_question_llm(
+                client=client,
+                model=runtime.model,
+                source_chunk_text=chunk_text,
+                source_chunk_meta=source_chunk_meta,
+                candidate_count=candidate_count,
+                prompt_language=runtime.prompt_language,
+                question_type_plan=plan_full,
+                few_shot_examples=runtime.few_shot_examples,
+                request_timeout=runtime.request_timeout,
+                qa_detail_mode=effective_qa_detail_mode,
+                knowledge_category=(
+                    runtime.fixed_knowledge_category
+                    if runtime.use_category_prompt_templates
+                    else None
+                ),
+                chunk_index=chunk_index,
+                debug_writer=debug_writer,
+            )
+        except Exception as exc:
+            candidates = []
+            candidate_generation_error = str(exc)
+            dropped_answer_reasons["candidate_generation_error"] = (
+                dropped_answer_reasons.get("candidate_generation_error", 0) + 1
+            )
         candidate_ended_at = time.perf_counter()
         candidate_question_seconds += candidate_ended_at - candidate_started_at
         _append_wall_interval(
@@ -317,6 +348,19 @@ def run_one_step_chunk_worker(
             candidate_ended_at,
         )
         candidate_questions_total += len(candidates)
+        if candidate_generation_error:
+            if not candidate_retry_used and attempt_index < max_attempts:
+                candidate_retry_used = True
+                continue
+            break
+        if not candidates:
+            dropped_answer_reasons["candidate_empty"] = (
+                dropped_answer_reasons.get("candidate_empty", 0) + 1
+            )
+            if not candidate_retry_used and attempt_index < max_attempts:
+                candidate_retry_used = True
+                continue
+            break
         edited_candidates: List[Dict[str, Any]] = []
         editor_drop_reasons: Dict[str, int] = {}
         source_unit_payload = (
@@ -326,19 +370,35 @@ def run_one_step_chunk_worker(
         )
         for candidate in candidates:
             editor_started_at = time.perf_counter()
-            edited_candidate, editor_status = call_question_editor_llm(
-                client=client,
-                model=runtime.model,
-                candidate=candidate,
-                source_material=chunk_text,
-                scenario_intent=str(source_unit_payload.get("scenario_intent") or ""),
-                reader_need=str(source_unit_payload.get("reader_need") or ""),
-                qa_detail_mode=effective_qa_detail_mode,
-                prompt_language=runtime.prompt_language,
-                request_timeout=runtime.request_timeout,
-                chunk_index=chunk_index,
-                debug_writer=debug_writer,
-            )
+            editor_error = ""
+            try:
+                edited_candidate, editor_status = call_question_editor_llm(
+                    client=client,
+                    model=runtime.model,
+                    candidate=candidate,
+                    source_material=chunk_text,
+                    scenario_intent=str(source_unit_payload.get("scenario_intent") or ""),
+                    reader_need=str(source_unit_payload.get("reader_need") or ""),
+                    qa_detail_mode=effective_qa_detail_mode,
+                    prompt_language=runtime.prompt_language,
+                    request_timeout=runtime.request_timeout,
+                    chunk_index=chunk_index,
+                    source_material_path=str(
+                        source_chunk_meta.get("qa_generation_unit_title_path")
+                        or source_chunk_meta.get("title_path")
+                        or ""
+                    ).strip()
+                    or None,
+                    source_material_paths=(
+                        list(source_chunk_meta.get("qa_generation_unit_material_paths") or [])
+                        if isinstance(source_chunk_meta.get("qa_generation_unit_material_paths"), list)
+                        else None
+                    ),
+                    debug_writer=debug_writer,
+                )
+            except Exception as exc:
+                edited_candidate, editor_status = None, "question_editor_error"
+                editor_error = str(exc)
             editor_ended_at = time.perf_counter()
             question_editor_seconds += editor_ended_at - editor_started_at
             _append_wall_interval(
@@ -351,11 +411,26 @@ def run_one_step_chunk_worker(
                 edited_candidates.append(edited_candidate)
             else:
                 editor_drop_reasons[editor_status] = editor_drop_reasons.get(editor_status, 0) + 1
+                if editor_error and debug_writer:
+                    debug_writer(
+                        {
+                            "event": "question_editor_llm_call",
+                            "chunk_index": chunk_index,
+                            "candidate": candidate,
+                            "result_status": editor_status,
+                            "parse_error": editor_error,
+                        }
+                    )
         candidates = edited_candidates
         for reason, count in editor_drop_reasons.items():
             dropped_answer_reasons[f"question_editor_{reason}"] = (
                 dropped_answer_reasons.get(f"question_editor_{reason}", 0) + count
             )
+        if not candidates:
+            if not candidate_retry_used and attempt_index < max_attempts:
+                candidate_retry_used = True
+                continue
+            break
         retrieval_timing: Dict[str, float] = {}
         retrieval_started_at = time.perf_counter()
         source_indexes = [
@@ -371,13 +446,28 @@ def run_one_step_chunk_worker(
             for candidate in candidates
             if str(candidate.get("question") or "").strip()
         ]
-        retrieval_map = evidence_index.retrieve_many(
-            retrieval_questions,
-            source_chunk_ids=source_chunk_ids,
-            final_evidence_k=runtime.final_evidence_k,
-            evidence_token_budget=runtime.evidence_token_budget,
-            timing=retrieval_timing,
-        )
+        try:
+            retrieval_map = evidence_index.retrieve_many(
+                retrieval_questions,
+                source_chunk_ids=source_chunk_ids,
+                final_evidence_k=runtime.final_evidence_k,
+                evidence_token_budget=runtime.evidence_token_budget,
+                timing=retrieval_timing,
+            )
+        except Exception as exc:
+            dropped_answer_reasons["retrieval_error"] = (
+                dropped_answer_reasons.get("retrieval_error", 0) + 1
+            )
+            if debug_writer:
+                debug_writer(
+                    {
+                        "event": "retrieval_error",
+                        "chunk_index": chunk_index,
+                        "questions": retrieval_questions,
+                        "error": str(exc),
+                    }
+                )
+            continue
         retrieval_ended_at = time.perf_counter()
         _append_wall_interval(
             wall_intervals,
@@ -429,23 +519,36 @@ def run_one_step_chunk_worker(
                 unit_ended_at,
             )
             answer_started_at = time.perf_counter()
-            item, reason = call_evidence_answer_llm(
-                client=client,
-                model=runtime.model,
-                candidate=candidate_for_answer,
-                generation_unit=generation_unit,
-                qa_detail_mode=effective_qa_detail_mode,
-                prompt_language=runtime.prompt_language,
-                request_timeout=runtime.request_timeout,
-                item_normalizer_with_reason=item_normalizer_with_reason,
-                source_override_handler=source_override_handler,
-                fixed_knowledge_category=runtime.fixed_knowledge_category,
-                fixed_knowledge_category_confidence=runtime.fixed_knowledge_category_confidence,
-                fixed_knowledge_category_reason=runtime.fixed_knowledge_category_reason,
-                use_category_prompt_templates=runtime.use_category_prompt_templates,
-                chunk_index=chunk_index,
-                debug_writer=debug_writer,
-            )
+            try:
+                item, reason = call_evidence_answer_llm(
+                    client=client,
+                    model=runtime.model,
+                    candidate=candidate_for_answer,
+                    generation_unit=generation_unit,
+                    qa_detail_mode=effective_qa_detail_mode,
+                    prompt_language=runtime.prompt_language,
+                    request_timeout=runtime.request_timeout,
+                    item_normalizer_with_reason=item_normalizer_with_reason,
+                    source_override_handler=source_override_handler,
+                    fixed_knowledge_category=runtime.fixed_knowledge_category,
+                    fixed_knowledge_category_confidence=runtime.fixed_knowledge_category_confidence,
+                    fixed_knowledge_category_reason=runtime.fixed_knowledge_category_reason,
+                    use_category_prompt_templates=runtime.use_category_prompt_templates,
+                    chunk_index=chunk_index,
+                    debug_writer=debug_writer,
+                )
+            except Exception as exc:
+                item, reason = None, "answer_generation_error"
+                dropped_answer_reasons[reason] = dropped_answer_reasons.get(reason, 0) + 1
+                if debug_writer:
+                    debug_writer(
+                        {
+                            "event": "answer_generation_error",
+                            "chunk_index": chunk_index,
+                            "candidate": candidate_for_answer,
+                            "error": str(exc),
+                        }
+                    )
             answer_ended_at = time.perf_counter()
             answer_generation_seconds += answer_ended_at - answer_started_at
             _append_wall_interval(

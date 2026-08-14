@@ -5,7 +5,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from .common import _context_group_id, _safe_float
+from .common import (
+    _context_group_id,
+    _safe_float,
+    compute_unsupervised_average_score,
+)
 
 
 def _upgrade_faithfulness_to_suite(
@@ -286,7 +290,7 @@ def _compute_suite_four_scores(
         cov_score_group_vals.append(max(0.0, min(1.0, float(cov_score_group))))
         f1_group_vals.append(f1)
 
-    return {
+    result = {
         "faithfulness": float(sum(faith_group_vals) / len(faith_group_vals)) if faith_group_vals else 0.0,
         "p": float(sum(ans_group_vals) / len(ans_group_vals)) if ans_group_vals else 0.0,
         "r_soft": float(sum(cov_group_vals) / len(cov_group_vals)) if cov_group_vals else 0.0,
@@ -303,6 +307,10 @@ def _compute_suite_four_scores(
         "coverage_score_definition": "macro mean of item-level sqrt(coverage_recall_soft * coverage_self) within each context group",
         "f1_definition": "macro mean of group-wise F1(2PR/(P+R))",
     }
+    result["answerability"] = result["p"]
+    result["average_score"] = compute_unsupervised_average_score(result)
+    result["average_score_definition"] = "arithmetic mean of faithfulness, answerability, and coverage_score"
+    return result
 
 
 __all__ = [

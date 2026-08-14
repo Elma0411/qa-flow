@@ -17,6 +17,7 @@ from qa.prompts.qa_generation_prompts import (
 from qa.validation import validate_and_normalize_item_with_reason
 from app.services.debug.qa_store import get_debug_map, upsert_qa_debug_items
 from app.services.storage.consolidation import build_consolidated_entry
+from app.services.unsupervised_evaluation import compute_unsupervised_average_score
 
 
 class _StaticChatClient:
@@ -28,6 +29,63 @@ class _StaticChatClient:
 
 
 class QAGenerationContractTests(unittest.TestCase):
+    def test_unsupervised_average_uses_three_visible_metrics_and_fixed_denominator(self):
+        self.assertAlmostEqual(0.5, compute_unsupervised_average_score({
+            "faithfulness": 1,
+            "answerability": 0.5,
+            "coverage_score": 0,
+            "unsupervised_f1": 0,
+        }))
+        self.assertAlmostEqual(1 / 3, compute_unsupervised_average_score({
+            "faithfulness": 1,
+            "answerability": "bad",
+            "coverage_score": float("nan"),
+        }))
+        self.assertAlmostEqual(1 / 3, compute_unsupervised_average_score({
+            "faithfulness": 0.5,
+            "p": 0.5,
+        }))
+
+    def test_consolidation_removes_model_freeform_evidence_fields(self):
+        entry = build_consolidated_entry(
+            task_id="task-evidence-clean",
+            original_filename="evidence.md",
+            facts=[],
+            categorized_facts=[],
+            qa_data=[{
+                "question": "谁负责办理？",
+                "answer": "登记机关负责办理。",
+                "evidence_usage": [{
+                    "evidence_ref": "主材料-1",
+                    "role": "primary_source",
+                    "chunk_id": "c1",
+                    "chunk_index": 1,
+                    "title_path": "办理要求",
+                    "snippet": "登记机关负责办理。",
+                    "usage": "支持主体判断",
+                }],
+            }],
+            evaluation_results=None,
+            filtered_qa_data=None,
+            include_evaluation=False,
+            evaluation_method="llm",
+            filter_by_threshold=False,
+            score_threshold=0.7,
+            chunk_size=600,
+            qa_per_chunk=1,
+            qa_detail_mode="point",
+            prompt_language="zh",
+            llm_model="test-model",
+        )
+        usage = entry["payload"]["items"][0]["evidence_usage"]
+        self.assertEqual([{
+            "evidence_ref": "主材料-1",
+            "role": "primary_source",
+            "chunk_id": "c1",
+            "chunk_index": 1,
+            "title_path": "办理要求",
+        }], usage)
+
     def test_scenario_provenance_survives_consolidation_and_debug_storage(self):
         qa_item = {
             "id": "qa-scenario-1",
@@ -185,11 +243,11 @@ class QAGenerationContractTests(unittest.TestCase):
         )
 
         user_content = client.messages[1]["content"]
-        self.assertIn("主来源材料", user_content)
+        self.assertIn("主材料节点路径", user_content)
         self.assertIn("结婚登记前参加婚前医学检查的费用按规定承担。", user_content)
+        self.assertIn("婚姻登记 > 婚前医学检查", user_content)
         self.assertNotIn("chunk-1", user_content)
-        self.assertNotIn("title_path", user_content)
-        self.assertNotIn("婚姻登记 > 婚前医学检查", user_content)
+        self.assertNotIn('"chunk_id"', user_content)
 
     def test_answer_prompt_does_not_reject_candidate_as_quality_decision(self):
         zh_prompt = build_evidence_answer_system_prompt(
@@ -536,7 +594,7 @@ class QAGenerationContractTests(unittest.TestCase):
                 "source_chunk": {
                     "chunk_id": "secret-chunk-id",
                     "chunk_index": 42,
-                    "title_path": "内部���题 > 不应出现",
+                    "title_path": "内部标题 > 不应出现",
                     "text": "费用由责任主体承担。",
                 },
                 "source_unit_text": "费用由责任主体承担。",
@@ -564,7 +622,7 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertIn("主材料-1", user_content)
         self.assertIn("费用由责任主体承担。", user_content)
         self.assertNotIn("secret-chunk-id", user_content)
-        self.assertNotIn("内部标题", user_content)
+        self.assertIn("内部标题 > 不应出现", user_content)
         self.assertNotIn("retrieval_query", user_content)
         self.assertNotIn("must_have_terms", user_content)
         self.assertEqual("secret-chunk-id", item["evidence_usage"][0]["chunk_id"])
@@ -631,7 +689,8 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertIn("检索证据-1", rendered)
         self.assertNotIn("primary-id", rendered)
         self.assertNotIn("supplement-id", rendered)
-        self.assertIn("标题路径：内部标题 > 第二条", rendered)
+        self.assertIn("节点路径：内部标题 > 第一条", rendered)
+        self.assertIn("节点路径：内部标题 > 第二条", rendered)
         self.assertEqual("primary-id", generation_unit["llm_evidence_ref_map"]["主材料-1"]["chunk_id"])
         self.assertEqual("supplement-id", generation_unit["llm_evidence_ref_map"]["检索证据-1"]["chunk_id"])
 

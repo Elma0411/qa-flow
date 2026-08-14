@@ -1,57 +1,56 @@
 # Latest Change Guide
 
-更新时间：2026-08-14（Asia/Shanghai）
+更新时间：2026-08-15（Asia/Shanghai）
 
 ## Objective
 
-把出题流程及工作台一次性收敛为“逻辑 section 材料 -> Point/Summary 场景 -> 分类出题 -> LLM 编辑 -> 相关证据检索 -> 真实来源回填”，同时移除旧 Milvus 文档块集合兼容并让前后端共享同一语义。
+收敛 QA Flow 的“结构材料 → Point/Summary 场景 → 候选问题 → 问题编辑 → 同文档检索 → 答案与证据 → 无参考评估 → 调试审核”链路。当前版本同时修正无参考评分口径、长文档规划审计和调试页面的可见性，保证生成质量问题能够定位到材料路径和模型原始响应。
 
 ## Effective Changes
 
-- 同一 `section_path` 的正文、物理 fragment 和已接受图片描述合并为一个 `SectionMaterial`；不同 section 不再因为同属一章或同一父标题而自动合并。
-- 新增 LLM 场景规划：`PointScenario` 绑定一份材料和一个事实需求；`SummaryScenario` 只绑定确实共同服务于一个读者需求的多个事实。长文档按内部字符预算分批，Summary 批次保留结构父邻域；`auto` 最终仍在文档级按 35% 目标分配，合格总结场景不足时额度回流给单点题。Point/Summary 返回值只进入对应类型池；同一 section 若包含多个不同事实，可形成多个不同 Point 场景。LLM 偶发少返回单点场景时，只用一材料一场景的确定性 Point fallback 补缺口，绝不伪造 Summary。
-- 每个场景只生成一道题。Point/Summary 使用不同约束，随后统一经过一次 LLM `keep/rewrite/drop` 编辑；程序只校验 JSON、必填值、合法 ID/类型和精确重复，不用硬规则判定语言自然度。
-- 后续 fragment 的重复 Markdown 标题在 `SectionMaterial` 中只保留一次；所有场景结束后再做一次忽略空白和标点的文档级问题去重。
-- 答案实际引用的 `主材料-N` 决定来源。标量 `source_chunk_id/index/title_path` 指向第一条直接主证据，`source_chunk_ids/indexes/title_paths` 保存总结题的完整主证据集合；多材料总结题必须覆盖每份绑定材料，否则进入既有重试。生成结束后不再被锚点 chunk 覆盖。
-- BGE 原子重排和窗口重排都增加相关性准入。最低原始 logit 为 `-1.0`；原子/窗口除头部相对分差外，还必须分别位于真实主材料得分下 `1.0/2.0` 以内。校准样本覆盖中英文相关、同主题硬负例和无关项，并有可执行脚本复现。`final_evidence_k` 只是上限，补充证据允许为 0。
-- 文档块只使用固定集合 `doc_content_chunks_v2`（schema v2）。代码不再暴露旧集合常量或可配置的集合重定向；运行环境中的旧 `doc_tree_chunks` 已删除。
-- 工作台、管理页和 chunk QA 弹窗统一显示 Point/Summary 场景、意图、读者需求、材料 ID 及完整多主来源；`qa_generation_unit_type/mode` 等规划字段现在会经过 consolidated JSON、调试 SQLite 和管理详情接口完整保留。
-- 任务状态显示 Point/Summary 候选池与最终分配。`final_evidence_k` 在界面中明确为“每题最多补充窗口数”，同时显示已完成 unit 的实际补充窗口总数；相关性准入后实际值可以为 0。
-- 新增 `GET /doc-chunks/by-doc/assets`，可按文档一次获取全文、全部 QA 和可选 chunk 列表；文案与接口说明只使用 `doc_content_chunks_v2`。
+- 无参考评估的 `average_score` 固定为
+  `(faithfulness + answerability + coverage_score) / 3`；缺失、非法、非有限或越界值按 `0`，分母始终为 `3`。后端筛选、评测导入、合并产物和普通界面使用同一口径，`filter_basis` 写为 `average_score`。
+- 普通无参考评估界面只显示 `faithfulness`、`answerability`、`coverage_score` 和平均分；旧 `p` 只作为 answerability 的输入兼容，`unsupervised_f1`、`coverage_self`、`coverage_recall_soft` 不作为普通展示或过滤分数。
+- planner 继续以 `section_path` 合并逻辑材料；planner 回调现在接收并记录批次编号/总批次，运行时的批次字符预算和最大并发会真正传入 `plan_generation_units`。
+- planner 单批调用异常会记录在 `scenario_planner_batch_details`，不会让其它批次和 Point 兜底整体失败。批次审计包含请求、返回、校验通过、材料路径、场景意图、读者需求、required/optional 路径和丢弃/错误原因。
+- planner 原始请求和 `raw_response` 继续写入 task-scoped debug JSONL；调试接口新增 `planning_batch_index` 与 `planning_scenario_type` 过滤，前端新增“场景规划批次”审计卡片和原始响应查看入口。
+- 答案 `evidence_usage` 在持久化边界再次清洗，只保留 `evidence_ref`、`role` 以及后端恢复的 `chunk_id`、`chunk_index`、`title_path`，删除模型自由生成的 `snippet`/`usage`。
+- Point/Summary 的 required/optional 覆盖规则和同文档 BGE 证据准入保持不变：Summary 只校验 required 材料，`final_evidence_k` 仍表示最多的补充窗口数，允许实际补充证据为零。
+- 保留现有工作台、管理页、评估页的 Logo、配色和 iOS 风格；调试页面继续支持固定等高双面板、内部独立滚动、QA 详情弹窗和 Chunk 正文放大。
 
 ## Expected Behavior
 
-```text
-content chunks
--> SectionMaterial
--> PointScenario / SummaryScenario
--> global allocation
--> typed question generation
--> LLM keep/rewrite/drop editor
--> BM25 + dense + RRF + calibrated BGE admission
--> answer generation
--> actual primary-source attribution
-```
+- 每个 planner 批次都能在流水线调试视图中看到类型、编号、材料路径、required/optional 来源、意图、读者需求、数量和错误；点击即可读取该类型/批次的原始模型响应。
+- planner 某一批次超时或返回异常时，任务仍能继续处理其它批次；Point/auto 模式按现有证据约束策略补足可用材料，异常原因保留在调试信息中。
+- 无参考阈值筛选不再读取旧 `unsupervised_f1` 作为平均分；非法指标不会因为缺少某一项而抬高结果。
+- 证据审计以服务端材料映射为准，导出的 `evidence_usage` 不含模型自由生成的片段说明。
 
-- 同一个 section 可以同时参与意图不同的单点和总结场景。
-- sibling section 只有被场景规划器显式绑定且共同服务于一个读者需求时，才进入同一总结题。
-- 问题编辑后的文本才会进入检索和答案生成。
-- 无真正相关的补充证据时，答案只使用场景主材料。
-- 总结题详情能够同时追溯全部实际主来源，而不是只看到第一条标量来源。
-- 按内容 chunk 查看 QA 时同时匹配总结题的完整 `source_chunk_ids`，多材料总结题会出现在每个实际主来源块下。
+## Changed Files
+
+- `qa/text_to_qa_pipeline.py`
+- `qa/generation/structure_units.py`
+- `qa/generation/qa_generation_flow.py`
+- `qa/pipeline_runtime.py`
+- `app/routers/pipeline_history_routes.py`
+- `app/services/storage/consolidation.py`
+- `app/services/storage/merge.py`
+- `app/services/eval_jobs/result.py`
+- `app/services/unsupervised_evaluation/common.py`
+- `static/app.js`
+- `static/styles.css`
+- `INTEGRATION_CONTRACT.md`
+- `LATEST_CHANGE_GUIDE.md`
+- `QA_GENERATION_CONTEXT_HANDOFF.md`
 
 ## Validation
 
 ```bash
-python -m compileall -q app qa scripts
-python -m unittest discover -s tests
-QA_RERANKER_DEVICE=cpu python scripts/calibrate_bge_relevance.py --strict
 git diff --check
+for f in static/*.js; do node --check "$f"; done
+docker exec qa-flow-runtime sh -lc 'cd /app && python -m compileall -q app qa scripts tests && python -m unittest discover -s tests'
+docker exec qa-flow-runtime sh -lc 'cd /app && python -c "import app.main"'
+curl -fsS http://localhost:12000/test-connection
+curl -fsS http://localhost:12000/health
 ```
 
-Docker runtime verification:
-
-```bash
-docker exec qa-flow-runtime sh -lc 'cd /app && python -m compileall -q app qa scripts && python -m unittest discover -s tests'
-curl http://localhost:12000/test-connection
-```
+主机 Python 3.9 不满足项目的 Python 3.10+ 类型语法和运行依赖，不能用主机测试结果替代 Docker runtime 验证。修改文件须保持 UTF-8 无 BOM。

@@ -524,16 +524,22 @@
     const grid = $("scoreGrid");
     grid.innerHTML = "";
     if (!scores) return;
+    const apiuseUi = getUi();
+    if (apiuseUi && typeof apiuseUi.filterUnsupervisedScores === "function") {
+      scores = apiuseUi.filterUnsupervisedScores(scores);
+    }
     const cards = [
-      { k: "faithfulness", name: "忠实度 faithfulness" },
-      { k: "answerability", name: "可回答性 P=answerability" },
-      { k: "coverage_score", name: "Coverage=coverage_score" },
-      { k: "unsupervised_f1", name: "无监督 F1" },
+      { k: "faithfulness", name: "faithfulness（忠实度）" },
+      { k: "answerability", name: "answerability（可回答性）" },
+      { k: "coverage_score", name: "coverage_score（覆盖）" },
+      { k: "average_score", name: "平均分（三项均值）" },
     ];
     for (const c of cards) {
       const div = document.createElement("div");
       div.className = "score-card";
-      const v = typeof scores[c.k] === "number" ? scores[c.k] : 0;
+      let v = typeof scores[c.k] === "number" ? scores[c.k] : Number(scores[c.k]);
+      if (c.k === "average_score" && !Number.isFinite(v)) v = 0;
+      if (!Number.isFinite(v)) v = 0;
       div.innerHTML = `<div class="score-name">${c.name}</div><div class="score-val">${v.toFixed(4)}</div>`;
       grid.appendChild(div);
     }
@@ -1226,13 +1232,15 @@
     }
     for (const it of items) {
       const ue = it.unsupervised_evaluation || {};
-      const scores = (ue && ue.scores) || {};
+      const rawScores = (ue && ue.scores) || {};
+      const apiuseUi = getUi();
+      const scores = apiuseUi && typeof apiuseUi.filterUnsupervisedScores === "function"
+        ? apiuseUi.filterUnsupervisedScores(rawScores)
+        : rawScores;
       const faith = fmtScore(scores.faithfulness);
       const ans = fmtScore(scores.answerability);
       const cov = fmtScore(scores.coverage_score);
-      const covSelf = fmtScore(scores.coverage_self);
-      const rg = fmtScore(scores.coverage_recall_soft);
-      const f1 = fmtScore(scores.unsupervised_f1);
+      const average = fmtScore(scores.average_score);
       const filtered = it.filtered === true ? "true" : "false";
 
       const tr = document.createElement("tr");
@@ -1241,7 +1249,7 @@
         <td class="mono">${it.group_id || ""}</td>
         <td>${it.original_filename || ""}</td>
         <td>${(it.question || "").slice(0, 180)}</td>
-        <td class="mono">F=${faith} P=${ans}<br/>Cov=${cov} Self=${covSelf}<br/>Rg=${rg} F1=${f1}</td>
+        <td class="mono">faithfulness=${faith}<br/>answerability=${ans}<br/>coverage_score=${cov}<br/>平均分=${average}</td>
         <td class="mono">${filtered}</td>
         <td></td>
       `;
@@ -1262,16 +1270,22 @@
       details.appendChild(sum);
       const pre = document.createElement("pre");
       pre.style.maxHeight = "220px";
-      pre.textContent = JSON.stringify(
-        {
+      const displayItem = {
           id: it.id,
           group_id: it.group_id,
           original_filename: it.original_filename,
           question: it.question,
           answer: it.answer,
           context: it.context,
-          unsupervised_evaluation: it.unsupervised_evaluation,
-        },
+          unsupervised_evaluation: it.unsupervised_evaluation
+            ? {
+                method: it.unsupervised_evaluation.method,
+                scores,
+              }
+            : null,
+      };
+      pre.textContent = JSON.stringify(
+        displayItem,
         null,
         2
       );

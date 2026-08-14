@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import re
 from collections import defaultdict
-from dataclasses import dataclass, replace
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field, replace
+import inspect
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
@@ -19,10 +21,57 @@ SCENARIO_TYPE_POINT = "point"
 SCENARIO_TYPE_SUMMARY = "summary"
 DEFAULT_AUTO_SUMMARY_RATIO = 0.35
 DEFAULT_SCENARIO_PLANNING_BATCH_CHARS = 24000
+DEFAULT_SCENARIO_PLANNING_MAX_CONCURRENCY = 4
 
 
 def _safe_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _planning_material_ref(position: int) -> str:
+    """Return a model-facing alias with no internal numeric meaning."""
+    number = max(1, int(position))
+    letters: List[str] = []
+    while number:
+        number, remainder = divmod(number - 1, 26)
+        letters.append(chr(ord("A") + remainder))
+    return "主材料-" + "".join(reversed(letters))
+
+
+def _parent_node_path(title_path: str) -> str:
+    value = _safe_text(title_path).replace("＞", ">")
+    if ">" not in value:
+        return ""
+    return value.rsplit(">", 1)[0].strip(" >")
+
+
+def _invoke_scenario_planner(
+    scenario_planner: Callable[..., Sequence[Dict[str, Any]]],
+    batch: Sequence["SectionMaterial"],
+    requested_count: int,
+    scenario_type: str,
+    *,
+    batch_index: int,
+    batch_count: int,
+) -> Sequence[Dict[str, Any]]:
+    """Call old three-argument planners and new contextual planners alike."""
+    try:
+        parameters = inspect.signature(scenario_planner).parameters
+        accepts_context = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        ) or "planning_batch_index" in parameters
+    except (TypeError, ValueError):
+        accepts_context = False
+    if accepts_context:
+        return scenario_planner(
+            batch,
+            requested_count,
+            scenario_type,
+            planning_batch_index=batch_index,
+            planning_batch_count=batch_count,
+        )
+    return scenario_planner(batch, requested_count, scenario_type)
 
 
 def _collapse_text(text: str) -> str:
@@ -218,10 +267,13 @@ class SectionMaterial:
     usable: bool
     quality_score: float
 
-    def to_prompt_dict(self) -> Dict[str, Any]:
+    def to_prompt_dict(self, material_ref: Optional[str] = None) -> Dict[str, Any]:
+        """Render a material for the planner without exposing internal IDs."""
+        node_path = self.title_path or "未标注章节"
         return {
-            "material_id": self.material_id,
-            "title": self.title_path,
+            "material_ref": material_ref or _planning_material_ref(self.material_index),
+            "node_path": node_path,
+            "parent_node_path": _parent_node_path(node_path),
             "content": self.material_text,
         }
 
@@ -252,6 +304,8 @@ class GenerationUnit:
     scenario_intent: str
     reader_need: str
     material_ids: List[str]
+    required_material_ids: List[str]
+    optional_material_ids: List[str]
     material_source_chunk_indexes: Dict[str, List[int]]
     anchor_chunk_index: int
     source_chunk_indexes: List[int]
@@ -277,6 +331,9 @@ class GenerationUnit:
             "scenario_intent": self.scenario_intent,
             "reader_need": self.reader_need,
             "material_ids": list(self.material_ids),
+            "required_material_ids": list(self.required_material_ids),
+            "optional_material_ids": list(self.optional_material_ids),
+            "material_paths": list(self.debug.get("material_paths") or []),
             "material_source_chunk_indexes": {
                 key: list(value)
                 for key, value in self.material_source_chunk_indexes.items()
@@ -316,6 +373,9 @@ class GenerationUnitPlan:
     scenario_selected_by_type: Dict[str, int]
     scenario_planner_calls_by_type: Dict[str, int]
     scenario_planner_batches_by_type: Dict[str, List[int]]
+    scenario_planner_batch_details: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
+    scenario_planning_batch_chars: int = DEFAULT_SCENARIO_PLANNING_BATCH_CHARS
+    scenario_planning_max_concurrency: int = 1
 
     def summary(self) -> Dict[str, Any]:
         quality_counts: Dict[str, int] = defaultdict(int)
@@ -339,6 +399,12 @@ class GenerationUnitPlan:
                 key: list(value)
                 for key, value in self.scenario_planner_batches_by_type.items()
             },
+            "scenario_planner_batch_details": {
+                key: [dict(item) for item in value]
+                for key, value in self.scenario_planner_batch_details.items()
+            },
+            "scenario_planning_batch_chars": self.scenario_planning_batch_chars,
+            "scenario_planning_max_concurrency": self.scenario_planning_max_concurrency,
         }
 
 
@@ -541,25 +607,227 @@ def _plan_scenario_pool(
     *,
     scenario_type: str,
     requested_count: int,
-    scenario_planner: Callable[[Sequence[SectionMaterial], int, str], Sequence[Dict[str, Any]]],
+    scenario_planner: Callable[..., Sequence[Dict[str, Any]]],
     max_batch_chars: int,
-) -> List[Dict[str, Any]]:
+    max_concurrency: int = 1,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     batches = _batch_section_materials(
         materials,
         max_batch_chars=max_batch_chars,
         preserve_parent_neighborhood=scenario_type == SCENARIO_TYPE_SUMMARY,
     )
     counts = _allocate_planning_counts(batches, requested_count)
-    planned: List[Dict[str, Any]] = []
-    for batch, count in zip(batches, counts):
-        if count <= 0:
-            continue
-        planned.extend(
-            item
-            for item in scenario_planner(batch, count, scenario_type)
-            if isinstance(item, dict)
+    active_batches = [
+        (batch_index, batch, count)
+        for batch_index, (batch, count) in enumerate(zip(batches, counts), start=1)
+        if count > 0
+    ]
+    if not active_batches:
+        return [], []
+
+    def run_one(
+        batch_index: int,
+        batch: Sequence[SectionMaterial],
+        count: int,
+    ) -> Tuple[int, List[Dict[str, Any]], Dict[str, Any]]:
+        raw_items = _invoke_scenario_planner(
+            scenario_planner,
+            batch,
+            count,
+            scenario_type,
+            batch_index=batch_index,
+            batch_count=len(batches),
         )
-    return planned
+        metadata = getattr(raw_items, "debug_metadata", {})
+        return (
+            batch_index,
+            [item for item in raw_items if isinstance(item, dict)],
+            dict(metadata) if isinstance(metadata, dict) else {},
+        )
+
+    results_by_batch: Dict[int, List[Dict[str, Any]]] = {}
+    metadata_by_batch: Dict[int, Dict[str, Any]] = {}
+    errors_by_batch: Dict[int, str] = {}
+    worker_count = max(1, min(int(max_concurrency or 1), len(active_batches)))
+    if worker_count == 1:
+        for batch_index, batch, count in active_batches:
+            try:
+                index, result, metadata = run_one(batch_index, batch, count)
+                results_by_batch[index] = result
+                metadata_by_batch[index] = metadata
+            except Exception as exc:
+                errors_by_batch[batch_index] = f"{type(exc).__name__}: {exc}"
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_map = {
+                executor.submit(run_one, batch_index, batch, count): batch_index
+                for batch_index, batch, count in active_batches
+            }
+            for future in as_completed(future_map):
+                batch_index = future_map[future]
+                try:
+                    index, result, metadata = future.result()
+                    results_by_batch[index] = result
+                    metadata_by_batch[index] = metadata
+                except Exception as exc:
+                    errors_by_batch[batch_index] = f"{type(exc).__name__}: {exc}"
+
+    planned: List[Dict[str, Any]] = []
+    details: List[Dict[str, Any]] = []
+    materials_by_id = {material.material_id: material for material in materials}
+    for batch_index, batch, count in active_batches:
+        batch_items = results_by_batch.get(batch_index, [])
+        for item in batch_items:
+            item_copy = dict(item)
+            item_copy.setdefault("_planning_batch_index", batch_index)
+            item_copy.setdefault("_planning_batch_count", len(batches))
+            planned.append(item_copy)
+        scenarios: List[Dict[str, Any]] = []
+        for item in batch_items:
+            required_ids = _normalize_material_id_list(
+                item.get("required_material_ids") or item.get("material_ids"),
+                materials_by_id,
+            )
+            optional_ids = _normalize_material_id_list(
+                item.get("optional_material_ids"), materials_by_id
+            )
+            paths = [
+                materials_by_id[material_id].title_path
+                for material_id in [*required_ids, *optional_ids]
+                if material_id in materials_by_id and materials_by_id[material_id].title_path
+            ]
+            scenarios.append(
+                {
+                    "scenario_type": item.get("scenario_type") or item.get("type"),
+                    "scenario_intent": item.get("intent"),
+                    "reader_need": item.get("reader_need"),
+                    "required_material_paths": [
+                        materials_by_id[material_id].title_path
+                        for material_id in required_ids
+                        if material_id in materials_by_id and materials_by_id[material_id].title_path
+                    ],
+                    "optional_material_paths": [
+                        materials_by_id[material_id].title_path
+                        for material_id in optional_ids
+                        if material_id in materials_by_id and materials_by_id[material_id].title_path
+                    ],
+                    "material_paths": paths,
+                }
+            )
+        details.append(
+            {
+                "batch_index": batch_index,
+                "batch_count": len(batches),
+                "scenario_type": scenario_type,
+                "requested_count": count,
+                "returned_count": len(batch_items),
+                "validated_count": int(
+                    metadata_by_batch.get(batch_index, {}).get(
+                        "items_validated_count", len(batch_items)
+                    )
+                    or 0
+                ),
+                "dropped_reasons": dict(
+                    metadata_by_batch.get(batch_index, {}).get(
+                        "dropped_validation_reasons", {}
+                    )
+                    or {}
+                ),
+                "raw_response_available": bool(
+                    metadata_by_batch.get(batch_index, {}).get("raw_response")
+                ),
+                "error": errors_by_batch.get(batch_index),
+                "material_count": len(batch),
+                "material_paths": [material.title_path for material in batch if material.title_path],
+                "scenarios": scenarios,
+            }
+        )
+    return planned, details
+
+
+def _merge_cross_batch_summary_candidates(
+    candidates: Sequence[Dict[str, Any]],
+    *,
+    materials_by_id: Dict[str, SectionMaterial],
+) -> List[Dict[str, Any]]:
+    """Create conservative cross-batch Summary candidates from local plans.
+
+    Long documents can split one parent section across planner calls. This
+    merge only combines candidates with a shared parent path or a strong
+    intent overlap, and never merges Point candidates. The full source text is
+    still fetched later by material ID, so the merge call itself has no extra
+    document-sized prompt or LLM request.
+    """
+    summary_items = [
+        dict(item)
+        for item in candidates
+        if isinstance(item, dict)
+        and _normalize_scenario_type(item.get("scenario_type") or item.get("type"))
+        == SCENARIO_TYPE_SUMMARY
+    ]
+    merged: List[Dict[str, Any]] = []
+    for left_index, left in enumerate(summary_items):
+        left_required = _normalize_material_id_list(
+            left.get("required_material_ids") or left.get("material_ids"), materials_by_id
+        )
+        left_optional = _normalize_material_id_list(
+            left.get("optional_material_ids"), materials_by_id
+        )
+        left_batch = left.get("_planning_batch_index")
+        for right in summary_items[left_index + 1 :]:
+            if right.get("_planning_batch_index") == left_batch:
+                continue
+            right_required = _normalize_material_id_list(
+                right.get("required_material_ids") or right.get("material_ids"), materials_by_id
+            )
+            right_optional = _normalize_material_id_list(
+                right.get("optional_material_ids"), materials_by_id
+            )
+            if not left_required or not right_required:
+                continue
+            left_parents = {
+                material.section_parent_path
+                for material_id in [*left_required, *left_optional]
+                if (material := materials_by_id.get(material_id)) and material.section_parent_path
+            }
+            right_parents = {
+                material.section_parent_path
+                for material_id in [*right_required, *right_optional]
+                if (material := materials_by_id.get(material_id)) and material.section_parent_path
+            }
+            intent_overlap = _jaccard(
+                _token_set(_safe_text(left.get("intent"))),
+                _token_set(_safe_text(right.get("intent"))),
+            )
+            need_overlap = _jaccard(
+                _token_set(_safe_text(left.get("reader_need"))),
+                _token_set(_safe_text(right.get("reader_need"))),
+            )
+            if not (left_parents & right_parents or max(intent_overlap, need_overlap) >= 0.42):
+                continue
+            required_ids: List[str] = []
+            optional_ids: List[str] = []
+            for material_id in [*left_required, *right_required]:
+                if material_id not in required_ids:
+                    required_ids.append(material_id)
+            for material_id in [*left_optional, *right_optional]:
+                if material_id not in required_ids and material_id not in optional_ids:
+                    optional_ids.append(material_id)
+            if len(required_ids) < 2:
+                continue
+            merged.append(
+                {
+                    "scenario_type": SCENARIO_TYPE_SUMMARY,
+                    "intent": _safe_text(left.get("intent")) or _safe_text(right.get("intent")),
+                    "reader_need": _safe_text(left.get("reader_need"))
+                    or _safe_text(right.get("reader_need")),
+                    "required_material_ids": required_ids,
+                    "optional_material_ids": optional_ids,
+                    "cross_batch_merge": True,
+                    "cross_batch_merge_from": [left_batch, right.get("_planning_batch_index")],
+                }
+            )
+    return merged
 
 
 def build_section_materials(
@@ -631,6 +899,16 @@ def _normalize_scenario_type(value: Any) -> str:
     return ""
 
 
+def _normalize_material_id_list(raw: Any, materials_by_id: Dict[str, SectionMaterial]) -> List[str]:
+    values = raw if isinstance(raw, list) else []
+    result: List[str] = []
+    for value in values:
+        material_id = _safe_text(value)
+        if material_id in materials_by_id and material_id not in result:
+            result.append(material_id)
+    return result
+
+
 def _build_generation_unit(
     raw: Dict[str, Any],
     *,
@@ -640,18 +918,32 @@ def _build_generation_unit(
     scenario_type = _normalize_scenario_type(raw.get("scenario_type") or raw.get("type"))
     intent = _safe_text(raw.get("intent"))
     reader_need = _safe_text(raw.get("reader_need")) or intent
-    material_ids = []
-    for raw_id in raw.get("material_ids") or []:
-        material_id = _safe_text(raw_id)
-        if material_id in materials_by_id and material_id not in material_ids:
+    required_material_ids = _normalize_material_id_list(
+        raw.get("required_material_ids"), materials_by_id
+    )
+    optional_material_ids = _normalize_material_id_list(
+        raw.get("optional_material_ids"), materials_by_id
+    )
+    legacy_material_ids = _normalize_material_id_list(raw.get("material_ids"), materials_by_id)
+    if not required_material_ids:
+        # Planner adapters created before the required/optional contract used
+        # material_ids. Treat those references as required rather than silently
+        # weakening the old validation behavior.
+        required_material_ids = legacy_material_ids
+    material_ids: List[str] = []
+    for material_id in [*required_material_ids, *optional_material_ids]:
+        if material_id not in material_ids:
             material_ids.append(material_id)
-    if not scenario_type or not intent or not reader_need or not material_ids:
+    if not scenario_type or not intent or not reader_need or not required_material_ids:
         return None
-    if scenario_type == SCENARIO_TYPE_POINT and len(material_ids) != 1:
+    if scenario_type == SCENARIO_TYPE_POINT and (
+        len(required_material_ids) != 1 or optional_material_ids
+    ):
         return None
     materials = [materials_by_id[material_id] for material_id in material_ids]
-    if scenario_type == SCENARIO_TYPE_SUMMARY and len(materials) == 1:
-        material = materials[0]
+    required_materials = [materials_by_id[material_id] for material_id in required_material_ids]
+    if scenario_type == SCENARIO_TYPE_SUMMARY and len(required_materials) == 1:
+        material = required_materials[0]
         if len(material.source_chunk_indexes) < 2 and not _has_list_signal(material.material_text):
             return None
     source_indexes: List[int] = []
@@ -670,7 +962,16 @@ def _build_generation_unit(
     )
     raw_id = f"{scenario_type}|||{intent}|||{'|'.join(material_ids)}"
     unit_id = hashlib.sha1(raw_id.encode("utf-8")).hexdigest()
-    unit_text = "\n\n".join(material.material_text for material in materials).strip()
+    unit_sections: List[str] = []
+    for material in materials:
+        is_required = material.material_id in required_material_ids
+        role = "主材料" if is_required else "可选主材料"
+        node_path = material.title_path or "未标注章节"
+        unit_sections.append(
+            f"【{role}节点路径】{node_path}\n"
+            f"【{role}正文】\n{material.material_text}"
+        )
+    unit_text = "\n\n".join(unit_sections).strip()
     section_paths = {material.section_path for material in materials}
     section_path = materials[0].section_path if len(section_paths) == 1 else ""
     source_meta = dict(anchor_chunk)
@@ -681,12 +982,28 @@ def _build_generation_unit(
             "qa_generation_unit_mode": scenario_type,
             "qa_generation_unit_source_chunk_indexes": source_indexes,
             "qa_generation_unit_material_ids": material_ids,
+            "qa_generation_unit_required_material_ids": required_material_ids,
+            "qa_generation_unit_optional_material_ids": optional_material_ids,
             "qa_generation_unit_material_source_chunk_indexes": {
                 material.material_id: list(material.source_chunk_indexes)
                 for material in materials
             },
             "qa_generation_unit_scenario_intent": intent,
             "qa_generation_unit_reader_need": reader_need,
+            "qa_generation_unit_title_path": materials[0].title_path,
+            "qa_generation_unit_material_paths": [
+                material.title_path for material in materials if material.title_path
+            ],
+            "qa_generation_unit_required_material_paths": [
+                material.title_path
+                for material in required_materials
+                if material.title_path
+            ],
+            "qa_generation_unit_optional_material_paths": [
+                material.title_path
+                for material in materials
+                if material.material_id in optional_material_ids and material.title_path
+            ],
             "qa_generation_unit_text": unit_text,
         }
     )
@@ -698,6 +1015,8 @@ def _build_generation_unit(
         scenario_intent=intent,
         reader_need=reader_need,
         material_ids=material_ids,
+        required_material_ids=required_material_ids,
+        optional_material_ids=optional_material_ids,
         material_source_chunk_indexes={
             material.material_id: list(material.source_chunk_indexes)
             for material in materials
@@ -709,9 +1028,23 @@ def _build_generation_unit(
         unit_text=unit_text,
         qa_budget=1,
         child_count=len(materials),
-        usable_child_count=sum(material.usable for material in materials),
-        quality_child_coverage=sum(material.usable for material in materials) / len(materials),
-        debug={"planner_reason": "llm_scenario", "raw_scenario": dict(raw)},
+        usable_child_count=sum(material.usable for material in required_materials),
+        quality_child_coverage=(
+            sum(material.usable for material in required_materials) / len(required_materials)
+        ),
+        debug={
+            "planner_reason": "llm_scenario",
+            "raw_scenario": dict(raw),
+            "material_paths": [material.title_path for material in materials if material.title_path],
+            "required_material_paths": [
+                material.title_path for material in required_materials if material.title_path
+            ],
+            "optional_material_paths": [
+                material.title_path
+                for material in materials
+                if material.material_id in optional_material_ids and material.title_path
+            ],
+        },
         source_chunk_meta=source_meta,
     )
 
@@ -815,11 +1148,11 @@ def plan_generation_units(
     qa_per_chunk: int,
     qa_detail_mode: str,
     chunk_size: int,
-    scenario_planner: Callable[[Sequence[SectionMaterial], int, str], Sequence[Dict[str, Any]]],
+    scenario_planner: Callable[..., Sequence[Dict[str, Any]]],
     auto_summary_ratio: float = DEFAULT_AUTO_SUMMARY_RATIO,
     scenario_planning_batch_chars: int = DEFAULT_SCENARIO_PLANNING_BATCH_CHARS,
+    scenario_planning_max_concurrency: int = 1,
 ) -> GenerationUnitPlan:
-    del chunk_size
     chunks = [dict(chunk) for chunk in document_chunks if _text_for_quality(chunk)]
     graph = build_structure_graph(chunks)
     chunks_by_index = {int(chunk.get("chunk_index") or 0): chunk for chunk in chunks}
@@ -853,35 +1186,92 @@ def plan_generation_units(
             if requested_total > 0
             else 0
         )
-    raw_scenarios = _plan_scenario_pool(
-        usable_materials,
-        scenario_type=SCENARIO_TYPE_POINT,
-        requested_count=point_planning_count,
-        scenario_planner=scenario_planner,
-        max_batch_chars=scenario_planning_batch_chars,
-    )
-    raw_scenarios.extend(
-        _plan_scenario_pool(
-            usable_materials,
-            scenario_type=SCENARIO_TYPE_SUMMARY,
-            requested_count=summary_planning_count,
-            scenario_planner=scenario_planner,
-            max_batch_chars=scenario_planning_batch_chars,
+    configured_batch_chars = int(scenario_planning_batch_chars or 0)
+    if configured_batch_chars == DEFAULT_SCENARIO_PLANNING_BATCH_CHARS and chunk_size:
+        # Keep the default bounded for larger chunk targets while preserving
+        # explicitly small test/developer budgets.
+        effective_batch_chars = min(
+            DEFAULT_SCENARIO_PLANNING_BATCH_CHARS,
+            max(12000, int(chunk_size) * 24),
         )
-    )
+    else:
+        effective_batch_chars = max(1000, configured_batch_chars or DEFAULT_SCENARIO_PLANNING_BATCH_CHARS)
+    planning_max_concurrency = max(1, int(scenario_planning_max_concurrency or 1))
+
     planner_batches = {
         SCENARIO_TYPE_POINT: _batch_section_materials(
             usable_materials,
-            max_batch_chars=scenario_planning_batch_chars,
+            max_batch_chars=effective_batch_chars,
             preserve_parent_neighborhood=False,
         ) if point_planning_count > 0 else [],
         SCENARIO_TYPE_SUMMARY: _batch_section_materials(
             usable_materials,
-            max_batch_chars=scenario_planning_batch_chars,
+            max_batch_chars=effective_batch_chars,
             preserve_parent_neighborhood=True,
         ) if summary_planning_count > 0 else [],
     }
+
+    raw_point_scenarios, point_batch_details = _plan_scenario_pool(
+        usable_materials,
+        scenario_type=SCENARIO_TYPE_POINT,
+        requested_count=point_planning_count,
+        scenario_planner=scenario_planner,
+        max_batch_chars=effective_batch_chars,
+        max_concurrency=planning_max_concurrency,
+    )
+    raw_summary_scenarios, summary_batch_details = _plan_scenario_pool(
+        usable_materials,
+        scenario_type=SCENARIO_TYPE_SUMMARY,
+        requested_count=summary_planning_count,
+        scenario_planner=scenario_planner,
+        max_batch_chars=effective_batch_chars,
+        max_concurrency=planning_max_concurrency,
+    )
     materials_by_id = {material.material_id: material for material in usable_materials}
+    cross_batch_summary_scenarios = _merge_cross_batch_summary_candidates(
+        raw_summary_scenarios,
+        materials_by_id=materials_by_id,
+    )
+    raw_scenarios = [
+        *raw_point_scenarios,
+        *cross_batch_summary_scenarios,
+        *raw_summary_scenarios,
+    ]
+    if cross_batch_summary_scenarios:
+        summary_batch_details.append(
+            {
+                "batch_index": "global-merge",
+                "batch_count": len(summary_batch_details),
+                "scenario_type": SCENARIO_TYPE_SUMMARY,
+                "requested_count": len(cross_batch_summary_scenarios),
+                "returned_count": len(cross_batch_summary_scenarios),
+                "material_count": len({
+                    material_id
+                    for item in cross_batch_summary_scenarios
+                    for material_id in item.get("required_material_ids") or []
+                }),
+                "material_paths": [],
+                "scenarios": [
+                    {
+                        "scenario_type": SCENARIO_TYPE_SUMMARY,
+                        "scenario_intent": item.get("intent"),
+                        "reader_need": item.get("reader_need"),
+                        "required_material_paths": [
+                            materials_by_id[material_id].title_path
+                            for material_id in item.get("required_material_ids") or []
+                            if material_id in materials_by_id and materials_by_id[material_id].title_path
+                        ],
+                        "optional_material_paths": [],
+                        "material_paths": [
+                            materials_by_id[material_id].title_path
+                            for material_id in item.get("required_material_ids") or []
+                            if material_id in materials_by_id and materials_by_id[material_id].title_path
+                        ],
+                    }
+                    for item in cross_batch_summary_scenarios
+                ],
+            }
+        )
     candidates = [
         unit
         for raw in raw_scenarios
@@ -936,6 +1326,12 @@ def plan_generation_units(
             key: [len(batch) for batch in value]
             for key, value in planner_batches.items()
         },
+        scenario_planner_batch_details={
+            SCENARIO_TYPE_POINT: point_batch_details,
+            SCENARIO_TYPE_SUMMARY: summary_batch_details,
+        },
+        scenario_planning_batch_chars=effective_batch_chars,
+        scenario_planning_max_concurrency=planning_max_concurrency,
     )
 
 
@@ -943,6 +1339,7 @@ __all__ = [
     "ChunkQuality",
     "DEFAULT_AUTO_SUMMARY_RATIO",
     "DEFAULT_SCENARIO_PLANNING_BATCH_CHARS",
+    "DEFAULT_SCENARIO_PLANNING_MAX_CONCURRENCY",
     "GenerationUnit",
     "GenerationUnitPlan",
     "QUALITY_STATUS_CONTEXT_ONLY",

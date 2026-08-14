@@ -314,7 +314,12 @@ def process_text_to_qa_one_step(
         return []
     scenario_planning_started_at = time.perf_counter()
 
-    def _scenario_planner(materials: Any, requested_count: int, mode: str) -> List[Dict[str, Any]]:
+    def _scenario_planner(
+        materials: Any,
+        requested_count: int,
+        mode: str,
+        **planning_context: Any,
+    ) -> List[Dict[str, Any]]:
         return call_scenario_planner_llm(
             client=client,
             model=runtime.model,
@@ -324,6 +329,8 @@ def process_text_to_qa_one_step(
             prompt_language=runtime.prompt_language,
             request_timeout=runtime.request_timeout,
             debug_writer=debug_writer,
+            planning_batch_index=planning_context.get("planning_batch_index"),
+            planning_batch_count=planning_context.get("planning_batch_count"),
         )
 
     unit_plan = plan_generation_units(
@@ -333,6 +340,8 @@ def process_text_to_qa_one_step(
         qa_detail_mode=runtime.qa_detail_mode,
         chunk_size=runtime.chunk_size,
         scenario_planner=_scenario_planner,
+        scenario_planning_batch_chars=runtime.scenario_planning_batch_chars,
+        scenario_planning_max_concurrency=runtime.scenario_planning_max_concurrency,
     )
     scenario_planning_seconds = time.perf_counter() - scenario_planning_started_at
     generation_units = list(unit_plan.units)
@@ -540,6 +549,8 @@ def process_text_to_qa_one_step(
                     "dropped_reason_stats": payload.get("dropped_reason_stats")
                     or payload.get("dropped_answer_reasons")
                     or {},
+                    "dropped_answer_reasons": payload.get("dropped_answer_reasons") or {},
+                    "skip_reason": payload.get("skip_reason"),
                     "timing": timing,
                 }
                 if isinstance(payload.get("unit_debug"), dict):

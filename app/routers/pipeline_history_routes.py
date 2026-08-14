@@ -186,6 +186,8 @@ async def read_pipeline_task_debug_jsonl(
     task_id: str,
     chunk_index: Optional[int] = Query(default=None),
     event: Optional[str] = Query(default=None),
+    planning_batch_index: Optional[str] = Query(default=None),
+    planning_scenario_type: Optional[str] = Query(default=None),
 ):
     status = get_pipeline_task_status(task_id)
     if not status:
@@ -206,6 +208,8 @@ async def read_pipeline_task_debug_jsonl(
         )
 
     event_filter = str(event or "").strip()
+    planning_batch_filter = str(planning_batch_index or "").strip()
+    planning_scenario_filter = str(planning_scenario_type or "").strip().lower()
     records: List[Dict[str, Any]] = []
     skipped_lines = 0
     for path in existing_paths:
@@ -232,6 +236,14 @@ async def read_pipeline_task_debug_jsonl(
                             continue
                     if event_filter and str(record.get("event") or "") != event_filter:
                         continue
+                    if planning_batch_filter:
+                        record_batch = str(record.get("planning_batch_index") or "").strip()
+                        if record_batch != planning_batch_filter:
+                            continue
+                    if planning_scenario_filter:
+                        record_scenario = str(record.get("qa_detail_mode") or "").strip().lower()
+                        if record_scenario != planning_scenario_filter:
+                            continue
                     record["_debug_file"] = os.path.basename(path)
                     records.append(record)
         except FileNotFoundError:
@@ -243,7 +255,12 @@ async def read_pipeline_task_debug_jsonl(
         "task_id": task_id,
         "artifacts_expire_at": expire_at,
         "debug_files": [os.path.basename(path) for path in existing_paths],
-        "filters": {"chunk_index": chunk_index, "event": event_filter or None},
+        "filters": {
+            "chunk_index": chunk_index,
+            "event": event_filter or None,
+            "planning_batch_index": planning_batch_filter or None,
+            "planning_scenario_type": planning_scenario_filter or None,
+        },
         "count": len(records),
         "skipped_lines": skipped_lines,
         "records": records,
