@@ -1,5 +1,5 @@
 window.__QA_UI_APPJS_READY__ = true;
-window.__QA_UI_APPJS_VERSION__ = '2026-07-03-6';
+window.__QA_UI_APPJS_VERSION__ = '2026-08-15-3';
 
 let currentDwJobPoller = null;
 const MODULE_SETTINGS_CACHE_KEY = 'qa_flow_module_settings_v1';
@@ -2078,7 +2078,7 @@ function setupUtilityWorkspace({ anchor, llmSection, ocrSection, dwSection, tagS
 
   if (adminLinkSection) {
     grid.appendChild(makeToolCard('QA 管理', '进入列表筛选、语义检索、批量评估和软删除。', '进入管理', () => {
-      window.location.href = '/ui/admin.html';
+      window.location.href = new URL('./admin.html', document.baseURI || window.location.href).toString();
     }, { icon: 'A' }));
   }
 

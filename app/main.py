@@ -66,6 +66,17 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def disable_ui_html_cache(request, call_next):
+        response = await call_next(request)
+        path = str(request.url.path or "")
+        if path.startswith("/ui/") and path.endswith(".html"):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
+
     try:
         app.mount("/ui", StaticFiles(directory="static", html=True), name="ui")
     except Exception:

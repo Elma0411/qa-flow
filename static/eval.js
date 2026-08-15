@@ -436,7 +436,10 @@
   function apiBase() {
     const input = $("apiBaseUrl");
     const raw = ((input && input.value) || "").trim();
-    const origin = String(window.location.origin || "").replace(/\/+$/, "");
+    const browserOrigin = String(window.location.origin || "").replace(/\/+$/, "");
+    const pathname = String(window.location.pathname || "");
+    const match = pathname.match(/^(.*)\/ui(?:\/|$)/);
+    const origin = `${browserOrigin}${match ? String(match[1] || "") : ""}`.replace(/\/+$/, "");
     const val = raw || origin;
     const normalized = normalizeApiBaseUrl(val, origin);
     return normalized.endsWith("/") ? normalized.slice(0, -1) : normalized;
@@ -460,9 +463,12 @@
     const input = $("apiBaseUrl");
     if (!input) return;
     const raw = (input.value || "").trim();
-    const origin = String(window.location.origin || "").replace(/\/+$/, "");
+    const browserOrigin = String(window.location.origin || "").replace(/\/+$/, "");
+    const pathname = String(window.location.pathname || "");
+    const match = pathname.match(/^(.*)\/ui(?:\/|$)/);
+    const origin = `${browserOrigin}${match ? String(match[1] || "") : ""}`.replace(/\/+$/, "");
     if (!origin) return;
-    if (!raw || raw === "http://localhost:12000") input.value = origin;
+    if (!raw || raw === "http://localhost:12000" || raw === browserOrigin) input.value = origin;
   }
 
   async function fetchJson(url, options) {

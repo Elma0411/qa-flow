@@ -49,6 +49,12 @@ QA Flow OCR API 默认地址为：
 http://localhost:11169
 ```
 
+通过校园 SSLVPN/WebVPN 的带前缀地址访问页面时，直接打开代理后的
+`.../ui/index.html` 即可。前端资源使用相对 `/ui/` 路径，页面会根据当前地址
+自动推断代理 API 基址，因此不需要把 API 地址改成代理根域；直连
+`http://服务器地址:12000/ui/index.html` 仍按原方式工作。
+HTML 页面响应禁止代理缓存，前端脚本和样式使用版本参数刷新。
+
 ## 可选运行时配置
 
 VLM 图片分析不再内置 endpoint、model 或 key 默认值。启用图片分析时，通过

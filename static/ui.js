@@ -374,6 +374,14 @@
     });
   }
 
+  function inferApiBaseUrl() {
+    const origin = String(window.location.origin || "").replace(/\/+$/, "");
+    const pathname = String(window.location.pathname || "");
+    const match = pathname.match(/^(.*)\/ui(?:\/|$)/);
+    const proxyPrefix = match ? String(match[1] || "") : "";
+    return `${origin}${proxyPrefix}`.replace(/\/+$/, "");
+  }
+
   function normalizeApiBaseUrl(value, fallbackOrigin) {
     const v = String(value || "").trim();
     const origin = String(fallbackOrigin || "").trim();
@@ -393,7 +401,7 @@
     const input = document.querySelector(inputSelector);
     const raw = input && input.value ? input.value.trim() : "";
     const origin =
-      String(options.fallbackOrigin || window.location.origin || "").replace(/\/+$/, "");
+      String(options.fallbackOrigin || inferApiBaseUrl()).replace(/\/+$/, "");
     const val = raw || origin;
     return normalizeApiBaseUrl(val, origin).replace(/\/+$/, "");
   }
@@ -403,9 +411,10 @@
     const input = document.querySelector(inputSelector);
     if (!input) return;
     const raw = input.value ? input.value.trim() : "";
-    const origin = String(window.location.origin || "").replace(/\/+$/, "");
+    const browserOrigin = String(window.location.origin || "").replace(/\/+$/, "");
+    const origin = inferApiBaseUrl();
     if (!origin) return;
-    if (!raw || raw === "http://localhost:12000") input.value = origin;
+    if (!raw || raw === "http://localhost:12000" || raw === browserOrigin) input.value = origin;
   }
 
   function clamp01(v) {
@@ -963,6 +972,7 @@
   window.apiuseUi.restoreUiCache = restoreUiCache;
   window.apiuseUi.persistUiField = persistUiField;
   window.apiuseUi.bindUiCache = bindUiCache;
+  window.apiuseUi.inferApiBaseUrl = inferApiBaseUrl;
   window.apiuseUi.normalizeApiBaseUrl = normalizeApiBaseUrl;
   window.apiuseUi.getApiBaseUrl = getApiBaseUrl;
   window.apiuseUi.initApiBaseUrl = initApiBaseUrl;

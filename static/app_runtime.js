@@ -373,7 +373,10 @@ function getApiBaseUrl() {
   if (apiuseUi && typeof apiuseUi.getApiBaseUrl === 'function') {
     return apiuseUi.getApiBaseUrl({ inputSelector: '#apiBaseUrl' });
   }
-  return String(window.location.origin || '').replace(/\/+$/, '');
+  const origin = String(window.location.origin || '').replace(/\/+$/, '');
+  const pathname = String(window.location.pathname || '');
+  const match = pathname.match(/^(.*)\/ui(?:\/|$)/);
+  return `${origin}${match ? String(match[1] || '') : ''}`.replace(/\/+$/, '');
 }
 
 async function fetchJson(url, options) {
