@@ -19,7 +19,10 @@ router = APIRouter()
 
 @router.get("/")
 def root_index():
-    return RedirectResponse(url="/ui/index.html")
+    # A relative redirect keeps an SSLVPN/WebVPN path prefix. An absolute
+    # `/ui/...` target would send the browser to the gateway root instead of
+    # back through the proxied QA Flow service.
+    return RedirectResponse(url="./ui/", status_code=307)
 
 
 @router.get("/test-connection")

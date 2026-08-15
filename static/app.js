@@ -1,5 +1,6 @@
-window.__QA_UI_APPJS_READY__ = true;
-window.__QA_UI_APPJS_VERSION__ = '2026-08-15-3';
+const QA_UI_BUILD_ID = '2026-08-15-4';
+window.__QA_UI_APPJS_READY__ = false;
+window.__QA_UI_APPJS_VERSION__ = QA_UI_BUILD_ID;
 
 let currentDwJobPoller = null;
 const MODULE_SETTINGS_CACHE_KEY = 'qa_flow_module_settings_v1';
@@ -2078,7 +2079,9 @@ function setupUtilityWorkspace({ anchor, llmSection, ocrSection, dwSection, tagS
 
   if (adminLinkSection) {
     grid.appendChild(makeToolCard('QA 管理', '进入列表筛选、语义检索、批量评估和软删除。', '进入管理', () => {
-      window.location.href = new URL('./admin.html', document.baseURI || window.location.href).toString();
+      const url = new URL('./admin.html', document.baseURI || window.location.href);
+      url.searchParams.set('v', QA_UI_BUILD_ID);
+      window.location.href = url.toString();
     }, { icon: 'A' }));
   }
 
@@ -5113,3 +5116,7 @@ async function loadConsolidatedFromServer(base, jsonPath) {
     renderMeta({ error: '合并结果加载异常' });
   }
 }
+
+// The entry HTML stays hidden until this bundle has completed all synchronous
+// setup. A cached/partial bundle therefore cannot reveal the old raw form.
+window.__QA_UI_APPJS_READY__ = true;

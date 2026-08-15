@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="qa-ui-build" content="2026-08-15-4" />
     <title>QA 处理与浏览</title>
     <link rel="icon" type="image/png" href="./59e73d111ceb75d7cefaa8ec07f9fb07.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -11,7 +12,42 @@
       href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@300;400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css?v=2026-08-15-1" />
+    <link rel="stylesheet" href="./styles.css?v=2026-08-15-4" />
+    <style>
+      /* Do not expose the pre-workbench DOM while the current bundle boots. */
+      html.qa-ui-booting body > header,
+      html.qa-ui-booting body > main,
+      html.qa-ui-booting body > .drawer-overlay,
+      html.qa-ui-booting body > aside,
+      html.qa-ui-boot-failed body > header,
+      html.qa-ui-boot-failed body > main,
+      html.qa-ui-boot-failed body > .drawer-overlay,
+      html.qa-ui-boot-failed body > aside {
+        visibility: hidden;
+      }
+      html.qa-ui-booting body::before,
+      html.qa-ui-boot-failed body::before {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        color: #f4f0e8;
+        background: #10151d;
+        font: 500 15px/1.6 system-ui, sans-serif;
+        text-align: center;
+      }
+      html.qa-ui-booting body::before {
+        content: "正在加载新版 QA Flow 界面…";
+      }
+      html.qa-ui-boot-failed body::before {
+        content: "新版 QA Flow 界面未加载完成，请刷新页面；如果持续出现，请检查 VPN 代理缓存。";
+      }
+    </style>
+    <script>
+      document.documentElement.classList.add('qa-ui-booting');
+    </script>
   </head>
   <body class="app-shell qa-workbench-redesign">
     <a class="skip-link" href="#main">跳到内容</a>
@@ -29,9 +65,9 @@
         <h1 class="app-shell-page-title">问答对生成</h1>
         <div class="header-actions">
           <nav class="nav">
-            <a class="active" href="./index.html" aria-current="page">流水线</a>
-            <a href="./admin.html">管理</a>
-            <a href="./eval.html">评测</a>
+            <a class="active" href="./index.html?v=2026-08-15-4" aria-current="page">流水线</a>
+            <a href="./admin.html?v=2026-08-15-4">管理</a>
+            <a href="./eval.html?v=2026-08-15-4">评测</a>
           </nav>
           <button type="button" class="icon-btn" id="themeToggle" aria-label="切换主题" title="切换主题"></button>
         </div>
@@ -1063,7 +1099,7 @@
           <code>is_active</code>、批量评估与过滤）。
         </p>
         <div class="actions-row">
-          <a class="button-link" href="./admin.html">打开管理视图</a>
+          <a class="button-link" href="./admin.html?v=2026-08-15-4">打开管理视图</a>
         </div>
       </section>
 
@@ -1146,80 +1182,18 @@
       </div>
     </aside>
 
-    <script src="./ui.js?v=2026-08-15-1"></script>
-    <script src="./app_runtime.js?v=2026-08-15-1"></script>
-    <script src="./app_config.js?v=2026-06-25-1"></script>
-    <script src="./app_render.js?v=2026-08-14-4"></script>
-    <script src="./app_query.js?v=2026-08-14-5"></script>
-    <script src="./app.js?v=2026-08-15-3"></script>
+    <script src="./ui.js?v=2026-08-15-4"></script>
+    <script src="./app_runtime.js?v=2026-08-15-4"></script>
+    <script src="./app_config.js?v=2026-08-15-4"></script>
+    <script src="./app_render.js?v=2026-08-15-4"></script>
+    <script src="./app_query.js?v=2026-08-15-4"></script>
+    <script src="./app.js?v=2026-08-15-4"></script>
     <script>
       (function () {
-        if (window.__QA_UI_APPJS_READY__) return;
-        const btn = document.getElementById('btnLlmDebug');
-        const output = document.getElementById('llmDebugOutput');
-        if (output) output.textContent = '提示：页面脚本未正确加载，已启用兜底测试逻辑。';
-        if (!btn) return;
-
-        function normalizeApiBaseUrl(value, fallbackOrigin) {
-          const v = String(value || '').trim();
-          const origin = String(fallbackOrigin || '').trim();
-          if (!v) return origin;
-          if (v.startsWith('http://') || v.startsWith('https://')) return v;
-          if (v.startsWith('//')) return `${window.location.protocol}${v}`;
-          if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(v)) return v;
-          if (/^[^\/\s]+(:\d+)?$/.test(v)) {
-            const proto = (origin && origin.split('://')[0]) || window.location.protocol.replace(':', '');
-            return `${proto}://${v}`;
-          }
-          return origin;
-        }
-
-        async function fetchJson(url, options) {
-          const resp = await fetch(url, options);
-          const text = await resp.text();
-          let data = null;
-          try {
-            data = text ? JSON.parse(text) : null;
-          } catch (e) {
-            data = { raw: text };
-          }
-          if (!resp.ok) {
-            const detail = data && (data.detail || data.message || data.error);
-            throw new Error(detail || text || resp.statusText || `HTTP ${resp.status}`);
-          }
-          return data;
-        }
-
-        btn.addEventListener('click', async () => {
-          const browserOrigin = String(window.location.origin || '').replace(/\/+$/, '');
-          const pathname = String(window.location.pathname || '');
-          const match = pathname.match(/^(.*)\/ui(?:\/|$)/);
-          const origin = `${browserOrigin}${match ? String(match[1] || '') : ''}`.replace(/\/+$/, '');
-          const apiRaw = document.getElementById('apiBaseUrl')?.value || '';
-          const base = normalizeApiBaseUrl(apiRaw, origin).replace(/\/+$/, '');
-          const prompt = document.getElementById('llmDebugPrompt')?.value || '';
-          const systemPrompt = document.getElementById('llmDebugSystemPrompt')?.value || '';
-          const responseFormat = document.getElementById('llmDebugResponseFormat')?.value || 'json_object';
-          const timeoutSeconds = parseInt(document.getElementById('llmDebugTimeoutSeconds')?.value || '30', 10) || 30;
-          const maxTokens = parseInt(document.getElementById('llmDebugMaxTokens')?.value || '256', 10) || 256;
-          if (output) output.textContent = '测试中…';
-          try {
-            const data = await fetchJson(`${base}/llm-debug/chat`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                prompt,
-                system_prompt: systemPrompt,
-                response_format: responseFormat,
-                timeout_seconds: timeoutSeconds,
-                max_tokens: maxTokens,
-              }),
-            });
-            if (output) output.textContent = JSON.stringify(data, null, 2);
-          } catch (err) {
-            if (output) output.textContent = '测试失败：' + String(err);
-          }
-        });
+        const expected = document.querySelector('meta[name="qa-ui-build"]')?.content || '';
+        const ready = window.__QA_UI_APPJS_READY__ === true && window.__QA_UI_APPJS_VERSION__ === expected;
+        document.documentElement.classList.remove('qa-ui-booting');
+        document.documentElement.classList.toggle('qa-ui-boot-failed', !ready);
       })();
     </script>
   </body>
