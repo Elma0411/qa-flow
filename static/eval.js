@@ -1086,6 +1086,15 @@
     const ub = ($("unsupBatchSize") && $("unsupBatchSize").value ? String($("unsupBatchSize").value).trim() : "");
     if (ub) fd.append("unsupervised_batch_size", ub);
 
+    const tmc = ($("textModelConcurrency") && $("textModelConcurrency").value
+      ? String($("textModelConcurrency").value).trim()
+      : "");
+    const ec = ($("evaluationConcurrency") && $("evaluationConcurrency").value
+      ? String($("evaluationConcurrency").value).trim()
+      : "");
+    if (tmc) fd.append("text_model_concurrency", tmc);
+    if (ec) fd.append("evaluation_concurrency", ec);
+
     const fm = ($("faithNliModel") && $("faithNliModel").value ? String($("faithNliModel").value).trim() : "");
     if (fm) fd.append("faithfulness_nli_model", fm);
 
@@ -1102,11 +1111,9 @@
     const hm = ($("hypMode").value || "").trim();
     const ht = ($("hypTimeout").value || "").trim();
     const hr = ($("hypRetries").value || "").trim();
-    const hc = ($("hypConc").value || "").trim();
     if (hm) fd.append("faithfulness_hypothesis_mode", hm);
     if (ht) fd.append("faithfulness_hypothesis_timeout", ht);
     if (hr) fd.append("faithfulness_hypothesis_max_retries", hr);
-    if (hc) fd.append("faithfulness_hypothesis_max_concurrency", hc);
 
     $("jobHint").textContent = "启动中…";
     $("jobStatus").textContent = "";

@@ -360,10 +360,6 @@ async def batch_upload_integrated_document_pipeline(
         "llm",
         description="忠实度评估(QA→陈述句)生成方式: 'llm'=用大模型改写（仅 faithfulness 生效）",
     ),
-    faithfulness_hypothesis_max_concurrency: int = Form(
-        8,
-        description="忠实度评估(QA→陈述句)的大模型改写并发数（仅 faithfulness 生效）",
-    ),
     filter_by_threshold: bool = Form(False, description="是否按平均分阈值过滤问答对"),
     score_threshold: float = Form(0.7, description="平均分阈值"),
     enable_vector_storage: bool = Form(True, description="是否自动入库 QA 到向量库"),
@@ -447,33 +443,25 @@ async def batch_upload_integrated_document_pipeline(
         description="'unified' 合并输出, 'separate' 单文件输出",
     ),
     sync_mode: bool = Form(False, description="True=等待任务完成后返回"),
-    max_concurrency: Optional[int] = Form(
+    file_concurrency: Optional[int] = Form(
         None,
-        description="最大文件并发处理数（默认 3）",
+        description="同时处理的文件数（默认 3）",
     ),
-    doc_max_concurrency: Optional[int] = Form(
+    ocr_concurrency: Optional[int] = Form(
         None,
-        description="文档预处理最大文件并发；不填读取 DOC_MAX_CONCURRENCY，默认 1",
+        description="OCR 最大并发；默认 1",
     ),
-    ocr_max_concurrency: Optional[int] = Form(
+    vision_model_concurrency: Optional[int] = Form(
         None,
-        description="OCR 最大并发；不填读取 OCR_MAX_CONCURRENCY，默认 1",
+        description="图片理解 VLM 并发（默认 2）",
     ),
-    image_analysis_max_concurrency: Optional[int] = Form(
+    text_model_concurrency: Optional[int] = Form(
         None,
-        description="图片理解最大并发；不填读取 IMAGE_ANALYSIS_MAX_CONCURRENCY，默认 1",
+        description="语言模型并发：planner、问答生成、图片契合度、增广和 LLM 评估（默认 8）",
     ),
-    image_fit_max_concurrency: Optional[int] = Form(
+    evaluation_concurrency: Optional[int] = Form(
         None,
-        description="图片回填契合度判断最大并发；不填读取 IMAGE_FIT_MAX_CONCURRENCY，默认 1",
-    ),
-    eval_max_concurrency: Optional[int] = Form(
-        None,
-        description="评估阶段最大并发数（默认 8）",
-    ),
-    chunk_max_concurrency: Optional[int] = Form(
-        None,
-        description="同一文件内 chunk 级 LLM 并发数（默认 8）",
+        description="本地评估或评估 worker 并发（默认 8）；不限制 LLM API 请求",
     ),
     chunk_max_attempts: Optional[int] = Form(
         None,
@@ -486,14 +474,6 @@ async def batch_upload_integrated_document_pipeline(
     evidence_token_budget: Optional[int] = Form(
         None,
         description="答案证据窗口的近似 token 总预算（默认 4000）",
-    ),
-    llm_max_concurrent_requests: Optional[int] = Form(
-        None,
-        description="当前任务内同一 LLM/VLM client 同时外发 API 请求数；不填使用 VLM_API_MAX_CONCURRENT_REQUESTS",
-    ),
-    augment_max_concurrency: Optional[int] = Form(
-        None,
-        description="问答增广并发数（默认 8）",
     ),
 ):
     """
@@ -561,9 +541,6 @@ async def batch_upload_integrated_document_pipeline(
         faithfulness_hypothesis_mode = (faithfulness_hypothesis_mode or "llm").strip().lower()
         if faithfulness_hypothesis_mode != "llm":
             faithfulness_hypothesis_mode = "llm"
-        faithfulness_hypothesis_max_concurrency = max(
-            1, int(faithfulness_hypothesis_max_concurrency or 1)
-        )
         try:
             resolved_nli_model = validate_evaluation_model_name(
                 faithfulness_nli_model,
@@ -626,41 +603,33 @@ async def batch_upload_integrated_document_pipeline(
             "max_retries": CONFIG["max_retries"],
         }
 
-        concurrency_limit = resolve_batch_concurrency(max_concurrency)
-        doc_concurrency = _resolve_concurrency_value(
-            doc_max_concurrency,
-            env_name="DOC_MAX_CONCURRENCY",
-            default=1,
-        )
+        concurrency_limit = resolve_batch_concurrency(file_concurrency)
         ocr_concurrency = _resolve_concurrency_value(
-            ocr_max_concurrency,
+            ocr_concurrency,
             env_name="OCR_MAX_CONCURRENCY",
             default=1,
         )
-        image_analysis_concurrency = _resolve_concurrency_value(
-            image_analysis_max_concurrency,
-            env_name="IMAGE_ANALYSIS_MAX_CONCURRENCY",
-            default=1,
+        vision_concurrency = _resolve_concurrency_value(
+            vision_model_concurrency,
+            env_name="VISION_MODEL_CONCURRENCY",
+            default=2,
         )
-        image_fit_concurrency = _resolve_concurrency_value(
-            image_fit_max_concurrency,
-            env_name="IMAGE_FIT_MAX_CONCURRENCY",
-            default=1,
+        text_concurrency = _resolve_concurrency_value(
+            text_model_concurrency,
+            env_name="TEXT_MODEL_CONCURRENCY",
+            default=8,
         )
-        eval_concurrency = eval_max_concurrency or 8
-        chunk_concurrency = chunk_max_concurrency or 8
+        eval_concurrency = _resolve_concurrency_value(
+            evaluation_concurrency,
+            env_name="EVALUATION_CONCURRENCY",
+            default=8,
+        )
         chunk_attempts = max(1, int(chunk_max_attempts or 2))
         final_evidence_k = max(0, int(5 if final_evidence_k is None else final_evidence_k))
         evidence_token_budget = max(
             256,
             int(4000 if evidence_token_budget is None else evidence_token_budget),
         )
-        llm_request_concurrency = (
-            max(1, int(llm_max_concurrent_requests))
-            if llm_max_concurrent_requests is not None
-            else None
-        )
-        augment_concurrency = augment_max_concurrency or 8
 
         now = now_server_local_iso()
         status_data = {
@@ -679,7 +648,6 @@ async def batch_upload_integrated_document_pipeline(
             "answerability_qa_model": resolved_qa_model,
             "coverage_embedding_model": resolved_coverage_model,
             "faithfulness_hypothesis_mode": faithfulness_hypothesis_mode,
-            "faithfulness_hypothesis_max_concurrency": faithfulness_hypothesis_max_concurrency,
             "filter_by_threshold": filter_by_threshold,
             "score_threshold": score_threshold if filter_by_threshold else None,
             "vector_storage_enabled": enable_vector_storage,
@@ -726,22 +694,18 @@ async def batch_upload_integrated_document_pipeline(
             "image_fit_check_enabled": image_fit_check_enabled,
             "image_fit_min_score": image_fit_min_score,
             "ocr_summary": [],
-            "concurrency": concurrency_limit,
-            "chunk_concurrency": chunk_concurrency,
+            "file_concurrency": concurrency_limit,
+            "ocr_concurrency": ocr_concurrency,
+            "text_model_concurrency": text_concurrency,
+            "vision_model_concurrency": vision_concurrency,
             "chunk_max_attempts": chunk_attempts,
             "retrieval_config": {
                 "pipeline": "bm25_dense_rrf_bge_admission_structure_v2",
                 "final_evidence_k": final_evidence_k,
                 "evidence_token_budget": evidence_token_budget,
             },
-            "llm_max_concurrent_requests": llm_request_concurrency,
-            "augment_concurrency": augment_concurrency,
             "evaluation_concurrency": eval_concurrency,
             "file_progress": {},
-            "doc_max_concurrency": doc_concurrency,
-            "ocr_max_concurrency": ocr_concurrency,
-            "image_analysis_max_concurrency": image_analysis_concurrency,
-            "image_fit_max_concurrency": image_fit_concurrency,
             "message": "文档预处理排队中",
             "history_source": "artifacts",
             "milvus_task_id": None,
@@ -777,7 +741,6 @@ async def batch_upload_integrated_document_pipeline(
             "answerability_qa_model": resolved_qa_model,
             "coverage_embedding_model": resolved_coverage_model,
             "faithfulness_hypothesis_mode": faithfulness_hypothesis_mode,
-            "faithfulness_hypothesis_max_concurrency": faithfulness_hypothesis_max_concurrency,
             "filter_by_threshold": filter_by_threshold,
             "score_threshold": score_threshold,
             "save_mode": save_mode,
@@ -800,14 +763,14 @@ async def batch_upload_integrated_document_pipeline(
             "status_data": status_data,
             "criteria_list": LLM_EVALUATION_METRICS,
             "llm_config": llm_config,
-            "llm_max_concurrent_requests": llm_request_concurrency,
-            "max_concurrency": concurrency_limit,
-            "chunk_max_concurrency": chunk_concurrency,
+            "file_concurrency": concurrency_limit,
+            "ocr_concurrency": ocr_concurrency,
+            "text_model_concurrency": text_concurrency,
+            "vision_model_concurrency": vision_concurrency,
             "chunk_max_attempts": chunk_attempts,
             "final_evidence_k": final_evidence_k,
             "evidence_token_budget": evidence_token_budget,
-            "augment_max_concurrency": augment_concurrency,
-            "eval_max_concurrency": eval_concurrency,
+            "evaluation_concurrency": eval_concurrency,
             "question_type_mode": question_type_mode,
             "question_types": question_types,
             "question_type_weights": question_type_weights,
@@ -843,62 +806,109 @@ async def batch_upload_integrated_document_pipeline(
                     status_data["updated_at"] = now_server_local_iso()
                     upsert_pipeline_task_status(batch_task_id, status_data)
 
-                file_contents, ocr_summary = await resolve_uploaded_files_with_integrated_processing(
-                    persisted_uploads,
-                    task_id=batch_task_id,
-                    chunk_size=chunk_size,
-                    ocr_enabled=ocr_enabled,
-                    ocr_fail_fast=ocr_fail_fast,
-                    image_context_summary_mode=image_context_summary_mode,
-                    image_fit_check_enabled=image_fit_check_enabled,
-                    image_fit_min_score=image_fit_min_score,
-                    remove_watermark=remove_watermark,
-                    watermark_dpi=watermark_dpi,
-                    replace_images=resolved_replace_images,
-                    docx_strategy=docx_strategy,
-                    image_analysis_enabled=enable_image_analysis,
-                    image_analysis_use_api=image_analysis_use_api,
-                    image_analysis_vlm_api_base=vlm_api_base,
-                    image_analysis_vlm_model_name=vlm_model_name,
-                    image_analysis_vlm_api_key=vlm_api_key,
-                    image_analysis_vlm_api_type=vlm_api_type,
-                    image_analysis_vlm_model_version=vlm_model_version,
-                    llm_max_concurrent_requests=llm_request_concurrency,
-                    image_analysis_enable_classification=enable_image_classification,
-                    image_analysis_classification_confidence_threshold=classification_confidence_threshold,
-                    doc_max_concurrency=doc_concurrency,
-                    ocr_max_concurrency=ocr_concurrency,
-                    image_analysis_max_concurrency=image_analysis_concurrency,
-                    image_fit_max_concurrency=image_fit_concurrency,
-                    chunking_prefix_max_depth=chunking_prefix_max_depth,
-                    chunking_split_type=chunking_split_type,
-                    chunking_text_split_min_length=chunking_text_split_min_length,
-                    chunking_text_split_max_length=chunking_text_split_max_length,
-                    chunking_chunk_overlap=chunking_chunk_overlap,
-                    chunking_separator=chunking_separator,
-                    chunking_separators=parsed_chunking_separators,
-                    chunking_split_language=chunking_split_language,
-                    chunking_custom_separator=chunking_custom_separator,
-                    chunking_manual_split_points=parsed_manual_split_points,
-                    chunking_markdown_heading_correction_enabled=bool(chunking_markdown_heading_correction_enabled),
-                    progress_callback=report_doc_progress,
+                # Start the QA pipeline before preprocessing finishes.  Each
+                # OCR/text file is handed over through a bounded queue as soon
+                # as its integrated record is ready, so later files can remain
+                # in OCR while earlier files are already planning/generating.
+                file_stream: asyncio.Queue = asyncio.Queue(maxsize=max(1, concurrency_limit))
+                pipeline_context = {
+                    **base_job_context,
+                    "file_contents": [],
+                    "file_stream": file_stream,
+                    "stream_total_files": len(persisted_uploads),
+                    "stream_expected_filenames": [
+                        str(item.filename or "") for item in persisted_uploads
+                    ],
+                    "status_data": status_data,
+                }
+                pipeline_task = asyncio.create_task(
+                    run_batch_complete_pipeline_async(pipeline_context)
                 )
+
+                async def _handoff_file(file_record: Dict[str, Any]) -> None:
+                    if pipeline_task.done():
+                        try:
+                            pipeline_error = pipeline_task.exception()
+                        except Exception:
+                            pipeline_error = None
+                        raise RuntimeError(
+                            f"QA pipeline stopped before file handoff: {pipeline_error or 'unknown error'}"
+                        )
+                    await file_stream.put(dict(file_record))
+
+                resolver_error: Optional[BaseException] = None
+                pipeline_error: Optional[BaseException] = None
+                try:
+                    file_contents, ocr_summary = await resolve_uploaded_files_with_integrated_processing(
+                        persisted_uploads,
+                        task_id=batch_task_id,
+                        chunk_size=chunk_size,
+                        ocr_enabled=ocr_enabled,
+                        ocr_fail_fast=ocr_fail_fast,
+                        image_context_summary_mode=image_context_summary_mode,
+                        image_fit_check_enabled=image_fit_check_enabled,
+                        image_fit_min_score=image_fit_min_score,
+                        remove_watermark=remove_watermark,
+                        watermark_dpi=watermark_dpi,
+                        replace_images=resolved_replace_images,
+                        docx_strategy=docx_strategy,
+                        image_analysis_enabled=enable_image_analysis,
+                        image_analysis_use_api=image_analysis_use_api,
+                        image_analysis_vlm_api_base=vlm_api_base,
+                        image_analysis_vlm_model_name=vlm_model_name,
+                        image_analysis_vlm_api_key=vlm_api_key,
+                        image_analysis_vlm_api_type=vlm_api_type,
+                        image_analysis_vlm_model_version=vlm_model_version,
+                        text_model_concurrency=text_concurrency,
+                        vision_model_concurrency=vision_concurrency,
+                        image_analysis_enable_classification=enable_image_classification,
+                        image_analysis_classification_confidence_threshold=classification_confidence_threshold,
+                        ocr_concurrency=ocr_concurrency,
+                        file_concurrency=concurrency_limit,
+                        chunking_prefix_max_depth=chunking_prefix_max_depth,
+                        chunking_split_type=chunking_split_type,
+                        chunking_text_split_min_length=chunking_text_split_min_length,
+                        chunking_text_split_max_length=chunking_text_split_max_length,
+                        chunking_chunk_overlap=chunking_chunk_overlap,
+                        chunking_separator=chunking_separator,
+                        chunking_separators=parsed_chunking_separators,
+                        chunking_split_language=chunking_split_language,
+                        chunking_custom_separator=chunking_custom_separator,
+                        chunking_manual_split_points=parsed_manual_split_points,
+                        chunking_markdown_heading_correction_enabled=bool(chunking_markdown_heading_correction_enabled),
+                        progress_callback=report_doc_progress,
+                        file_ready_callback=_handoff_file,
+                    )
+                except BaseException as exc:
+                    resolver_error = exc
+                finally:
+                    with progress_lock:
+                        status_data["ocr_summary"] = ocr_summary if "ocr_summary" in locals() else []
+                        status_data["message"] = "文档预处理完成，等待流水线收尾"
+                        status_data["updated_at"] = now_server_local_iso()
+                        upsert_pipeline_task_status(batch_task_id, status_data)
+                    pipeline_cancelled = False
+                    if (
+                        resolver_error is not None
+                        and (ocr_fail_fast or isinstance(resolver_error, asyncio.CancelledError))
+                        and not pipeline_task.done()
+                    ):
+                        pipeline_task.cancel()
+                        pipeline_cancelled = True
+                    if not pipeline_cancelled and not pipeline_task.done():
+                        await file_stream.put(None)
+                    try:
+                        await pipeline_task
+                    except BaseException as exc:
+                        pipeline_error = exc
+
+                if resolver_error is not None:
+                    raise resolver_error
+                if pipeline_error is not None:
+                    raise pipeline_error
                 successful_sources = [f for f in file_contents if f["status"] == "success"]
                 if not successful_sources:
                     raise RuntimeError("All uploaded files failed to read")
-
-                with progress_lock:
-                    status_data["ocr_summary"] = ocr_summary
-                    status_data["message"] = "文档预处理完成，开始完整流水线"
-                    status_data["updated_at"] = now_server_local_iso()
-                    upsert_pipeline_task_status(batch_task_id, status_data)
-
-                job_context = {
-                    **base_job_context,
-                    "file_contents": file_contents,
-                    "status_data": status_data,
-                }
-                await run_batch_complete_pipeline_async(job_context)
             except asyncio.CancelledError:
                 with progress_lock:
                     status_data["status"] = "canceled"
@@ -952,13 +962,12 @@ async def batch_upload_integrated_document_pipeline(
             "evaluation_method": evaluation_method,
             "filter_by_threshold": filter_by_threshold,
             "knowledge_classifier": knowledge_classifier,
-            "concurrency": concurrency_limit,
-            "doc_max_concurrency": doc_concurrency,
-            "ocr_max_concurrency": ocr_concurrency,
-            "image_analysis_max_concurrency": image_analysis_concurrency,
-            "image_fit_max_concurrency": image_fit_concurrency,
+            "file_concurrency": concurrency_limit,
+            "ocr_concurrency": ocr_concurrency,
+            "text_model_concurrency": text_concurrency,
+            "vision_model_concurrency": vision_concurrency,
+            "evaluation_concurrency": eval_concurrency,
             "chunking_config": status_data["chunking_config"],
-            "llm_max_concurrent_requests": llm_request_concurrency,
             "image_context_summary_mode": image_context_summary_mode,
             "enable_image_analysis": bool(enable_image_analysis),
             "image_analysis_use_api": bool(image_analysis_use_api),

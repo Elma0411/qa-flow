@@ -141,23 +141,33 @@ Docker API ports:
   environment so changes under `app/`, `qa/`, and `scripts/` are picked up
   without recreating the container.
 
-Document preprocessing concurrency:
+Document and model concurrency:
 
-- `DOC_MAX_CONCURRENCY` controls the default number of uploaded files processed
-  concurrently during integrated document preprocessing. It defaults to `1`.
-- `OCR_MAX_CONCURRENCY` controls the number of concurrent OCR extraction calls
-  admitted by integrated document preprocessing. It defaults to `1`.
-- `IMAGE_ANALYSIS_MAX_CONCURRENCY` controls concurrent VLM image-analysis
-  calls in API mode. It defaults to `1`.
-- `IMAGE_FIT_MAX_CONCURRENCY` controls concurrent image placement-fit checks.
-  It defaults to `1`.
-- `VLM_API_MAX_CONCURRENT_REQUESTS` remains the per shared VLM client request
-  gate. Raising image-analysis concurrency without raising this gate may still
-  serialize calls for the same VLM profile.
-- `POST /batch-upload-integrated-document-pipeline` accepts optional
+- `file_concurrency` limits the number of files admitted to the document
+  preprocessor and the downstream QA pipeline. In integrated mode a bounded
+  handoff queue lets a file enter planning/generation as soon as its OCR/text
+  preprocessing is ready; later files may still be in OCR. The default is `3`.
+- `ocr_concurrency` limits OCR resource use and defaults to `1`.
+- `vision_model_concurrency` limits image-understanding VLM calls and defaults
+  to `2`.
+- `text_model_concurrency` is the single text-model request budget shared by
+  chunk summaries, Point/Summary planners, candidate generation, question
+  editing, answers, image-fit judgments, augmentation, LLM evaluation, and
+  faithfulness-hypothesis rewriting. It defaults to `8`.
+- `evaluation_concurrency` only limits local evaluation workers (and local
+  evaluation scheduling); it does not add another limiter to LLM requests.
+  It defaults to `8`.
+- The routes pass explicit limits to shared clients, so
+  `VLM_API_MAX_CONCURRENT_REQUESTS` is only a deployment-level default for
+  callers that construct a client outside these pipeline routes, not a second
+  hidden cap on the five request-level pools.
+- Both complete-pipeline routes and the standalone evaluation job accept the
+  corresponding fields. The old per-stage fields (`max_concurrency`,
   `doc_max_concurrency`, `ocr_max_concurrency`,
-  `image_analysis_max_concurrency`, and `image_fit_max_concurrency` form
-  fields. Request fields override environment defaults for that request.
+  `image_analysis_max_concurrency`, `image_fit_max_concurrency`,
+  `chunk_max_concurrency`, `eval_max_concurrency`, and
+  `faithfulness_hypothesis_max_concurrency`) are no longer part of the public
+  contract.
 - `docx_strategy` is accepted for compatibility, but document processing
   normalizes DOC and DOCX handling to PDF conversion before OCR.
 
@@ -384,7 +394,10 @@ Consumer:
 
 Required groups:
 
-- Identity and input: `task_id`, `file_contents`, `status_data`.
+- Identity and input: `task_id`, `status_data`, and either a ready
+  `file_contents` list or an integrated `file_stream` plus
+  `stream_total_files`/`stream_expected_filenames`. A stream is closed with a
+  `None` sentinel after the preprocessor has handed off every file.
 - Generation: `chunk_size`, `qa_total_limit`, `qa_total_limit_scope`,
   `qa_detail_mode`, `prompt_language`, `question_type_mode`,
   `question_types`, `question_type_weights`, `few_shot_examples`.
@@ -398,14 +411,15 @@ Required groups:
   `chunking_manual_split_points`.
 - Evaluation: `include_evaluation`, `include_unsupervised_evaluation`,
   `evaluation_method`, `faithfulness_hypothesis_mode`,
-  `faithfulness_hypothesis_max_concurrency`, `unsupervised_batch_size`,
+  `unsupervised_batch_size`,
   `faithfulness_nli_model`, `answerability_qa_model`,
   `coverage_embedding_model`, `filter_by_threshold`, `score_threshold`,
-  `criteria_list`, `eval_max_concurrency`.
+  `criteria_list`, `text_model_concurrency`, `evaluation_concurrency`.
 - Storage: `save_mode`, `enable_vector_storage`, `enable_chunk_storage`,
   `chunk_storage_fail_fast`.
-- Runtime: `llm_config`, `max_concurrency`, `chunk_max_concurrency`,
-  `chunk_max_attempts`, `augment_per_qa`, `augment_max_concurrency`.
+- Runtime: `llm_config`, `file_concurrency`, `ocr_concurrency`,
+  `vision_model_concurrency`, `text_model_concurrency`,
+  `evaluation_concurrency`, `chunk_max_attempts`, `augment_per_qa`.
 - Retrieval: `final_evidence_k`, `evidence_token_budget`.
 - Classification: `knowledge_classifier`, `use_category_prompt_templates`.
 - Integrated image understanding: `enable_image_analysis`,
@@ -497,8 +511,9 @@ Rules:
   document-wide. If a planner call underfills the point pool, deterministic
   one-material point scenarios fill only the missing capacity; summary
   scenarios are never synthesized as fallback. Planner calls use internal
-  character-bounded batches and a bounded concurrency setting passed from the
-  pipeline runtime; no frontend/request batch-size control is exposed. A
+  character-bounded batches and the shared `text_model_concurrency` pool passed
+  from the pipeline runtime; no separate planner concurrency control is
+  exposed. A
   planner response is accepted only into the matching Point/Summary pool; a
   mismatched `scenario_type` is discarded. One section material may still
   contribute several Point scenarios when their intents cover distinct facts.
@@ -532,6 +547,12 @@ Rules:
   retained only when `evidence_usage` cites at least one primary chunk from
   every bound material; otherwise it enters the existing generation retry path.
   Retrieved-only evidence never becomes the scalar primary source.
+- When `include_evaluation=true` and `evaluation_method` is `llm` or `local`,
+  generation may publish validated QA items to a bounded evaluation queue before
+  the file finishes. LLM evaluation uses `text_model_concurrency`; local
+  evaluation uses `evaluation_concurrency`. Final filtering and persistence wait
+  for the queue to drain. The unsupervised metric suite remains a document-level
+  post-generation stage.
 - `qa_total_limit_scope=per_file` applies the total main-QA cap to each file.
   `qa_total_limit_scope=batch` pre-allocates the cap across successful files
   before concurrent generation so the final batch output does not exceed the

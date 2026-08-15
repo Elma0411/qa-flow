@@ -7,7 +7,7 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 try:
     from fastapi import UploadFile
@@ -261,11 +261,10 @@ class IntegratedPipelineRunner:
         image_analysis_vlm_api_key: Optional[str] = None,
         image_analysis_vlm_api_type: Optional[str] = None,
         image_analysis_vlm_model_version: Optional[str] = None,
-        llm_max_concurrent_requests: Optional[int] = None,
+        text_model_concurrency: Optional[int] = None,
         image_analysis_enable_classification: bool = False,
         image_analysis_classification_confidence_threshold: float = 0.0,
-        image_analysis_max_concurrency: Optional[int] = None,
-        image_fit_max_concurrency: Optional[int] = None,
+        vision_model_concurrency: Optional[int] = None,
     ) -> None:
         self.task_id = task_id
         self.chunk_size = max(1, int(chunk_size or 600))
@@ -288,9 +287,18 @@ class IntegratedPipelineRunner:
         self.replace_images = bool(replace_images)
         self.docx_strategy = _normalize_pdf_docx_strategy(docx_strategy)
         self.use_gpu = resolve_ocr_use_gpu(default=True) if use_gpu is None else bool(use_gpu)
-        self.llm_max_concurrent_requests = llm_max_concurrent_requests
+        self.text_model_concurrency = _resolve_positive_int(
+            text_model_concurrency,
+            env_name="TEXT_MODEL_CONCURRENCY",
+            default=8,
+        )
+        self.vision_model_concurrency = _resolve_positive_int(
+            vision_model_concurrency,
+            env_name="VISION_MODEL_CONCURRENCY",
+            default=2,
+        )
         self.llm_config = _build_llm_config(
-            max_concurrent_requests=llm_max_concurrent_requests,
+            max_concurrent_requests=self.text_model_concurrency,
         )
         self.image_analysis_enabled = bool(image_analysis_enabled)
         self.image_analysis_use_api = bool(image_analysis_use_api)
@@ -303,18 +311,6 @@ class IntegratedPipelineRunner:
         self.image_analysis_classification_confidence_threshold = max(
             0.0,
             min(1.0, float(image_analysis_classification_confidence_threshold or 0.0)),
-        )
-        self.image_analysis_max_concurrency = _resolve_positive_int(
-            image_analysis_max_concurrency,
-            env_name="IMAGE_ANALYSIS_MAX_CONCURRENCY",
-            default=1,
-            maximum=64,
-        )
-        self.image_fit_max_concurrency = _resolve_positive_int(
-            image_fit_max_concurrency,
-            env_name="IMAGE_FIT_MAX_CONCURRENCY",
-            default=1,
-            maximum=64,
         )
 
     def process_text_file(
@@ -488,6 +484,7 @@ class IntegratedPipelineRunner:
         contexts = ChunkSummaryService(
             mode=self.image_context_summary_mode,
             llm_config=self.llm_config,
+            max_workers=self.text_model_concurrency,
         ).summarize(_chunk_contexts(chunks_meta))
         _emit_integrated_progress(
             progress_callback,
@@ -600,7 +597,7 @@ class IntegratedPipelineRunner:
                         api_key=self.image_analysis_vlm_api_key,
                         api_type=self.image_analysis_vlm_api_type,
                         model_version=self.image_analysis_vlm_model_version,
-                        max_concurrent_requests=self.llm_max_concurrent_requests,
+                        max_concurrent_requests=self.vision_model_concurrency,
                     )
                 )
 
@@ -616,7 +613,7 @@ class IntegratedPipelineRunner:
                 vlm_client=vlm_client,
                 enable_classification=self.image_analysis_enable_classification,
                 classification_confidence_threshold=self.image_analysis_classification_confidence_threshold,
-                max_concurrency=self.image_analysis_max_concurrency,
+                max_concurrency=self.vision_model_concurrency,
                 progress_callback=image_progress,
             )
             _emit_integrated_progress(
@@ -670,7 +667,7 @@ class IntegratedPipelineRunner:
                 return desc.image_id, detail, bool(decision.accepted)
 
             successful_descriptions = list(analysis_result.descriptions)
-            max_fit_workers = min(self.image_fit_max_concurrency, max(1, len(successful_descriptions)))
+            max_fit_workers = min(self.text_model_concurrency, max(1, len(successful_descriptions)))
             if max_fit_workers <= 1 or len(successful_descriptions) <= 1:
                 judge_rows = [judge_description(desc) for desc in successful_descriptions]
             else:
@@ -860,13 +857,12 @@ async def resolve_uploaded_files_with_integrated_processing(
     image_analysis_vlm_api_key: Optional[str] = None,
     image_analysis_vlm_api_type: Optional[str] = None,
     image_analysis_vlm_model_version: Optional[str] = None,
-    llm_max_concurrent_requests: Optional[int] = None,
+    text_model_concurrency: Optional[int] = None,
     image_analysis_enable_classification: bool = False,
     image_analysis_classification_confidence_threshold: float = 0.0,
-    doc_max_concurrency: Optional[int] = None,
-    ocr_max_concurrency: Optional[int] = None,
-    image_analysis_max_concurrency: Optional[int] = None,
-    image_fit_max_concurrency: Optional[int] = None,
+    file_concurrency: Optional[int] = None,
+    ocr_concurrency: Optional[int] = None,
+    vision_model_concurrency: Optional[int] = None,
     chunking_prefix_max_depth: int = 4,
     chunking_split_type: Optional[str] = None,
     chunking_text_split_min_length: Optional[int] = None,
@@ -879,6 +875,7 @@ async def resolve_uploaded_files_with_integrated_processing(
     chunking_manual_split_points: Optional[List[Dict[str, Any]]] = None,
     chunking_markdown_heading_correction_enabled: bool = True,
     progress_callback: Optional[Callable[[str, str, str, str, Optional[Dict[str, Any]]], None]] = None,
+    file_ready_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     from app.services.ocr import file_requires_ocr
     from app.services.storage.uploads import read_uploaded_file_content
@@ -911,11 +908,10 @@ async def resolve_uploaded_files_with_integrated_processing(
         image_analysis_vlm_api_key=image_analysis_vlm_api_key,
         image_analysis_vlm_api_type=image_analysis_vlm_api_type,
         image_analysis_vlm_model_version=image_analysis_vlm_model_version,
-        llm_max_concurrent_requests=llm_max_concurrent_requests,
+        text_model_concurrency=text_model_concurrency,
         image_analysis_enable_classification=image_analysis_enable_classification,
         image_analysis_classification_confidence_threshold=image_analysis_classification_confidence_threshold,
-        image_analysis_max_concurrency=image_analysis_max_concurrency,
-        image_fit_max_concurrency=image_fit_max_concurrency,
+        vision_model_concurrency=vision_model_concurrency,
     )
     base_dir = Path(CONFIG["outputs_dir"]) / "integrated_pipeline" / task_id
     input_dir = base_dir / "uploads"
@@ -923,19 +919,19 @@ async def resolve_uploaded_files_with_integrated_processing(
     file_contents: List[Dict[str, Any]] = []
     ocr_summary: List[Dict[str, Any]] = []
 
-    resolved_doc_max_concurrency = _resolve_positive_int(
-        doc_max_concurrency,
-        env_name="DOC_MAX_CONCURRENCY",
-        default=1,
+    resolved_file_concurrency = _resolve_positive_int(
+        file_concurrency,
+        env_name="BATCH_PIPELINE_CONCURRENCY",
+        default=3,
         maximum=64,
     )
     resolved_ocr_max_concurrency = _resolve_positive_int(
-        ocr_max_concurrency,
+        ocr_concurrency,
         env_name="OCR_MAX_CONCURRENCY",
         default=1,
         maximum=64,
     )
-    doc_semaphore = asyncio.Semaphore(resolved_doc_max_concurrency)
+    file_semaphore = asyncio.Semaphore(resolved_file_concurrency)
     ocr_semaphore = asyncio.Semaphore(resolved_ocr_max_concurrency)
     file_records: List[Optional[Dict[str, Any]]] = [None] * len(upload_files)
     ocr_records: List[Optional[Dict[str, Any]]] = [None] * len(upload_files)
@@ -943,7 +939,7 @@ async def resolve_uploaded_files_with_integrated_processing(
     async def process_one(index: int, upload_file: UploadFile) -> None:
         filename = _safe_upload_filename(upload_file.filename)
         requires_ocr = file_requires_ocr(upload_file)
-        async with doc_semaphore:
+        async with file_semaphore:
             _emit_integrated_progress(
                 progress_callback,
                 filename=filename,
@@ -1032,7 +1028,24 @@ async def resolve_uploaded_files_with_integrated_processing(
                     "ocr_seconds": result.ocr_seconds,
                     "replace_images": runner.replace_images,
                 }
+                if file_ready_callback is not None:
+                    # Hold the file slot until the downstream QA pipeline has
+                    # accepted this record.  A bounded downstream queue can
+                    # therefore provide backpressure without allowing
+                    # preprocessed documents to accumulate unboundedly.
+                    await file_ready_callback(dict(file_records[index]))
             except Exception as exc:
+                # A downstream handoff failure is not an OCR/text-processing
+                # failure.  Propagate it so the orchestrator can stop or
+                # cancel the producer instead of replacing a valid record with
+                # a second synthetic error record and attempting another
+                # handoff into the same queue.
+                if (
+                    file_ready_callback is not None
+                    and isinstance(file_records[index], dict)
+                    and file_records[index].get("status") == "success"
+                ):
+                    raise
                 error_message = str(exc)
                 _emit_integrated_progress(
                     progress_callback,
@@ -1058,6 +1071,8 @@ async def resolve_uploaded_files_with_integrated_processing(
                     "ocr_seconds": 0.0,
                     "replace_images": runner.replace_images,
                 }
+                if file_ready_callback is not None:
+                    await file_ready_callback(dict(file_records[index]))
                 if ocr_fail_fast:
                     raise RuntimeError(error_message) from exc
 

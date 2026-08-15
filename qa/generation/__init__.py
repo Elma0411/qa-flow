@@ -19,7 +19,6 @@ _EXPORTS = {
     "DEFAULT_EVIDENCE_TOKEN_BUDGET": ".evidence_units",
     "DEFAULT_FINAL_EVIDENCE_K": ".evidence_units",
     "DEFAULT_SCENARIO_PLANNING_BATCH_CHARS": ".structure_units",
-    "DEFAULT_SCENARIO_PLANNING_MAX_CONCURRENCY": ".structure_units",
     "normalize_question_type_mode": ".qa_generation_flow",
     "normalize_question_type_weights": ".qa_generation_flow",
     "normalize_question_types": ".qa_generation_flow",

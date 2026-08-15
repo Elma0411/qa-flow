@@ -1,6 +1,6 @@
 # Integrated Document Pipeline API
 
-更新时间：2026-06-25（Asia/Shanghai）
+更新时间：2026-08-15（Asia/Shanghai）
 
 本文档说明当前文档解析、图片理解、切块和问答一体流程的调用接口。
 
@@ -67,13 +67,15 @@ compose 环境变量。
 
 | 字段 | 类型 | 默认来源 | 说明 |
 | --- | --- | --- | --- |
-| `doc_max_concurrency` | int | `DOC_MAX_CONCURRENCY` | 文档预处理最大文件并发。 |
-| `ocr_max_concurrency` | int | `OCR_MAX_CONCURRENCY` | OCR 提取最大并发。 |
-| `image_analysis_max_concurrency` | int | `IMAGE_ANALYSIS_MAX_CONCURRENCY` | 图片理解最大并发。 |
-| `image_fit_max_concurrency` | int | `IMAGE_FIT_MAX_CONCURRENCY` | 图片契合度判断最大并发。 |
+| `file_concurrency` | int | `BATCH_PIPELINE_CONCURRENCY` / `3` | 同时进入文档预处理和 QA 流水线的文件数。集成模式按文件就绪后立即交接。 |
+| `ocr_concurrency` | int | `OCR_MAX_CONCURRENCY` / `1` | OCR 资源并发。 |
+| `vision_model_concurrency` | int | `2` | 图片理解 VLM 请求并发。 |
+| `text_model_concurrency` | int | `8` | 所有文本模型请求并发，包括 planner、生成、编辑、答案、图片契合度、增广和 LLM 评估。 |
+| `evaluation_concurrency` | int | `8` | 本地评估或评估 worker 并发；不限制 LLM API 请求。 |
 
-建议先在 compose 中设置稳定默认值；前端或调用方只在单次任务需要压测或临时
-放大吞吐时传这些字段。
+`file_concurrency` 只控制文件级流水线槽位；`ocr_concurrency`、
+`vision_model_concurrency`、`text_model_concurrency` 分别控制对应资源池。
+`evaluation_concurrency` 不会与 `text_model_concurrency` 叠加限制 LLM 请求。
 
 ### 常用 QA 字段
 
@@ -90,10 +92,11 @@ compose 环境变量。
 - `evaluation_method`
 - `enable_vector_storage`
 - `enable_chunk_storage`
-- `max_concurrency`
-- `chunk_max_concurrency`
-- `augment_max_concurrency`
-- `eval_max_concurrency`
+- `file_concurrency`
+- `ocr_concurrency`（集成接口）
+- `vision_model_concurrency`（集成接口）
+- `text_model_concurrency`
+- `evaluation_concurrency`
 - `sync_mode`
 - `save_mode`
 
@@ -108,10 +111,11 @@ curl -X POST "http://localhost:12000/batch-upload-integrated-document-pipeline" 
   -F "files=@demo.pdf" \
   -F "ocr_enabled=true" \
   -F "enable_image_analysis=true" \
-  -F "doc_max_concurrency=2" \
-  -F "ocr_max_concurrency=1" \
-  -F "image_analysis_max_concurrency=4" \
-  -F "image_fit_max_concurrency=4" \
+  -F "file_concurrency=2" \
+  -F "ocr_concurrency=1" \
+  -F "vision_model_concurrency=2" \
+  -F "text_model_concurrency=8" \
+  -F "evaluation_concurrency=4" \
   -F "qa_total_limit=20" \
   -F "qa_total_limit_scope=per_file" \
   -F "qa_detail_mode=auto" \
@@ -128,10 +132,11 @@ curl -X POST "http://localhost:12000/batch-upload-integrated-document-pipeline" 
   "batch_mode": true,
   "integrated_pipeline": true,
   "task_id": "integrated_document_task_1782380000",
-  "doc_max_concurrency": 2,
-  "ocr_max_concurrency": 1,
-  "image_analysis_max_concurrency": 4,
-  "image_fit_max_concurrency": 4
+  "file_concurrency": 2,
+  "ocr_concurrency": 1,
+  "vision_model_concurrency": 2,
+  "text_model_concurrency": 8,
+  "evaluation_concurrency": 4
 }
 ```
 

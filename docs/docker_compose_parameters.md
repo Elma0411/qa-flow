@@ -25,10 +25,11 @@ docker compose -f docker/docker-compose.debug.yml up -d
 可以在命令前通过环境变量覆盖默认配置：
 
 ```bash
-DOC_MAX_CONCURRENCY=2 \
+BATCH_PIPELINE_CONCURRENCY=2 \
 OCR_MAX_CONCURRENCY=1 \
-IMAGE_ANALYSIS_MAX_CONCURRENCY=4 \
-IMAGE_FIT_MAX_CONCURRENCY=4 \
+VISION_MODEL_CONCURRENCY=2 \
+TEXT_MODEL_CONCURRENCY=8 \
+EVALUATION_CONCURRENCY=4 \
 VLM_API_MAX_CONCURRENT_REQUESTS=4 \
 docker compose -f docker/docker-compose.yml up -d
 ```
@@ -87,37 +88,40 @@ DOC 和 DOCX 在 API 路径中固定先转 PDF 再 OCR；不需要配置其他�
 | `VLM_API_KEY` | 空 | 图片理解 VLM API Key。 |
 | `VLM_API_TYPE` | `openai` | VLM API 类型，支持 `openai`、`lmp_cloud`。 |
 | `VLM_MODEL_VERSION` | 空 | VLM 模型版本，可选。 |
-| `VLM_API_MAX_CONCURRENT_REQUESTS` | `1` | 单个共享 VLM client 的最大并发请求数。 |
+| `VLM_API_MAX_CONCURRENT_REQUESTS` | `1` | 路由之外创建共享 VLM client 时的默认并发；完整流水线会显式使用 `vision_model_concurrency` 或 `text_model_concurrency`。 |
 
 `VLM_API_MAX_CONCURRENT_REQUESTS` 是 client 内部请求闸门。如果
-`IMAGE_ANALYSIS_MAX_CONCURRENCY` 设置为 `4`，但该值仍为 `1`，同一个 VLM
-配置上的请求仍可能被串行化。
+完整流水线会把 `vision_model_concurrency` 或
+`text_model_concurrency` 显式传入对应 client；`VLM_API_MAX_CONCURRENT_REQUESTS`
+只影响未指定资源池配置的独立 client。
 
-## 集成文档预处理并发
+## 集成文档、模型和评估并发
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `DOC_MAX_CONCURRENCY` | `1` | 一体流程中文档预处理的最大文件并发。 |
+| `BATCH_PIPELINE_CONCURRENCY` | `3` | 文件级流水线最大并发。 |
 | `OCR_MAX_CONCURRENCY` | `1` | OCR 提取最大并发。 |
-| `IMAGE_ANALYSIS_MAX_CONCURRENCY` | `1` | 图片理解 API 模式最大并发。 |
-| `IMAGE_FIT_MAX_CONCURRENCY` | `1` | 图片契合度判断最大并发。 |
+| `VISION_MODEL_CONCURRENCY` | `2` | 图片理解 VLM 最大并发。 |
+| `TEXT_MODEL_CONCURRENCY` | `8` | planner、生成、编辑、答案、图片契合度、增广和 LLM 评估共用的文本模型最大并发。 |
+| `EVALUATION_CONCURRENCY` | `8` | 本地评估 worker 最大并发；不限制 LLM 请求。 |
 
 推荐调优顺序：
 
 1. 先保持 `OCR_MAX_CONCURRENCY=1`，避免单 GPU 上多个 OCR 任务抢显存。
-2. 多文件批处理时先提高 `DOC_MAX_CONCURRENCY`，例如 `2`。
-3. VLM API 能承受更多请求时，同时提高
-   `IMAGE_ANALYSIS_MAX_CONCURRENCY` 和 `VLM_API_MAX_CONCURRENT_REQUESTS`。
-4. `IMAGE_FIT_MAX_CONCURRENCY` 主要消耗 LLM/API 请求或 CPU，按实际模型延迟调整。
+2. 多文件批处理时先提高 `BATCH_PIPELINE_CONCURRENCY`，例如 `2`。
+3. VLM API 能承受更多请求时提高 `VISION_MODEL_CONCURRENCY`。
+4. 文本模型请求统一调整 `TEXT_MODEL_CONCURRENCY`；本地评估再单独调整
+   `EVALUATION_CONCURRENCY`。
 
 ## 前端与请求级覆盖
 
 compose/env 是推荐的部署默认值。前端“一体流程”参数区提供以下可选字段：
 
-- `doc_max_concurrency`
-- `ocr_max_concurrency`
-- `image_analysis_max_concurrency`
-- `image_fit_max_concurrency`
+- `file_concurrency`
+- `ocr_concurrency`
+- `vision_model_concurrency`
+- `text_model_concurrency`
+- `evaluation_concurrency`
 
 这些字段为空时不随请求提交，接口读取 compose/env 默认值。填写后只影响本次
 `POST /batch-upload-integrated-document-pipeline` 请求，不会修改容器环境变量。

@@ -290,6 +290,7 @@ def process_text_to_qa_one_step(
     config: Dict[str, Any],
     original_filename: str = "",
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    qa_ready_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Retrieval-augmented QA generation for Pipeline 8/8B:
@@ -341,7 +342,7 @@ def process_text_to_qa_one_step(
         chunk_size=runtime.chunk_size,
         scenario_planner=_scenario_planner,
         scenario_planning_batch_chars=runtime.scenario_planning_batch_chars,
-        scenario_planning_max_concurrency=runtime.scenario_planning_max_concurrency,
+        text_model_concurrency=runtime.text_model_concurrency,
     )
     scenario_planning_seconds = time.perf_counter() - scenario_planning_started_at
     generation_units = list(unit_plan.units)
@@ -439,7 +440,7 @@ def process_text_to_qa_one_step(
         except Exception:
             pass
 
-    max_workers = max(1, min(int(runtime.chunk_max_concurrency), len(generation_units)))
+    max_workers = max(1, min(int(runtime.text_model_concurrency), len(generation_units)))
 
     results: List[Dict[str, Any]] = []
     unit_items_by_index: Dict[int, List[Dict[str, Any]]] = {}
@@ -464,6 +465,7 @@ def process_text_to_qa_one_step(
         "validation_and_bookkeeping_seconds": 0.0,
         "chunk_total_seconds": 0.0,
     }
+    streamed_question_keys: set[str] = set()
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_map = {
             executor.submit(
@@ -512,6 +514,20 @@ def process_text_to_qa_one_step(
                 unit_items_by_index[unit_index_int] = [
                     it for it in items_list if isinstance(it, dict)
                 ]
+                if qa_ready_callback:
+                    for item in items_list:
+                        if not isinstance(item, dict):
+                            continue
+                        question_key = _question_identity(item.get("question"))
+                        if not question_key or question_key in streamed_question_keys:
+                            continue
+                        streamed_question_keys.add(question_key)
+                        try:
+                            qa_ready_callback(dict(item))
+                        except Exception:
+                            # Streaming evaluation is best-effort and must not
+                            # turn a valid generation result into a failure.
+                            pass
                 timing = payload.get("timing") if isinstance(payload, dict) else {}
                 if not isinstance(timing, dict):
                     timing = {}

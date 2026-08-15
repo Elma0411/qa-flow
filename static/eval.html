@@ -274,6 +274,14 @@
                 <input type="number" id="unsupBatchSize" min="1" placeholder="留空默认跟随后端配置…" />
               </label>
               <label>
+                text_model_concurrency（LLM 改写，可空）
+                <input type="number" id="textModelConcurrency" min="1" placeholder="留空默认 8…" />
+              </label>
+              <label>
+                evaluation_concurrency（本地评估 worker，可空）
+                <input type="number" id="evaluationConcurrency" min="1" placeholder="留空默认 8…" />
+              </label>
+              <label>
                 faithfulness_nli_model（可空）
                 <select id="faithNliModel">
                   <option value="" selected>auto（服务默认）</option>
@@ -310,10 +318,6 @@
               <label>
                 hypothesis_max_retries（可空）
                 <input type="number" id="hypRetries" min="0" placeholder="留空默认跟随后端配置…" />
-              </label>
-              <label>
-                hypothesis_max_concurrency（可空）
-                <input type="number" id="hypConc" min="1" placeholder="留空默认跟随后端配置…" />
               </label>
             </div>
 

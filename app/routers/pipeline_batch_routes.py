@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import os
 import time
 from typing import Any, Dict, List, Optional
 
@@ -28,6 +29,17 @@ from app.services.unsupervised_evaluation import validate_evaluation_model_name
 
 router = APIRouter()
 _LOCAL_EVAL_COMPAT_FLAG = True
+
+
+def _resolve_resource_concurrency(value: Optional[int], *, env_name: str, default: int) -> int:
+    raw: Any = value
+    if raw is None:
+        raw = os.environ.get(env_name)
+    try:
+        resolved = int(raw) if raw is not None and str(raw).strip() else int(default)
+    except (TypeError, ValueError):
+        resolved = int(default)
+    return max(1, min(64, resolved))
 
 
 def _decode_chunking_form_text(value: Optional[str]) -> Optional[str]:
@@ -206,10 +218,6 @@ async def batch_upload_complete_pipeline_with_evaluation(
         "llm",
         description="忠实度评估(QA→陈述句)生成方式: 'llm'=用大模型改写（仅 faithfulness 生效）",
     ),
-    faithfulness_hypothesis_max_concurrency: int = Form(
-        8,
-        description="忠实度评估(QA→陈述句)的大模型改写并发数（仅 faithfulness 生效）",
-    ),
     filter_by_threshold: bool = Form(False, description="是否按平均分阈值过滤问答对"),
     score_threshold: float = Form(0.7, description="平均分阈值"),
     enable_vector_storage: bool = Form(True, description="是否自动入库 QA 到向量库"),
@@ -272,17 +280,17 @@ async def batch_upload_complete_pipeline_with_evaluation(
         description="'unified' 合并输出, 'separate' 单文件输出",
     ),
     sync_mode: bool = Form(False, description="True=等待任务完成后返回"),
-    max_concurrency: Optional[int] = Form(
+    file_concurrency: Optional[int] = Form(
         None,
-        description="最大文件并发处理数（默认 3）",
+        description="同时处理的文件数（默认 3）",
     ),
-    eval_max_concurrency: Optional[int] = Form(
+    text_model_concurrency: Optional[int] = Form(
         None,
-        description="评估阶段最大并发数（默认 8）",
+        description="语言模型并发：planner、问答生成、图片契合度、增广和 LLM 评估（默认 8）",
     ),
-    chunk_max_concurrency: Optional[int] = Form(
+    evaluation_concurrency: Optional[int] = Form(
         None,
-        description="同一文件内 chunk 级 LLM 并发数（默认 8）",
+        description="本地评估或评估 worker 并发（默认 8）；不限制 LLM API 请求",
     ),
     chunk_max_attempts: Optional[int] = Form(
         None,
@@ -295,14 +303,6 @@ async def batch_upload_complete_pipeline_with_evaluation(
     evidence_token_budget: Optional[int] = Form(
         None,
         description="答案证据窗口的近似 token 总预算（默认 4000）",
-    ),
-    llm_max_concurrent_requests: Optional[int] = Form(
-        None,
-        description="当前任务内同一 LLM/VLM client 同时外发 API 请求数；不填使用 VLM_API_MAX_CONCURRENT_REQUESTS",
-    ),
-    augment_max_concurrency: Optional[int] = Form(
-        None,
-        description="问答增广并发数（默认 8）",
     ),
 ):
     """
@@ -370,9 +370,6 @@ async def batch_upload_complete_pipeline_with_evaluation(
         faithfulness_hypothesis_mode = (faithfulness_hypothesis_mode or "llm").strip().lower()
         if faithfulness_hypothesis_mode != "llm":
             faithfulness_hypothesis_mode = "llm"
-        faithfulness_hypothesis_max_concurrency = max(
-            1, int(faithfulness_hypothesis_max_concurrency or 1)
-        )
         try:
             resolved_nli_model = validate_evaluation_model_name(
                 faithfulness_nli_model,
@@ -422,21 +419,23 @@ async def batch_upload_complete_pipeline_with_evaluation(
             "max_retries": CONFIG["max_retries"],
         }
 
-        concurrency_limit = resolve_batch_concurrency(max_concurrency)
-        eval_concurrency = eval_max_concurrency or 8
-        chunk_concurrency = chunk_max_concurrency or 8
+        concurrency_limit = resolve_batch_concurrency(file_concurrency)
+        text_concurrency = _resolve_resource_concurrency(
+            text_model_concurrency,
+            env_name="TEXT_MODEL_CONCURRENCY",
+            default=8,
+        )
+        eval_concurrency = _resolve_resource_concurrency(
+            evaluation_concurrency,
+            env_name="EVALUATION_CONCURRENCY",
+            default=8,
+        )
         chunk_attempts = max(1, int(chunk_max_attempts or 2))
         final_evidence_k = max(0, int(5 if final_evidence_k is None else final_evidence_k))
         evidence_token_budget = max(
             256,
             int(4000 if evidence_token_budget is None else evidence_token_budget),
         )
-        llm_request_concurrency = (
-            max(1, int(llm_max_concurrent_requests))
-            if llm_max_concurrent_requests is not None
-            else None
-        )
-        augment_concurrency = augment_max_concurrency or 8
 
         now = now_server_local_iso()
         status_data = {
@@ -455,7 +454,6 @@ async def batch_upload_complete_pipeline_with_evaluation(
             "answerability_qa_model": resolved_qa_model,
             "coverage_embedding_model": resolved_coverage_model,
             "faithfulness_hypothesis_mode": faithfulness_hypothesis_mode,
-            "faithfulness_hypothesis_max_concurrency": faithfulness_hypothesis_max_concurrency,
             "filter_by_threshold": filter_by_threshold,
             "score_threshold": score_threshold if filter_by_threshold else None,
             "vector_storage_enabled": enable_vector_storage,
@@ -487,16 +485,14 @@ async def batch_upload_complete_pipeline_with_evaluation(
             "ocr_timeout_seconds": ocr_timeout_seconds,
             "ocr_fail_fast": ocr_fail_fast,
             "ocr_summary": ocr_summary,
-            "concurrency": concurrency_limit,
-            "chunk_concurrency": chunk_concurrency,
+            "file_concurrency": concurrency_limit,
+            "text_model_concurrency": text_concurrency,
             "chunk_max_attempts": chunk_attempts,
             "retrieval_config": {
                 "pipeline": "bm25_dense_rrf_bge_admission_structure_v2",
                 "final_evidence_k": final_evidence_k,
                 "evidence_token_budget": evidence_token_budget,
             },
-            "llm_max_concurrent_requests": llm_request_concurrency,
-            "augment_concurrency": augment_concurrency,
             "evaluation_concurrency": eval_concurrency,
             "file_progress": {},
             "message": "Task queued, waiting for workers",
@@ -535,7 +531,6 @@ async def batch_upload_complete_pipeline_with_evaluation(
             "answerability_qa_model": resolved_qa_model,
             "coverage_embedding_model": resolved_coverage_model,
             "faithfulness_hypothesis_mode": faithfulness_hypothesis_mode,
-            "faithfulness_hypothesis_max_concurrency": faithfulness_hypothesis_max_concurrency,
             "filter_by_threshold": filter_by_threshold,
             "score_threshold": score_threshold,
             "save_mode": save_mode,
@@ -558,14 +553,12 @@ async def batch_upload_complete_pipeline_with_evaluation(
             "status_data": status_data,
             "criteria_list": LLM_EVALUATION_METRICS,
             "llm_config": llm_config,
-            "llm_max_concurrent_requests": llm_request_concurrency,
-            "max_concurrency": concurrency_limit,
-            "chunk_max_concurrency": chunk_concurrency,
+            "file_concurrency": concurrency_limit,
+            "text_model_concurrency": text_concurrency,
             "chunk_max_attempts": chunk_attempts,
             "final_evidence_k": final_evidence_k,
             "evidence_token_budget": evidence_token_budget,
-            "augment_max_concurrency": augment_concurrency,
-            "eval_max_concurrency": eval_concurrency,
+            "evaluation_concurrency": eval_concurrency,
             "question_type_mode": question_type_mode,
             "question_types": question_types,
             "question_type_weights": question_type_weights,
@@ -606,9 +599,10 @@ async def batch_upload_complete_pipeline_with_evaluation(
             "evaluation_method": evaluation_method,
             "filter_by_threshold": filter_by_threshold,
             "knowledge_classifier": knowledge_classifier,
-            "concurrency": concurrency_limit,
+            "file_concurrency": concurrency_limit,
+            "evaluation_concurrency": eval_concurrency,
             "chunking_config": status_data["chunking_config"],
-            "llm_max_concurrent_requests": llm_request_concurrency,
+            "text_model_concurrency": text_concurrency,
         }
     except HTTPException:
         try:

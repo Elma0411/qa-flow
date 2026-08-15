@@ -107,7 +107,7 @@ def _run_llm_eval(
     rows: List[Dict[str, Any]],
     *,
     criteria_list: List[str],
-    max_eval_concurrency: int,
+    text_model_concurrency: int,
 ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Any]]:
     from app.services.evaluation import execute_llm_evaluation_blocking  # noqa: E402
 
@@ -122,14 +122,14 @@ def _run_llm_eval(
     summary: Dict[str, Any] = {
         "method": "llm",
         "criteria": criteria_list,
-        "max_eval_concurrency": max_eval_concurrency,
+        "text_model_concurrency": text_model_concurrency,
         "model": llm_config.get("model"),
     }
     # execute_llm_evaluation_blocking expects a list of qa dicts and will write a temp file internally.
     res = execute_llm_evaluation_blocking(
         rows,
         criteria_list,
-        max_eval_concurrency=max_eval_concurrency,
+        text_model_concurrency=text_model_concurrency,
         llm_config=llm_config,
     )
     if not isinstance(res, dict) or not isinstance(res.get("results"), list):
@@ -344,7 +344,7 @@ def main() -> int:
         by_id, s = _run_llm_eval(
             rows,
             criteria_list=criteria_list,
-            max_eval_concurrency=max(1, int(args.llm_max_concurrency or 1)),
+            text_model_concurrency=max(1, int(args.llm_max_concurrency or 1)),
         )
         summaries["llm"] = s
         for r in rows:

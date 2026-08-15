@@ -90,7 +90,14 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
     文本 -> generation unit 规划与问答生成 -> (可选) 评估 -> (可选) 向量存储。
     """
     task_id: str = job_context["task_id"]
-    file_contents: List[Dict[str, Any]] = job_context["file_contents"]
+    file_contents: List[Dict[str, Any]] = list(job_context.get("file_contents") or [])
+    file_stream = job_context.get("file_stream")
+    streaming_files = file_stream is not None and hasattr(file_stream, "get")
+    stream_expected_filenames = [
+        str(name or "")
+        for name in (job_context.get("stream_expected_filenames") or [])
+        if str(name or "").strip()
+    ]
     chunk_size: int = job_context["chunk_size"]
     try:
         qa_per_chunk = max(1, int(job_context.get("qa_per_chunk") or 1))
@@ -177,13 +184,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
     faithfulness_hypothesis_mode: str = str(
         job_context.get("faithfulness_hypothesis_mode") or "llm"
     ).strip().lower()
-    try:
-        faithfulness_hypothesis_max_concurrency = int(
-            job_context.get("faithfulness_hypothesis_max_concurrency") or 8
-        )
-    except Exception:
-        faithfulness_hypothesis_max_concurrency = 8
-    faithfulness_hypothesis_max_concurrency = max(1, faithfulness_hypothesis_max_concurrency)
+    text_model_concurrency = max(1, int(job_context.get("text_model_concurrency") or 8))
     try:
         unsupervised_batch_size = (
             max(1, min(512, int(job_context["unsupervised_batch_size"])))
@@ -214,9 +215,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
     status_data: Dict[str, Any] = job_context["status_data"]
     criteria_list: List[str] = job_context["criteria_list"]
     llm_config: Dict[str, Any] = job_context["llm_config"]
-    llm_max_concurrent_requests = job_context.get("llm_max_concurrent_requests")
-    max_concurrency: int = job_context["max_concurrency"]
-    chunk_max_concurrency: int = job_context.get("chunk_max_concurrency", 8)
+    file_concurrency: int = job_context.get("file_concurrency", 3)
     chunk_max_attempts: int = max(1, int(job_context.get("chunk_max_attempts") or 2))
     final_evidence_k_value = job_context.get("final_evidence_k")
     final_evidence_k: int = max(
@@ -228,8 +227,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
         256,
         int(4000 if evidence_token_budget_value is None else evidence_token_budget_value),
     )
-    augment_max_concurrency: int = job_context.get("augment_max_concurrency", 8)
-    eval_max_concurrency: int = job_context["eval_max_concurrency"]
+    evaluation_concurrency: int = max(1, int(job_context.get("evaluation_concurrency") or 8))
     question_type_mode: str = job_context.get("question_type_mode") or "mixed"
     question_types = job_context.get("question_types")
     question_type_weights = job_context.get("question_type_weights")
@@ -250,6 +248,13 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
         for file_info in file_contents
         if file_info.get("status") == "success" and str(file_info.get("filename") or "").strip()
     ]
+    # In integrated mode the preprocessor hands files to this service as soon
+    # as each file is ready.  The route already knows the submitted filenames,
+    # so batch-scoped QA limits can be allocated before the first record arrives
+    # without waiting for a global preprocessing barrier.  Failed files simply
+    # leave their allocated share unused, keeping the batch total an upper bound.
+    if streaming_files and stream_expected_filenames:
+        successful_file_names = list(stream_expected_filenames)
     qa_limit_by_filename: Dict[str, Optional[int]] = {}
     if qa_total_limit is not None and qa_total_limit_scope == "batch" and successful_file_names:
         base_limit = qa_total_limit // len(successful_file_names)
@@ -365,10 +370,16 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
         status="processing",
         message="批量流水线开始",
         started_at=now_server_local_iso(),
-        total_files=len(file_contents),
+        total_files=(
+            int(job_context.get("stream_total_files") or 0)
+            if streaming_files
+            else len(file_contents)
+        ),
+        streaming_files=bool(streaming_files),
     )
 
-    semaphore = asyncio.Semaphore(max_concurrency)
+    semaphore = asyncio.Semaphore(file_concurrency)
+    evaluation_worker_semaphore = asyncio.Semaphore(evaluation_concurrency)
 
     async def process_single_file(file_info: Dict[str, Any]) -> Dict[str, Any]:
         filename = file_info["filename"]
@@ -390,6 +401,93 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
             }
 
         async with semaphore:
+            stream_eval_enabled = include_evaluation and evaluation_method in {"llm", "local"}
+            stream_eval_queue: Optional[asyncio.Queue] = None
+            stream_eval_task: Optional[asyncio.Task] = None
+            stream_eval_results: List[Dict[str, Any]] = []
+            stream_eval_batch_count = 0
+            stream_evaluation_results: Optional[Dict[str, Any]] = None
+
+            if stream_eval_enabled:
+                stream_eval_queue = asyncio.Queue(
+                    maxsize=max(8, int(text_model_concurrency) * 2)
+                )
+
+                async def _consume_stream_evaluation() -> None:
+                    nonlocal stream_eval_batch_count
+                    pending: List[Dict[str, Any]] = []
+                    # LLM evaluation is flushed one QA at a time so the first
+                    # validated item can start evaluating immediately while
+                    # other generation units continue. Local metrics keep a
+                    # small batch because model setup/BERTScore dominates.
+                    stream_batch_size = (
+                        1
+                        if evaluation_method == "llm"
+                        else max(1, min(8, int(text_model_concurrency)))
+                    )
+
+                    async def _evaluate_pending() -> None:
+                        nonlocal pending, stream_eval_batch_count
+                        if not pending:
+                            return
+                        batch = pending
+                        pending = []
+                        if evaluation_method == "llm":
+                            batch_result = await run_llm_evaluation_batches(
+                                batch,
+                                criteria_list,
+                                lambda message: update_file_progress(
+                                    filename,
+                                    "evaluation",
+                                    "processing",
+                                    f"{filename}: {message}",
+                                ),
+                                text_model_concurrency=text_model_concurrency,
+                                llm_config=llm_config,
+                            )
+                        else:
+                            async with evaluation_worker_semaphore:
+                                batch_result = await asyncio.to_thread(
+                                    execute_local_evaluation_blocking,
+                                    batch,
+                                    _LOCAL_EVAL_COMPAT_FLAG,
+                                    gpu_job_id=task_id,
+                                )
+                        stream_eval_batch_count += 1
+                        if isinstance(batch_result, dict):
+                            stream_eval_results.extend(
+                                item
+                                for item in (batch_result.get("results") or [])
+                                if isinstance(item, dict)
+                            )
+                        await update_file_progress(
+                            filename,
+                            "evaluation",
+                            "processing",
+                            f"流式评估完成：{len(stream_eval_results)} 条",
+                            {
+                                "streaming": True,
+                                "evaluated_count": len(stream_eval_results),
+                                "evaluation_batch_count": stream_eval_batch_count,
+                            },
+                        )
+
+                    while True:
+                        try:
+                            item = await asyncio.wait_for(stream_eval_queue.get(), timeout=0.25)
+                        except asyncio.TimeoutError:
+                            await _evaluate_pending()
+                            continue
+                        if item is None:
+                            await _evaluate_pending()
+                            return
+                        if isinstance(item, dict):
+                            pending.append(item)
+                        if len(pending) >= stream_batch_size:
+                            await _evaluate_pending()
+
+                stream_eval_task = asyncio.create_task(_consume_stream_evaluation())
+
             try:
                 content = file_info.get("content", "") or ""
                 content_format = str(file_info.get("content_format") or "").strip().lower()
@@ -469,10 +567,30 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                         api_key=llm_config.get("api_key"),
                         api_type=llm_config.get("api_type"),
                         model_version=llm_config.get("model_version"),
-                        max_concurrent_requests=llm_max_concurrent_requests,
+                        timeout_seconds=float(
+                            llm_config.get("request_timeout")
+                            or CONFIG.get("request_timeout")
+                            or 120
+                        ),
+                        max_concurrent_requests=text_model_concurrency,
                     )
                 )
                 loop = asyncio.get_running_loop()
+
+                def _on_stream_qa_ready(item: Dict[str, Any]) -> None:
+                    if not stream_eval_queue or not stream_eval_task:
+                        return
+                    try:
+                        # The generation thread blocks only when the bounded
+                        # queue is full, providing backpressure instead of
+                        # allowing unbounded evaluation backlog.
+                        asyncio.run_coroutine_threadsafe(
+                            stream_eval_queue.put(dict(item)),
+                            loop,
+                        ).result()
+                    except Exception:
+                        return
+
                 gen_last_update = 0.0
                 generation_unit_details: List[Dict[str, Any]] = []
                 generation_chunk_details: List[Dict[str, Any]] = []
@@ -506,7 +624,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                                         "chunk_quality_details": (info or {}).get("chunk_quality_details") or [],
                                         "generation_timing": (info or {}).get("timing") or {},
                                         "debug_file": debug_file,
-                                        "llm_max_concurrent_requests": llm_max_concurrent_requests,
+                                        "text_model_concurrency": text_model_concurrency,
                                     },
                                 ),
                                 loop,
@@ -846,7 +964,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                         "qa_total_limit_scope": qa_total_limit_scope,
                         "qa_detail_mode": qa_detail_mode,
                         "prompt_language": prompt_language,
-                        "chunk_max_concurrency": chunk_max_concurrency,
+                        "text_model_concurrency": text_model_concurrency,
                         "strict_max_attempts": chunk_max_attempts,
                         "final_evidence_k": final_evidence_k,
                         "evidence_token_budget": evidence_token_budget,
@@ -867,6 +985,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                     },
                     original_filename=filename,
                     progress_callback=_on_generation_progress,
+                    qa_ready_callback=_on_stream_qa_ready if stream_eval_enabled else None,
                 )
                 generation_duration = time.time() - generation_start
                 generation_wall_detail, generation_cumulative_detail = _extract_generation_timing_views(
@@ -876,6 +995,9 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                     file_qa_total_limit is not None and int(file_qa_total_limit) <= 0
                 )
                 if not qa_data and not qa_generation_skipped_by_budget:
+                    if stream_eval_enabled and stream_eval_queue is not None and stream_eval_task is not None:
+                        await stream_eval_queue.put(None)
+                        await stream_eval_task
                     raise ValueError(
                         f"一步式问答生成失败：未生成任何有效 items（请下载调试日志查看 LLM 原始响应：{os.path.basename(debug_file)}）"
                     )
@@ -957,7 +1079,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                         augment_per_qa=augment_per_qa,
                         client=client,
                         model=llm_config["model"],
-                        max_workers=augment_max_concurrency,
+                        max_workers=text_model_concurrency,
                         progress_callback=_on_augment_progress,
                     )
                     await update_file_progress(
@@ -990,6 +1112,22 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                                 "is_augmented": True,
                             }
                         )
+
+                if stream_eval_enabled and stream_eval_queue is not None and stream_eval_task is not None:
+                    # Primary QA items were queued while generation was still
+                    # running.  Augmented variants become available here and
+                    # join the same bounded evaluation stream before it is
+                    # closed.
+                    for augmented in augmented_qas:
+                        await stream_eval_queue.put(dict(augmented))
+                    await stream_eval_queue.put(None)
+                    await stream_eval_task
+                    stream_evaluation_results = {
+                        "method": f"{evaluation_method}_stream",
+                        "results": list(stream_eval_results),
+                        "batch_count": stream_eval_batch_count,
+                        "streaming": True,
+                    }
                 all_qas = qa_data
                 await update_file_progress(
                     filename,
@@ -1041,8 +1179,10 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                                 llm_api_key=llm_config.get("api_key"),
                                 llm_base_url=llm_config.get("base_url"),
                                 llm_model=llm_config.get("model"),
+                                llm_api_type=llm_config.get("api_type"),
+                                llm_model_version=llm_config.get("model_version"),
                                 llm_max_retries=llm_config.get("max_retries"),
-                                llm_max_concurrency=faithfulness_hypothesis_max_concurrency,
+                                llm_max_concurrency=text_model_concurrency,
                                 faith_batch_size=unsupervised_batch_size,
                                 qa_batch_size=unsupervised_batch_size,
                                 coverage_embed_batch_size=unsupervised_batch_size,
@@ -1099,21 +1239,28 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                     eval_input = qa_data + augmented_qas
                     llm_evaluation_results: Optional[Dict[str, Any]] = None
                     if evaluation_method == "llm":
-                        llm_evaluation_results = await run_llm_evaluation_batches(
-                            eval_input,
-                            criteria_list,
-                            evaluation_progress,
-                            max_eval_concurrency=eval_max_concurrency,
-                            llm_config=llm_config,
-                        )
+                        if stream_evaluation_results is not None:
+                            llm_evaluation_results = stream_evaluation_results
+                        else:
+                            llm_evaluation_results = await run_llm_evaluation_batches(
+                                eval_input,
+                                criteria_list,
+                                evaluation_progress,
+                                text_model_concurrency=text_model_concurrency,
+                                llm_config=llm_config,
+                            )
 
                     if evaluation_method == "local":
-                        local_evaluation_results = await asyncio.to_thread(
-                            execute_local_evaluation_blocking,
-                            eval_input,
-                            _LOCAL_EVAL_COMPAT_FLAG,
-                            gpu_job_id=task_id,
-                        )
+                        if stream_evaluation_results is not None:
+                            local_evaluation_results = stream_evaluation_results
+                        else:
+                            async with evaluation_worker_semaphore:
+                                local_evaluation_results = await asyncio.to_thread(
+                                    execute_local_evaluation_blocking,
+                                    eval_input,
+                                    _LOCAL_EVAL_COMPAT_FLAG,
+                                    gpu_job_id=task_id,
+                                )
                         if local_evaluation_results:
                             await evaluation_progress("本地评估完成")
 
@@ -1307,6 +1454,8 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                     },
                 }
             except Exception as exc:
+                if stream_eval_task is not None and not stream_eval_task.done():
+                    stream_eval_task.cancel()
                 logger.exception("批量流水线处理文件失败: %s", filename)
                 await update_file_progress(filename, "error", "failed", str(exc), terminal=True)
                 return {
@@ -1321,9 +1470,43 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                     "debug_file": debug_file if "debug_file" in locals() else None,
                 }
 
-    await log_progress(f"dispatching {len(file_contents)} file(s)")
-    file_tasks = [asyncio.create_task(process_single_file(file_info)) for file_info in file_contents]
-    results = await asyncio.gather(*file_tasks, return_exceptions=True)
+    await log_progress(
+        f"dispatching {'streaming ' if streaming_files else ''}{len(file_contents)} file(s)"
+    )
+    results: List[Any] = []
+    if not streaming_files:
+        file_tasks = [asyncio.create_task(process_single_file(file_info)) for file_info in file_contents]
+        results = await asyncio.gather(*file_tasks, return_exceptions=True)
+    else:
+        # Consume the bounded preprocessor queue while already-running files
+        # continue through chunking, planning, generation and evaluation.
+        # Keeping at most 2 * file_concurrency tasks in the local set prevents
+        # a large upload from creating an unbounded number of asyncio Tasks.
+        active_file_tasks: set[asyncio.Task] = set()
+        max_active_tasks = max(1, int(file_concurrency) * 2)
+        while True:
+            file_info = await file_stream.get()
+            if file_info is None:
+                break
+            if not isinstance(file_info, dict):
+                results.append(ValueError("integrated file stream returned a non-object record"))
+                continue
+            file_contents.append(dict(file_info))
+            active_file_tasks.add(asyncio.create_task(process_single_file(dict(file_info))))
+            if len(active_file_tasks) < max_active_tasks:
+                continue
+            done, pending = await asyncio.wait(
+                active_file_tasks,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            active_file_tasks = set(pending)
+            for task in done:
+                try:
+                    results.append(task.result())
+                except Exception as exc:  # pragma: no cover - defensive boundary
+                    results.append(exc)
+        if active_file_tasks:
+            results.extend(await asyncio.gather(*active_file_tasks, return_exceptions=True))
 
     successful_files: List[Dict[str, Any]] = []
     failed_messages: List[str] = []

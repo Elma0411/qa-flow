@@ -680,6 +680,8 @@ def evaluate_qa_pairs(
     criteria=None,
     max_concurrency: int = 8,
     llm_config: Optional[Dict[str, Any]] = None,
+    max_concurrent_requests: Optional[int] = None,
+    client: Any = None,
 ):
     """
     批量评估问答对
@@ -718,16 +720,18 @@ def evaluate_qa_pairs(
             if llm_config.get(key) is not None:
                 merged_cfg[key] = llm_config[key]
 
-    client = create_vlm_client(
-        VLMClientConfig.from_values(
-            api_base=merged_cfg["base_url"],
-            model_name=merged_cfg["model"],
-            api_key=merged_cfg["api_key"],
-            api_type=merged_cfg.get("api_type"),
-            model_version=merged_cfg.get("model_version"),
-            timeout_seconds=float(merged_cfg.get("request_timeout", 120)),
+    if client is None:
+        client = create_vlm_client(
+            VLMClientConfig.from_values(
+                api_base=merged_cfg["base_url"],
+                model_name=merged_cfg["model"],
+                api_key=merged_cfg["api_key"],
+                api_type=merged_cfg.get("api_type"),
+                model_version=merged_cfg.get("model_version"),
+                timeout_seconds=float(merged_cfg.get("request_timeout", 120)),
+                max_concurrent_requests=max_concurrent_requests,
+            )
         )
-    )
 
     try:
         qa_pairs = load_qa_pairs(qa_file)

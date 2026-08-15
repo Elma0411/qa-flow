@@ -565,14 +565,12 @@ function setupEvaluationUI() {
   const answerabilityQaModelEl = $('#answerabilityQaModel');
   const coverageEmbeddingModelEl = $('#coverageEmbeddingModel');
   const hypothesisModeEl = $('#faithfulnessHypothesisMode');
-  const hypothesisConcurrencyEl = $('#faithfulnessHypothesisMaxConcurrency');
   const unsupervisedRows = [
     unsupervisedBatchSizeEl,
     faithfulnessNliModelEl,
     answerabilityQaModelEl,
     coverageEmbeddingModelEl,
     hypothesisModeEl,
-    hypothesisConcurrencyEl,
   ]
     .map((el) => (el ? el.closest('label') : null))
     .filter(Boolean);
@@ -760,12 +758,15 @@ function compactLabelCopy(label) {
   const friendlyById = {
     qaTotalLimit: '总题数上限',
     qaTotalLimitScope: '上限范围',
-    llmMaxConcurrentRequests: 'LLM/VLM 请求并发',
+    textModelConcurrency: '文本模型并发',
     chunkMaxAttempts: 'unit 尝试次数',
-    chunkMaxConcurrency: 'unit 并发',
-    maxConcurrency: '文件并发',
-    evalMaxConcurrency: '评估并发',
-    augmentMaxConcurrency: '增广并发',
+    fileConcurrency: '文件并发',
+    evaluationConcurrency: '评估并发',
+    integratedFileConcurrency: '文件并发',
+    integratedOcrConcurrency: 'OCR 并发',
+    integratedVisionModelConcurrency: '图片模型并发',
+    integratedTextModelConcurrency: '文本模型并发',
+    integratedEvaluationConcurrency: '评估并发',
     scoreThreshold: '过滤阈值',
     ocrTimeoutSeconds: 'OCR 超时',
   };
@@ -1585,7 +1586,6 @@ function setupPipelineModuleConsole() {
           { field: 'answerabilityQaModel' },
           { field: 'coverageEmbeddingModel' },
           { field: 'faithfulnessHypothesisMode' },
-          { field: 'faithfulnessHypothesisMaxConcurrency' },
           { field: 'filterByThreshold' },
           { field: 'scoreThreshold' },
         ],
@@ -1596,18 +1596,21 @@ function setupPipelineModuleConsole() {
         icon: 'P',
         kicker: '性能',
         title: '性能并发',
-        description: '配置文件级、chunk 级、评估、增广和 LLM/VLM API 请求并发。',
+        description: '文件、OCR、文本模型、图片模型和评估使用各自的资源池并发。',
         nodes: [
-          { field: 'maxConcurrency' },
-          { field: 'evalMaxConcurrency' },
-          { field: 'chunkMaxConcurrency' },
-          { field: 'llmMaxConcurrentRequests' },
-          { field: 'augmentMaxConcurrency' },
+          { field: 'fileConcurrency' },
+          { field: 'textModelConcurrency' },
+          { field: 'evaluationConcurrency' },
+          { field: 'integratedFileConcurrency' },
+          { field: 'integratedOcrConcurrency' },
+          { field: 'integratedVisionModelConcurrency' },
+          { field: 'integratedTextModelConcurrency' },
+          { field: 'integratedEvaluationConcurrency' },
         ],
         summary: () => {
-          const chunk = String($('#chunkMaxConcurrency')?.value || '').trim() || '8';
-          const llm = String($('#llmMaxConcurrentRequests')?.value || '').trim() || 'Docker 默认';
-          return `chunk ${chunk} / LLM ${llm}`;
+          const text = String($('#textModelConcurrency')?.value || $('#integratedTextModelConcurrency')?.value || '').trim() || '8';
+          const vision = String($('#integratedVisionModelConcurrency')?.value || '').trim() || '2';
+          return `文本 ${text} / 图片 ${vision}`;
         },
       },
       {
@@ -2170,7 +2173,7 @@ function setupWorkbenchHero() {
     items.push(createSummaryChip('生成', () => `${checkedQuestionTypesSummary()} / 上限 ${$('#qaTotalLimit')?.value || 20}`, { moduleKey: 'pipeline.generation' }));
     items.push(createSummaryChip('检索', () => `BGE 固定链路 / 最多补证 ${$('#finalEvidenceK')?.value ?? 5} 组 / ${$('#evidenceTokenBudget')?.value || 4000} tokens`, { moduleKey: 'pipeline.retrieval' }));
     items.push(createSummaryChip('评估', () => pipelineEvaluationSummary(), { moduleKey: 'pipeline.evaluation' }));
-    items.push(createSummaryChip('并发', () => `unit ${$('#chunkMaxConcurrency')?.value || '8'} / API ${$('#llmMaxConcurrentRequests')?.value || '默认'}`, { moduleKey: 'pipeline.performance' }));
+    items.push(createSummaryChip('并发', () => `文本 ${$('#textModelConcurrency')?.value || $('#integratedTextModelConcurrency')?.value || '8'} / 图片 ${$('#integratedVisionModelConcurrency')?.value || '2'}`, { moduleKey: 'pipeline.performance' }));
     items.push(createSummaryChip('存储', () => pipelineStorageSummary(), { moduleKey: 'pipeline.output' }));
     items.forEach((item) => summary.appendChild(item));
   }
@@ -2317,10 +2320,11 @@ async function handlePipelineSubmit(e) {
     const integratedVlmModelVersion = $('#integratedVlmModelVersion')?.value || '';
     const imageFitCheckEnabled = $('#imageFitCheckEnabled')?.checked !== false;
     const imageFitMinScore = $('#imageFitMinScore')?.value || '0.65';
-    const docMaxConcurrency = $('#docMaxConcurrency')?.value || '';
-    const ocrMaxConcurrency = $('#ocrMaxConcurrency')?.value || '';
-    const imageAnalysisMaxConcurrency = $('#imageAnalysisMaxConcurrency')?.value || '';
-    const imageFitMaxConcurrency = $('#imageFitMaxConcurrency')?.value || '';
+    const integratedFileConcurrency = $('#integratedFileConcurrency')?.value || '';
+    const integratedOcrConcurrency = $('#integratedOcrConcurrency')?.value || '';
+    const integratedVisionModelConcurrency = $('#integratedVisionModelConcurrency')?.value || '';
+    const integratedTextModelConcurrency = $('#integratedTextModelConcurrency')?.value || '';
+    const integratedEvaluationConcurrency = $('#integratedEvaluationConcurrency')?.value || '';
     const qaDetailMode = $('#qaDetailMode')?.value || 'point';
     const knowledgeClassifier = $('#knowledgeClassifier')?.value || 'doc_level3_rule';
     const useCategoryPromptTemplates = $('#useCategoryPromptTemplates')?.checked !== false;
@@ -2357,8 +2361,6 @@ async function handlePipelineSubmit(e) {
     const answerabilityQaModel = $('#answerabilityQaModel')?.value || '';
     const coverageEmbeddingModel = $('#coverageEmbeddingModel')?.value || '';
     const faithfulnessHypothesisMode = $('#faithfulnessHypothesisMode')?.value || 'llm';
-    const faithfulnessHypothesisMaxConcurrency =
-      $('#faithfulnessHypothesisMaxConcurrency')?.value || '';
     const filterByThreshold = includeEvaluation ? $('#filterByThreshold')?.checked : false;
     const scoreThreshold = $('#scoreThreshold')?.value || '0.7';
     const enableVectorStorage = $('#enableVectorStorage')?.checked;
@@ -2381,14 +2383,12 @@ async function handlePipelineSubmit(e) {
     };
     const chunkingChunkOverlap = chunkingOverlapByMode[chunkingSplitType] || '';
     const syncMode = $('#syncMode')?.checked;
-    const maxConcurrency = $('#maxConcurrency')?.value || '';
-    const evalMaxConcurrency = $('#evalMaxConcurrency')?.value || '';
-    const chunkMaxConcurrency = $('#chunkMaxConcurrency')?.value || '';
-    const llmMaxConcurrentRequests = $('#llmMaxConcurrentRequests')?.value || '';
+    const fileConcurrency = $('#fileConcurrency')?.value || '';
+    const textModelConcurrency = $('#textModelConcurrency')?.value || '';
+    const evaluationConcurrency = $('#evaluationConcurrency')?.value || '';
     const chunkMaxAttempts = $('#chunkMaxAttempts')?.value || '2';
     const finalEvidenceK = $('#finalEvidenceK')?.value ?? '5';
     const evidenceTokenBudget = $('#evidenceTokenBudget')?.value || '4000';
-    const augmentMaxConcurrency = $('#augmentMaxConcurrency')?.value || '';
     const saveModeEl = $('#saveMode');
 
     formData.append('qa_total_limit', qaTotalLimit);
@@ -2417,14 +2417,11 @@ async function handlePipelineSubmit(e) {
       if (String(integratedVlmModelVersion).trim()) formData.append('vlm_model_version', integratedVlmModelVersion.trim());
       formData.append('image_fit_check_enabled', imageFitCheckEnabled ? 'true' : 'false');
       formData.append('image_fit_min_score', String(imageFitMinScore || '0.65'));
-      if (String(docMaxConcurrency).trim()) formData.append('doc_max_concurrency', String(docMaxConcurrency).trim());
-      if (String(ocrMaxConcurrency).trim()) formData.append('ocr_max_concurrency', String(ocrMaxConcurrency).trim());
-      if (String(imageAnalysisMaxConcurrency).trim()) {
-        formData.append('image_analysis_max_concurrency', String(imageAnalysisMaxConcurrency).trim());
-      }
-      if (String(imageFitMaxConcurrency).trim()) {
-        formData.append('image_fit_max_concurrency', String(imageFitMaxConcurrency).trim());
-      }
+      if (String(integratedFileConcurrency).trim()) formData.append('file_concurrency', String(integratedFileConcurrency).trim());
+      if (String(integratedOcrConcurrency).trim()) formData.append('ocr_concurrency', String(integratedOcrConcurrency).trim());
+      if (String(integratedVisionModelConcurrency).trim()) formData.append('vision_model_concurrency', String(integratedVisionModelConcurrency).trim());
+      if (String(integratedTextModelConcurrency).trim()) formData.append('text_model_concurrency', String(integratedTextModelConcurrency).trim());
+      if (String(integratedEvaluationConcurrency).trim()) formData.append('evaluation_concurrency', String(integratedEvaluationConcurrency).trim());
     }
     formData.append('qa_detail_mode', qaDetailMode);
     formData.append('knowledge_classifier', knowledgeClassifier);
@@ -2456,12 +2453,6 @@ async function handlePipelineSubmit(e) {
         formData.append('coverage_embedding_model', String(coverageEmbeddingModel).trim());
       }
       formData.append('faithfulness_hypothesis_mode', faithfulnessHypothesisMode);
-      if (String(faithfulnessHypothesisMaxConcurrency).trim()) {
-        formData.append(
-          'faithfulness_hypothesis_max_concurrency',
-          String(faithfulnessHypothesisMaxConcurrency).trim(),
-        );
-      }
     }
     formData.append('filter_by_threshold', filterByThreshold ? 'true' : 'false');
     formData.append('score_threshold', scoreThreshold);
@@ -2512,25 +2503,19 @@ async function handlePipelineSubmit(e) {
     }
     formData.append('sync_mode', syncMode ? 'true' : 'false');
     formData.append('save_mode', saveModeEl?.value || 'separate');
-    if (chunkMaxConcurrency.trim()) {
-      formData.append('chunk_max_concurrency', chunkMaxConcurrency.trim());
-    }
-    if (llmMaxConcurrentRequests.trim()) {
-      formData.append('llm_max_concurrent_requests', llmMaxConcurrentRequests.trim());
-    }
     if (chunkMaxAttempts.trim()) {
       formData.append('chunk_max_attempts', chunkMaxAttempts.trim());
     }
     formData.append('final_evidence_k', finalEvidenceK.trim());
     formData.append('evidence_token_budget', evidenceTokenBudget.trim());
-    if (augmentMaxConcurrency.trim()) {
-      formData.append('augment_max_concurrency', augmentMaxConcurrency.trim());
+    if (textModelConcurrency.trim()) {
+      formData.append('text_model_concurrency', textModelConcurrency.trim());
     }
-    if (evalMaxConcurrency.trim()) {
-      formData.append('eval_max_concurrency', evalMaxConcurrency.trim());
+    if (evaluationConcurrency.trim()) {
+      formData.append('evaluation_concurrency', evaluationConcurrency.trim());
     }
-    if (maxConcurrency.trim()) {
-      formData.append('max_concurrency', maxConcurrency.trim());
+    if (fileConcurrency.trim()) {
+      formData.append('file_concurrency', fileConcurrency.trim());
     }
 
     if (statusEl) statusEl.textContent = '正在提交任务…';
@@ -3798,7 +3783,8 @@ function renderPipelineDebugStatus(status, options = {}) {
   appendTextMetric(genMeta, '上限范围', detail.qa_total_limit_scope || safeStatus.qa_total_limit_scope || 'per_file');
   appendTextMetric(genMeta, '预算丢弃 unit', unitPlanSummary.dropped_unit_count_by_budget ?? 0);
   appendTextMetric(genMeta, 'unit 最大尝试次数', safeStatus.chunk_max_attempts);
-  appendTextMetric(genMeta, 'LLM/VLM API 请求并发', safeStatus.llm_max_concurrent_requests || 'Docker 环境默认');
+  appendTextMetric(genMeta, '文本模型并发', safeStatus.text_model_concurrency || '8');
+  appendTextMetric(genMeta, '图片模型并发', safeStatus.vision_model_concurrency || '2');
   const retrievalConfig = safeStatus.retrieval_config || {};
   appendTextMetric(genMeta, '检索链路', retrievalConfig.pipeline || 'bm25_dense_rrf_bge_admission_structure_v2');
   appendTextMetric(genMeta, '最多补充证据窗口/题', retrievalConfig.final_evidence_k ?? '5');

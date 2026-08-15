@@ -266,6 +266,19 @@ class IntegratedPipelineUnitTests(unittest.TestCase):
                 ),
             )
 
+    def test_runner_uses_text_and_vision_resource_pool_defaults(self):
+        with patch.dict(
+            os.environ,
+            {
+                "TEXT_MODEL_CONCURRENCY": "5",
+                "VISION_MODEL_CONCURRENCY": "3",
+            },
+            clear=True,
+        ):
+            runner = IntegratedPipelineRunner(task_id="pool-test", chunk_size=100)
+        self.assertEqual(5, runner.text_model_concurrency)
+        self.assertEqual(3, runner.vision_model_concurrency)
+
     def test_docx_strategy_is_forced_to_pdf(self):
         self.assertEqual("pdf", _normalize_pdf_docx_strategy("native"))
 

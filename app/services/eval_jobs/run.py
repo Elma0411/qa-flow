@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 from app.core.config import AUTO_EVAL_MAX_ITEMS_PER_REQUEST, CONFIG, LOCAL_EVALUATION_METRICS
@@ -58,19 +59,22 @@ def evaluate_dataset_job(
     delimiter: str,
     sheet_name: Optional[str],
     unsupervised_batch_size: Optional[int] = None,
+    text_model_concurrency: int = 8,
+    evaluation_concurrency: int = 8,
     faithfulness_nli_model: Optional[str] = None,
     answerability_qa_model: Optional[str] = None,
     coverage_embedding_model: Optional[str] = None,
     faithfulness_hypothesis_mode: Optional[str] = None,
     faithfulness_hypothesis_timeout: Optional[int] = None,
     faithfulness_hypothesis_max_retries: Optional[int] = None,
-    faithfulness_hypothesis_max_concurrency: Optional[int] = None,
     gpu_job_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     started_at = time.time()
     outputs_dir = CONFIG["outputs_dir"]
     os.makedirs(outputs_dir, exist_ok=True)
     task_id = f"eval_job_{job_id}"
+    resolved_text_concurrency = max(1, int(text_model_concurrency or 1))
+    resolved_evaluation_concurrency = max(1, int(evaluation_concurrency or 1))
 
     normalized_inputs: List[Dict[str, Any]] = []
     for file_index, item in enumerate(input_files or []):
@@ -207,11 +211,6 @@ def evaluate_dataset_job(
             if faithfulness_hypothesis_max_retries is not None
             else unsup_cfg.get("hypothesis_max_retries")
         )
-        max_concurrency = (
-            faithfulness_hypothesis_max_concurrency
-            if faithfulness_hypothesis_max_concurrency is not None
-            else unsup_cfg.get("hypothesis_max_concurrency")
-        )
         faith_model_path = resolve_evaluation_model_path(
             faithfulness_nli_model,
             kind="faithfulness_nli",
@@ -250,7 +249,9 @@ def evaluate_dataset_job(
                 llm_model=llm_model,
                 llm_request_timeout=int(request_timeout) if request_timeout is not None else None,
                 llm_max_retries=int(max_retries) if max_retries is not None else None,
-                llm_max_concurrency=int(max_concurrency) if max_concurrency is not None else None,
+                # Hypothesis rewriting is a text-model request and therefore
+                # shares the same text-model pool as the rest of the pipeline.
+                llm_max_concurrency=resolved_text_concurrency,
                 faith_batch_size=batch_size_override,
                 qa_batch_size=batch_size_override,
                 coverage_embed_batch_size=batch_size_override,
@@ -288,27 +289,42 @@ def evaluate_dataset_job(
             )
 
         computed = 0
-        for index, part in enumerate(_chunk(local_inputs, int(AUTO_EVAL_MAX_ITEMS_PER_REQUEST))):
+        local_parts = _chunk(local_inputs, int(AUTO_EVAL_MAX_ITEMS_PER_REQUEST))
+
+        def _run_local_part(part: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
             try:
-                res = execute_local_evaluation_blocking(
+                return execute_local_evaluation_blocking(
                     part,
                     use_local_models=True,
                     gpu_job_id=gpu_job_id or job_id,
                 )
             except Exception as exc:
-                logger.exception("local evaluation failed: chunk %s", index + 1)
-                local_summary.setdefault("errors", []).append(str(exc)[:800])
-                continue
-            if not isinstance(res, dict) or not isinstance(res.get("results"), list):
-                continue
-            for row in res.get("results") or []:
-                if not isinstance(row, dict):
+                raise RuntimeError(str(exc)) from exc
+
+        worker_count = max(1, min(resolved_evaluation_concurrency, len(local_parts)))
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = {
+                executor.submit(_run_local_part, part): index
+                for index, part in enumerate(local_parts)
+            }
+            for future in as_completed(futures):
+                index = futures[future]
+                try:
+                    res = future.result()
+                except Exception as exc:
+                    logger.exception("local evaluation failed: chunk %s", index + 1)
+                    local_summary.setdefault("errors", []).append(str(exc)[:800])
                     continue
-                rid = str(row.get("id") or "").strip()
-                if not rid:
+                if not isinstance(res, dict) or not isinstance(res.get("results"), list):
                     continue
-                local_by_id[rid] = _extract_local_scores(row)
-                computed += 1
+                for row in res.get("results") or []:
+                    if not isinstance(row, dict):
+                        continue
+                    rid = str(row.get("id") or "").strip()
+                    if not rid:
+                        continue
+                    local_by_id[rid] = _extract_local_scores(row)
+                    computed += 1
         local_summary["computed"] = computed
     local_seconds = time.time() - sup_started
 
@@ -389,6 +405,8 @@ def evaluate_dataset_job(
         },
         "performance": {
             "unsupervised_batch_size": unsupervised_batch_size,
+            "text_model_concurrency": resolved_text_concurrency,
+            "evaluation_concurrency": resolved_evaluation_concurrency,
         },
         "unsupervised": {
             "models": {

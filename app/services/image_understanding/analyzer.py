@@ -466,6 +466,12 @@ class BatchVLMDocParser:
         self.model_name = str(model_name or "").strip()
         self.api_key = str(api_key or "").strip()
         self.model_version = model_version or ""
+        resolved_max_concurrency = _normalize_max_concurrency(
+            max_concurrency,
+            env_name="VISION_MODEL_CONCURRENCY",
+            default=2,
+            maximum=64,
+        )
         if self.use_api:
             self.vlm_api_type = normalize_vlm_api_type(vlm_api_type)
             if vlm_client is not None and getattr(vlm_client, "config", None) is not None:
@@ -478,6 +484,7 @@ class BatchVLMDocParser:
                     api_type=self.vlm_api_type,
                     model_version=model_version,
                     timeout_seconds=self.request_config.timeout_seconds,
+                    max_concurrent_requests=resolved_max_concurrency,
                 )
             self.vlm_api_type = self.api_client_config.api_type
             self.api_base = self.api_client_config.base_url
@@ -490,12 +497,7 @@ class BatchVLMDocParser:
         self.classification_confidence_threshold = _normalize_confidence_threshold(
             classification_confidence_threshold
         )
-        self.max_concurrency = _normalize_max_concurrency(
-            max_concurrency,
-            env_name="IMAGE_ANALYSIS_MAX_CONCURRENCY",
-            default=1,
-            maximum=64,
-        )
+        self.max_concurrency = resolved_max_concurrency
 
         self.current_index = 0
         self.raw_results: Dict[int, str] = {}

@@ -465,20 +465,25 @@
                 <input type="number" id="imageFitMinScore" value="0.65" min="0" max="1" step="0.01" />
               </label>
               <label>
-                文档预处理并发（doc_max_concurrency）
-                <input type="number" id="docMaxConcurrency" min="1" max="64" step="1" placeholder="留空使用 compose/env" />
+                文件并发（file_concurrency）
+                <input type="number" id="integratedFileConcurrency" min="1" max="64" step="1" placeholder="留空默认 3" />
               </label>
               <label>
-                OCR 并发（ocr_max_concurrency）
-                <input type="number" id="ocrMaxConcurrency" min="1" max="64" step="1" placeholder="留空使用 compose/env" />
+                OCR 并发（ocr_concurrency）
+                <input type="number" id="integratedOcrConcurrency" min="1" max="64" step="1" placeholder="留空默认 1" />
               </label>
               <label>
-                图片理解并发（image_analysis_max_concurrency）
-                <input type="number" id="imageAnalysisMaxConcurrency" min="1" max="64" step="1" placeholder="留空使用 compose/env" />
+                图片模型并发（vision_model_concurrency）
+                <input type="number" id="integratedVisionModelConcurrency" min="1" max="64" step="1" placeholder="留空默认 2" />
               </label>
               <label>
-                图片契合度判断并发（image_fit_max_concurrency）
-                <input type="number" id="imageFitMaxConcurrency" min="1" max="64" step="1" placeholder="留空使用 compose/env" />
+                文本模型并发（text_model_concurrency）
+                <input type="number" id="integratedTextModelConcurrency" min="1" max="64" step="1" placeholder="留空默认 8" />
+              </label>
+              <label>
+                评估并发（evaluation_concurrency）
+                <input type="number" id="integratedEvaluationConcurrency" min="1" max="64" step="1" placeholder="留空默认 8" />
+                <small>仅控制本地评估或评估 worker；LLM 评估使用文本模型并发。</small>
               </label>
             </div>
             <details style="margin-top: 10px">
@@ -826,17 +831,6 @@
             <small>仅 evaluation_method=unsupervised_f1 时生效</small>
           </label>
           <label>
-            忠实度陈述句改写并发（faithfulness_hypothesis_max_concurrency）
-            <input
-              type="number"
-              id="faithfulnessHypothesisMaxConcurrency"
-              value="8"
-              min="1"
-              step="1"
-            />
-            <small>按“每个文件”生效；批量时总并发约等于 max_concurrency × 该值</small>
-          </label>
-          <label>
             <input type="checkbox" id="filterByThreshold" checked />
             按平均分阈值过滤（filter_by_threshold）
           </label>
@@ -870,44 +864,34 @@
             </select>
           </label>
           <label>
-            最大文件并发（max_concurrency，仅批量，可选）
+            文件并发（file_concurrency，仅批量，可选）
             <input
               type="number"
-              id="maxConcurrency"
+              id="fileConcurrency"
               min="1"
               placeholder="留空默认 3…"
             />
-            <small>同时处理多少个文件；文件多时会放大后续阶段总并发。</small>
+            <small>同时处理多少个文件。</small>
           </label>
           <label>
-            评估最大并发（eval_max_concurrency，可选）
+            文本模型并发（text_model_concurrency，可选）
             <input
               type="number"
-              id="evalMaxConcurrency"
+              id="textModelConcurrency"
               min="1"
               placeholder="留空默认 8…"
             />
-            <small>问答评估阶段的并发，主要影响 LLM/local 评估速度和资源占用。</small>
+            <small>planner、问答生成、图片契合度、增广和 LLM 评估共用。</small>
           </label>
           <label>
-            generation unit 生成并发（chunk_max_concurrency，可选）
+            评估并发（evaluation_concurrency，可选）
             <input
               type="number"
-              id="chunkMaxConcurrency"
+              id="evaluationConcurrency"
               min="1"
               placeholder="留空默认 8…"
             />
-            <small>同一文件内同时跑多少个 generation unit worker；实际外发 API 还会受 LLM/VLM API 请求并发限制。</small>
-          </label>
-          <label>
-            LLM/VLM API 请求并发（llm_max_concurrent_requests，可选）
-            <input
-              type="number"
-              id="llmMaxConcurrentRequests"
-              min="1"
-              placeholder="留空使用 Docker 环境变量，当前默认 1…"
-            />
-            <small>控制当前任务内同一 LLM/VLM client 同时外发 API 请求数；只影响本次任务，不修改容器全局环境。</small>
+            <small>仅控制本地评估或评估 worker；LLM 评估使用文本模型并发。</small>
           </label>
           <label>
             generation unit 最大尝试次数（chunk_max_attempts）
@@ -930,16 +914,6 @@
             证据 token 预算（evidence_token_budget）
             <input type="number" id="evidenceTokenBudget" value="4000" min="256" max="32000" step="256" />
             <small>补充证据窗口的近似 token 总预算；结构补全后按二次 BGE 排序依次装入。</small>
-          </label>
-          <label>
-            增广并发（augment_max_concurrency，可选）
-            <input
-              type="number"
-              id="augmentMaxConcurrency"
-              min="1"
-              placeholder="留空默认 8…"
-            />
-            <small>问答增广阶段的并发；augment_per_qa 为 0 时不会使用。</small>
           </label>
           <div class="actions-row">
             <button type="submit" id="pipelineSubmitBtn">开始执行流水线</button>

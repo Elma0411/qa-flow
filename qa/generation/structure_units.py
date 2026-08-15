@@ -21,7 +21,6 @@ SCENARIO_TYPE_POINT = "point"
 SCENARIO_TYPE_SUMMARY = "summary"
 DEFAULT_AUTO_SUMMARY_RATIO = 0.35
 DEFAULT_SCENARIO_PLANNING_BATCH_CHARS = 24000
-DEFAULT_SCENARIO_PLANNING_MAX_CONCURRENCY = 4
 
 
 def _safe_text(value: Any) -> str:
@@ -375,7 +374,7 @@ class GenerationUnitPlan:
     scenario_planner_batches_by_type: Dict[str, List[int]]
     scenario_planner_batch_details: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
     scenario_planning_batch_chars: int = DEFAULT_SCENARIO_PLANNING_BATCH_CHARS
-    scenario_planning_max_concurrency: int = 1
+    text_model_concurrency: int = 1
 
     def summary(self) -> Dict[str, Any]:
         quality_counts: Dict[str, int] = defaultdict(int)
@@ -404,7 +403,7 @@ class GenerationUnitPlan:
                 for key, value in self.scenario_planner_batch_details.items()
             },
             "scenario_planning_batch_chars": self.scenario_planning_batch_chars,
-            "scenario_planning_max_concurrency": self.scenario_planning_max_concurrency,
+            "text_model_concurrency": self.text_model_concurrency,
         }
 
 
@@ -1151,7 +1150,7 @@ def plan_generation_units(
     scenario_planner: Callable[..., Sequence[Dict[str, Any]]],
     auto_summary_ratio: float = DEFAULT_AUTO_SUMMARY_RATIO,
     scenario_planning_batch_chars: int = DEFAULT_SCENARIO_PLANNING_BATCH_CHARS,
-    scenario_planning_max_concurrency: int = 1,
+    text_model_concurrency: int = 1,
 ) -> GenerationUnitPlan:
     chunks = [dict(chunk) for chunk in document_chunks if _text_for_quality(chunk)]
     graph = build_structure_graph(chunks)
@@ -1196,7 +1195,7 @@ def plan_generation_units(
         )
     else:
         effective_batch_chars = max(1000, configured_batch_chars or DEFAULT_SCENARIO_PLANNING_BATCH_CHARS)
-    planning_max_concurrency = max(1, int(scenario_planning_max_concurrency or 1))
+    planning_max_concurrency = max(1, int(text_model_concurrency or 1))
 
     planner_batches = {
         SCENARIO_TYPE_POINT: _batch_section_materials(
@@ -1211,22 +1210,49 @@ def plan_generation_units(
         ) if summary_planning_count > 0 else [],
     }
 
-    raw_point_scenarios, point_batch_details = _plan_scenario_pool(
-        usable_materials,
-        scenario_type=SCENARIO_TYPE_POINT,
-        requested_count=point_planning_count,
-        scenario_planner=scenario_planner,
-        max_batch_chars=effective_batch_chars,
-        max_concurrency=planning_max_concurrency,
-    )
-    raw_summary_scenarios, summary_batch_details = _plan_scenario_pool(
-        usable_materials,
-        scenario_type=SCENARIO_TYPE_SUMMARY,
-        requested_count=summary_planning_count,
-        scenario_planner=scenario_planner,
-        max_batch_chars=effective_batch_chars,
-        max_concurrency=planning_max_concurrency,
-    )
+    # Point and Summary pools are independent planning jobs.  Run the two
+    # pools together; the shared text-model client gate remains the single
+    # authority for actual outbound request concurrency.
+    raw_point_scenarios: List[Dict[str, Any]] = []
+    point_batch_details: List[Dict[str, Any]] = []
+    raw_summary_scenarios: List[Dict[str, Any]] = []
+    summary_batch_details: List[Dict[str, Any]] = []
+
+    def _run_planner_pool(scenario_type: str, requested_count: int):
+        return _plan_scenario_pool(
+            usable_materials,
+            scenario_type=scenario_type,
+            requested_count=requested_count,
+            scenario_planner=scenario_planner,
+            max_batch_chars=effective_batch_chars,
+            max_concurrency=planning_max_concurrency,
+        )
+
+    planning_jobs = []
+    if point_planning_count > 0:
+        planning_jobs.append((SCENARIO_TYPE_POINT, point_planning_count))
+    if summary_planning_count > 0:
+        planning_jobs.append((SCENARIO_TYPE_SUMMARY, summary_planning_count))
+    if len(planning_jobs) == 1:
+        scenario_type, requested_count = planning_jobs[0]
+        planned, details = _run_planner_pool(scenario_type, requested_count)
+        if scenario_type == SCENARIO_TYPE_POINT:
+            raw_point_scenarios, point_batch_details = planned, details
+        else:
+            raw_summary_scenarios, summary_batch_details = planned, details
+    elif planning_jobs:
+        with ThreadPoolExecutor(max_workers=len(planning_jobs)) as planner_executor:
+            future_map = {
+                planner_executor.submit(_run_planner_pool, scenario_type, requested_count): scenario_type
+                for scenario_type, requested_count in planning_jobs
+            }
+            for future in as_completed(future_map):
+                scenario_type = future_map[future]
+                planned, details = future.result()
+                if scenario_type == SCENARIO_TYPE_POINT:
+                    raw_point_scenarios, point_batch_details = planned, details
+                else:
+                    raw_summary_scenarios, summary_batch_details = planned, details
     materials_by_id = {material.material_id: material for material in usable_materials}
     cross_batch_summary_scenarios = _merge_cross_batch_summary_candidates(
         raw_summary_scenarios,
@@ -1331,7 +1357,7 @@ def plan_generation_units(
             SCENARIO_TYPE_SUMMARY: summary_batch_details,
         },
         scenario_planning_batch_chars=effective_batch_chars,
-        scenario_planning_max_concurrency=planning_max_concurrency,
+        text_model_concurrency=planning_max_concurrency,
     )
 
 
@@ -1339,7 +1365,6 @@ __all__ = [
     "ChunkQuality",
     "DEFAULT_AUTO_SUMMARY_RATIO",
     "DEFAULT_SCENARIO_PLANNING_BATCH_CHARS",
-    "DEFAULT_SCENARIO_PLANNING_MAX_CONCURRENCY",
     "GenerationUnit",
     "GenerationUnitPlan",
     "QUALITY_STATUS_CONTEXT_ONLY",

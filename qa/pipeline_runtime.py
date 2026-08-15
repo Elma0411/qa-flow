@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import time
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -12,7 +13,6 @@ from qa.generation import (
     DEFAULT_EVIDENCE_TOKEN_BUDGET,
     DEFAULT_FINAL_EVIDENCE_K,
     DEFAULT_SCENARIO_PLANNING_BATCH_CHARS,
-    DEFAULT_SCENARIO_PLANNING_MAX_CONCURRENCY,
     GenerationUnit,
     QADocumentEvidenceIndex,
     build_question_type_plan,
@@ -33,7 +33,7 @@ class OneStepPipelineRuntime:
     qa_total_limit_scope: str
     qa_detail_mode: str
     prompt_language: str
-    chunk_max_concurrency: int
+    text_model_concurrency: int
     question_type_mode: str
     question_types: Optional[List[str]]
     question_type_weights: Optional[Dict[str, float]]
@@ -52,7 +52,7 @@ class OneStepPipelineRuntime:
     final_evidence_k: int
     evidence_token_budget: int
     scenario_planning_batch_chars: int
-    scenario_planning_max_concurrency: int
+    # Planner calls use the same text-model budget as generation units.
 
 
 def parse_one_step_pipeline_runtime(config: Dict[str, Any]) -> OneStepPipelineRuntime:
@@ -74,7 +74,17 @@ def parse_one_step_pipeline_runtime(config: Dict[str, Any]) -> OneStepPipelineRu
     if qa_detail_mode not in {"point", "summary", "auto"}:
         qa_detail_mode = "point"
     prompt_language = str(config.get("prompt_language") or "auto")
-    chunk_max_concurrency = int(config.get("chunk_max_concurrency") or 8)
+    try:
+        text_model_concurrency = max(
+            1,
+            int(
+                config.get("text_model_concurrency")
+                or os.environ.get("TEXT_MODEL_CONCURRENCY")
+                or 8
+            ),
+        )
+    except (TypeError, ValueError):
+        text_model_concurrency = 8
     question_type_mode = normalize_question_type_mode(config.get("question_type_mode"))
     question_types = normalize_question_types(config.get("question_types"))
     question_type_weights = normalize_question_type_weights(
@@ -170,14 +180,6 @@ def parse_one_step_pipeline_runtime(config: Dict[str, Any]) -> OneStepPipelineRu
             else config.get("scenario_planning_batch_chars")
         ),
     )
-    scenario_planning_max_concurrency = max(
-        1,
-        int(
-            DEFAULT_SCENARIO_PLANNING_MAX_CONCURRENCY
-            if config.get("scenario_planning_max_concurrency") is None
-            else config.get("scenario_planning_max_concurrency")
-        ),
-    )
 
     return OneStepPipelineRuntime(
         chunk_size=chunk_size,
@@ -186,7 +188,7 @@ def parse_one_step_pipeline_runtime(config: Dict[str, Any]) -> OneStepPipelineRu
         qa_total_limit_scope=qa_total_limit_scope,
         qa_detail_mode=qa_detail_mode,
         prompt_language=prompt_language,
-        chunk_max_concurrency=chunk_max_concurrency,
+        text_model_concurrency=text_model_concurrency,
         question_type_mode=question_type_mode,
         question_types=question_types,
         question_type_weights=question_type_weights,
@@ -205,7 +207,6 @@ def parse_one_step_pipeline_runtime(config: Dict[str, Any]) -> OneStepPipelineRu
         final_evidence_k=final_evidence_k,
         evidence_token_budget=evidence_token_budget,
         scenario_planning_batch_chars=scenario_planning_batch_chars,
-        scenario_planning_max_concurrency=scenario_planning_max_concurrency,
     )
 
 

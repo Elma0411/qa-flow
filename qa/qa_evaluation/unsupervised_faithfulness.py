@@ -36,12 +36,12 @@ except Exception:  # pragma: no cover - optional dependency
     TRANSFORMERS_AVAILABLE = False
 
 try:
-    from app.services.llm import VLMClientConfig, create_vlm_client as _create_vlm_client
+    from app.services.llm import LLMClientConfig, get_llm_client_pool
 
     OPENAI_AVAILABLE = True
 except Exception:  # pragma: no cover - optional dependency
-    _create_vlm_client = None  # type: ignore
-    VLMClientConfig = None  # type: ignore
+    get_llm_client_pool = None  # type: ignore
+    LLMClientConfig = None  # type: ignore
     OPENAI_AVAILABLE = False
 
 
@@ -75,9 +75,7 @@ if DEFAULT_HYPOTHESIS_MODE != "llm":
     DEFAULT_HYPOTHESIS_MODE = "llm"
 DEFAULT_HYPOTHESIS_TIMEOUT = int(os.environ.get("UNSUPERVISED_HYPOTHESIS_TIMEOUT", "60") or 60)
 DEFAULT_HYPOTHESIS_MAX_RETRIES = int(os.environ.get("UNSUPERVISED_HYPOTHESIS_MAX_RETRIES", "2") or 2)
-DEFAULT_HYPOTHESIS_MAX_CONCURRENCY = int(
-    os.environ.get("UNSUPERVISED_HYPOTHESIS_MAX_CONCURRENCY", "8") or 8
-)
+DEFAULT_TEXT_MODEL_CONCURRENCY = 8
 DEFAULT_HYPOTHESIS_API_KEY = str(
     os.environ.get("UNSUPERVISED_HYPOTHESIS_API_KEY")
     or os.environ.get("LLM_API_KEY")
@@ -149,34 +147,37 @@ Rules:
 Output JSON:
 {"strategy":"single","hypotheses":["..."]}"""
 
-_LLM_CLIENT_LOCAL = threading.local()
-
-
-def _get_llm_client(*, api_key: str, base_url: str, model_name: str = "", timeout_seconds: float = 120.0) -> Any:
-    if not OPENAI_AVAILABLE or _create_vlm_client is None:
+def _get_llm_client(
+    *,
+    api_key: str,
+    base_url: str,
+    model_name: str = "",
+    api_type: Optional[str] = None,
+    model_version: Optional[str] = None,
+    timeout_seconds: float = 120.0,
+    max_concurrent_requests: int = 1,
+) -> Any:
+    if not OPENAI_AVAILABLE or get_llm_client_pool is None:
         raise RuntimeError("LLM client is unavailable for hypothesis generation")
     key = str(api_key or "").strip()
     url = str(base_url or "").strip()
     if not key:
         raise RuntimeError("Missing llm_api_key for hypothesis generation")
 
-    cached = getattr(_LLM_CLIENT_LOCAL, "client", None)
-    cached_key = getattr(_LLM_CLIENT_LOCAL, "api_key", None)
-    cached_url = getattr(_LLM_CLIENT_LOCAL, "base_url", None)
-    if cached is None or cached_key != key or cached_url != url:
-        client = _create_vlm_client(
-            VLMClientConfig.from_values(
-                api_base=url,
-                model_name=model_name or "default",
-                api_key=key,
-                timeout_seconds=timeout_seconds,
-            )
+    normalized_model = str(model_name or "default").strip() or "default"
+    normalized_timeout = float(timeout_seconds or 120.0)
+    normalized_concurrency = max(1, int(max_concurrent_requests or 1))
+    return get_llm_client_pool().get_client(
+        LLMClientConfig(
+            api_base=url,
+            model_name=normalized_model,
+            api_key=key,
+            api_type=api_type,
+            model_version=model_version,
+            timeout_seconds=normalized_timeout,
+            max_concurrent_requests=normalized_concurrency,
         )
-        _LLM_CLIENT_LOCAL.client = client
-        _LLM_CLIENT_LOCAL.api_key = key
-        _LLM_CLIENT_LOCAL.base_url = url
-        return client
-    return cached
+    )
 
 
 def _contains_ambiguous_reference(text: str, *, language_code: str) -> bool:
@@ -835,9 +836,11 @@ def attach_faithfulness(
     llm_api_key: Optional[str] = None,
     llm_base_url: Optional[str] = None,
     llm_model: Optional[str] = None,
+    llm_api_type: Optional[str] = None,
+    llm_model_version: Optional[str] = None,
     llm_request_timeout: int = DEFAULT_HYPOTHESIS_TIMEOUT,
     llm_max_retries: int = DEFAULT_HYPOTHESIS_MAX_RETRIES,
-    llm_max_concurrency: int = DEFAULT_HYPOTHESIS_MAX_CONCURRENCY,
+    llm_max_concurrency: int = DEFAULT_TEXT_MODEL_CONCURRENCY,
 ) -> Dict[str, Any]:
     """
     Mutate qa_items in-place and attach:
@@ -852,7 +855,7 @@ def attach_faithfulness(
     if mode != "llm":
         mode = "llm"
 
-    if not OPENAI_AVAILABLE or _create_vlm_client is None:
+    if not OPENAI_AVAILABLE or get_llm_client_pool is None:
         raise RuntimeError("LLM client is unavailable for hypothesis generation")
 
     api_key = str(llm_api_key or DEFAULT_HYPOTHESIS_API_KEY or "").strip()
@@ -896,7 +899,15 @@ def attach_faithfulness(
     def _run_one(
         premise: str, question: str, answer: str, question_type: Any
     ) -> Tuple[List[str], str]:
-        client = _get_llm_client(api_key=api_key, base_url=base_url)
+        client = _get_llm_client(
+            api_key=api_key,
+            base_url=base_url,
+            model_name=llm_model_resolved,
+            api_type=llm_api_type,
+            model_version=llm_model_version,
+            timeout_seconds=float(llm_request_timeout or DEFAULT_HYPOTHESIS_TIMEOUT),
+            max_concurrent_requests=max_workers,
+        )
         return _llm_build_hypotheses(
             premise=premise,
             question=question,
@@ -1125,7 +1136,7 @@ def attach_faithfulness(
         "method": "nli_faithfulness_v1",
         "model_path": (model_path or "").strip() or _resolve_default_model_path(),
         "hypothesis_mode": "llm",
-        "hypothesis_concurrency": max_workers,
+        "text_model_concurrency": max_workers,
     }
 
 

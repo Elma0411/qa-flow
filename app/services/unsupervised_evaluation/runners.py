@@ -21,6 +21,8 @@ def execute_unsupervised_faithfulness_blocking(
     llm_api_key: Optional[str] = None,
     llm_base_url: Optional[str] = None,
     llm_model: Optional[str] = None,
+    llm_api_type: Optional[str] = None,
+    llm_model_version: Optional[str] = None,
     llm_request_timeout: Optional[int] = None,
     llm_max_retries: Optional[int] = None,
     llm_max_concurrency: Optional[int] = None,
@@ -52,6 +54,8 @@ def execute_unsupervised_faithfulness_blocking(
         "llm_api_key": llm_api_key or cfg.get("hypothesis_api_key") or CONFIG.get("api_key"),
         "llm_base_url": llm_base_url or cfg.get("hypothesis_base_url") or CONFIG.get("base_url"),
         "llm_model": llm_model or cfg.get("hypothesis_model") or CONFIG.get("model"),
+        "llm_api_type": llm_api_type or CONFIG.get("api_type"),
+        "llm_model_version": llm_model_version or CONFIG.get("model_version"),
         "llm_request_timeout": int(
             llm_request_timeout or cfg.get("hypothesis_timeout") or CONFIG.get("request_timeout") or 60
         ),
@@ -59,9 +63,11 @@ def execute_unsupervised_faithfulness_blocking(
             llm_max_retries or cfg.get("hypothesis_max_retries") or CONFIG.get("max_retries") or 2
         ),
     }
-    configured_concurrency = llm_max_concurrency or cfg.get("hypothesis_max_concurrency")
-    if configured_concurrency is not None:
-        kwargs["llm_max_concurrency"] = int(configured_concurrency)
+    # The hypothesis rewrite is a text-model request.  Its only runtime
+    # concurrency source is the caller's text-model pool; do not reintroduce
+    # a separate hypothesis-specific limiter from config/env.
+    configured_concurrency = max(1, int(llm_max_concurrency or 8))
+    kwargs["llm_max_concurrency"] = configured_concurrency
 
     summary = _rt.attach_faithfulness(qa_items, **kwargs)
     if isinstance(summary, dict):
@@ -69,10 +75,12 @@ def execute_unsupervised_faithfulness_blocking(
         summary["hypothesis_llm"] = {
             "base_url": str(kwargs.get("llm_base_url") or ""),
             "model": str(kwargs.get("llm_model") or ""),
+            "api_type": str(kwargs.get("llm_api_type") or ""),
+            "model_version": str(kwargs.get("llm_model_version") or ""),
             "api_key_present": bool(str(kwargs.get("llm_api_key") or "").strip()),
             "timeout_seconds": int(kwargs.get("llm_request_timeout") or 0) or None,
             "max_retries": int(kwargs.get("llm_max_retries") or 0) or None,
-            "max_concurrency": int(kwargs.get("llm_max_concurrency") or 0) or None,
+            "text_model_concurrency": int(kwargs.get("llm_max_concurrency") or 0) or None,
         }
     return summary
 

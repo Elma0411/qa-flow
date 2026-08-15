@@ -18,6 +18,7 @@ from app.core.config import (
     LOCAL_EVALUATION_METRICS,
 )
 from app.services.gpu import clear_cuda_runtime_for_device, gpu_stage
+from app.services.llm import LLMClientConfig, get_llm_client_pool
 
 try:
     from qa.qa_evaluation.qa_quality_evaluator import QAEvaluator
@@ -32,8 +33,9 @@ except ImportError as exc:  # pragma: no cover - optional dependency
 def execute_llm_evaluation_blocking(
     qa_data: List[Dict[str, Any]],
     criteria_list: List[str],
-    max_eval_concurrency: int = 8,
+    text_model_concurrency: int = 8,
     llm_config: Optional[Dict[str, Any]] = None,
+    client: Any = None,
 ) -> Optional[Dict[str, Any]]:
     if not qa_data:
         return None
@@ -48,8 +50,10 @@ def execute_llm_evaluation_blocking(
         evaluation_results = evaluate_qa_pairs(
             temp_qa_file.name,
             criteria_list,
-            max_concurrency=max_eval_concurrency,
+            max_concurrency=max(1, int(text_model_concurrency or 1)),
             llm_config=llm_config,
+            max_concurrent_requests=max(1, int(text_model_concurrency or 1)),
+            client=client,
         )
         return evaluation_results
     finally:
@@ -150,21 +154,45 @@ async def run_llm_evaluation_batches(
     qa_data: List[Dict[str, Any]],
     criteria_list: List[str],
     progress_callback: Callable[[str], Awaitable[Any]],
-    max_eval_concurrency: int = 8,
+    text_model_concurrency: int = 8,
     llm_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     batches = chunked_list(qa_data, EVAL_BATCH_SIZE)
     if not batches:
         return {"method": "llm_batch", "results": [], "batch_count": 0}
-    tasks = {
-        asyncio.create_task(
-            asyncio.to_thread(
+    resolved_text_concurrency = max(1, int(text_model_concurrency or 1))
+    shared_client = None
+    if llm_config:
+        shared_client = get_llm_client_pool().get_client(
+            LLMClientConfig(
+                api_base=llm_config.get("base_url"),
+                model_name=llm_config.get("model"),
+                api_key=llm_config.get("api_key"),
+                api_type=llm_config.get("api_type"),
+                model_version=llm_config.get("model_version"),
+                timeout_seconds=float(llm_config.get("request_timeout") or 120),
+                max_concurrent_requests=resolved_text_concurrency,
+            )
+        )
+    # Keep the number of in-flight evaluation batches bounded.  Each batch
+    # shares one client gate, so the actual LLM request budget remains the
+    # single text_model_concurrency value instead of multiplying by batches.
+    batch_gate = asyncio.Semaphore(resolved_text_concurrency)
+
+    async def run_batch(batch: List[Dict[str, Any]]):
+        async with batch_gate:
+            return await asyncio.to_thread(
                 execute_llm_evaluation_blocking,
                 batch,
                 criteria_list,
-                max_eval_concurrency,
+                resolved_text_concurrency,
                 llm_config,
+                shared_client,
             )
+
+    tasks = {
+        asyncio.create_task(
+            run_batch(batch)
         ): idx + 1
         for idx, batch in enumerate(batches)
     }

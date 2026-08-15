@@ -45,6 +45,23 @@ router = APIRouter(prefix="/eval", tags=["eval"])
 _ARTIFACT_TTL_SECONDS = 24 * 60 * 60
 
 
+def _resolve_eval_concurrency(
+    value: Optional[int],
+    *,
+    env_name: str,
+    default: int,
+    maximum: int = 64,
+) -> int:
+    raw: Any = value
+    if raw is None:
+        raw = str(os.environ.get(env_name) or "").strip()
+    try:
+        resolved = int(raw)
+    except (TypeError, ValueError):
+        resolved = int(default)
+    return max(1, min(maximum, resolved))
+
+
 def _save_upload_to_outputs(upload_file: UploadFile, *, job_id: str, file_index: int) -> Dict[str, Any]:
     outputs_dir = CONFIG["outputs_dir"]
     os.makedirs(outputs_dir, exist_ok=True)
@@ -188,6 +205,8 @@ async def create_eval_job(
     sheet_name: Optional[str] = Form(None),
     file_ranges_json: Optional[str] = Form(None),
     unsupervised_batch_size: Optional[int] = Form(None),
+    text_model_concurrency: Optional[int] = Form(None),
+    evaluation_concurrency: Optional[int] = Form(None),
     faithfulness_nli_model: Optional[str] = Form(None),
     answerability_qa_model: Optional[str] = Form(None),
     coverage_embedding_model: Optional[str] = Form(None),
@@ -195,7 +214,6 @@ async def create_eval_job(
     faithfulness_hypothesis_mode: Optional[str] = Form(None),
     faithfulness_hypothesis_timeout: Optional[int] = Form(None),
     faithfulness_hypothesis_max_retries: Optional[int] = Form(None),
-    faithfulness_hypothesis_max_concurrency: Optional[int] = Form(None),
 ) -> Dict[str, Any]:
     if not files:
         raise HTTPException(status_code=400, detail="至少需要上传一个文件")
@@ -269,6 +287,17 @@ async def create_eval_job(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    resolved_text_concurrency = _resolve_eval_concurrency(
+        text_model_concurrency,
+        env_name="TEXT_MODEL_CONCURRENCY",
+        default=8,
+    )
+    resolved_evaluation_concurrency = _resolve_eval_concurrency(
+        evaluation_concurrency,
+        env_name="EVALUATION_CONCURRENCY",
+        default=8,
+    )
+
     job = create_job(
         "eval",
         total=0,
@@ -296,13 +325,14 @@ async def create_eval_job(
                 for idx, cfg in sorted(file_ranges.items(), key=lambda item: item[0])
             ],
             "unsupervised_batch_size": unsupervised_batch_size,
+            "text_model_concurrency": resolved_text_concurrency,
+            "evaluation_concurrency": resolved_evaluation_concurrency,
             "faithfulness_nli_model": resolved_nli_model,
             "answerability_qa_model": resolved_qa_model,
             "coverage_embedding_model": resolved_coverage_model,
             "faithfulness_hypothesis_mode": faithfulness_hypothesis_mode,
             "faithfulness_hypothesis_timeout": faithfulness_hypothesis_timeout,
             "faithfulness_hypothesis_max_retries": faithfulness_hypothesis_max_retries,
-            "faithfulness_hypothesis_max_concurrency": faithfulness_hypothesis_max_concurrency,
         },
     )
     admit_info = admit_gpu_job(job.job_id, job_type="eval")
@@ -351,13 +381,14 @@ async def create_eval_job(
                 delimiter=delimiter,
                 sheet_name=sheet_name,
                 unsupervised_batch_size=unsupervised_batch_size,
+                text_model_concurrency=resolved_text_concurrency,
+                evaluation_concurrency=resolved_evaluation_concurrency,
                 faithfulness_nli_model=resolved_nli_model,
                 answerability_qa_model=resolved_qa_model,
                 coverage_embedding_model=resolved_coverage_model,
                 faithfulness_hypothesis_mode=faithfulness_hypothesis_mode,
                 faithfulness_hypothesis_timeout=faithfulness_hypothesis_timeout,
                 faithfulness_hypothesis_max_retries=faithfulness_hypothesis_max_retries,
-                faithfulness_hypothesis_max_concurrency=faithfulness_hypothesis_max_concurrency,
                 gpu_job_id=job.job_id,
             )
             update_job(job.job_id, processed=int((summary.get("counts") or {}).get("total") or 0))
