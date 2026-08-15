@@ -11,6 +11,7 @@
 - `file_concurrency` 是文件级槽位上限。集成文档流程使用有界文件队列：文件 A 完成 OCR/文本预处理后立即进入 chunk、planner、问答生成和评估，文件 B 可以同时继续 OCR；队列满时自动回压。
 - `ocr_concurrency` 只控制 OCR 资源；`vision_model_concurrency` 只控制图片理解 VLM；`text_model_concurrency` 是文本模型共享池，覆盖 chunk summary、Point/Summary planner、候选题、问题编辑、答案、图片契合度、增广、普通 LLM 评估和无监督 Faithfulness 的假设句改写。
 - `evaluation_concurrency` 只控制本地评估 worker/调度，不再限制 LLM 请求。独立评估页面和接口也改用 `text_model_concurrency` 与 `evaluation_concurrency`，删除旧的 hypothesis 专用并发字段。
+- 前端任务设置只保留一组五项并发控件（文件、OCR、图片模型、文本模型、评估）；标准流程自动忽略 OCR/图片模型值，一体流程提交完整五项，避免新旧控件重复渲染和同名参数重复提交。
 - 共享 LLM client 使用显式资源池并发配置；无监督 Faithfulness 改为复用同一 client pool，避免每个线程各自创建 client 后把文本请求数放大。
 - 普通 `llm` 评估采用有界队列。generation unit 产出一个通过校验的 QA 后立即进入评估；LLM 评估按单 QA 刷新，本地评估保留小批量以避免重复模型初始化。生成端继续运行，队列满时产生回压。
 - Point/Summary planner 继续并行建立两类候选池，但 planner 与其它文本阶段共用 `text_model_concurrency`，不再有单独的 planner 并发配置。

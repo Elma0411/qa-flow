@@ -761,12 +761,9 @@ function compactLabelCopy(label) {
     textModelConcurrency: '文本模型并发',
     chunkMaxAttempts: 'unit 尝试次数',
     fileConcurrency: '文件并发',
+    ocrConcurrency: 'OCR 并发',
+    visionModelConcurrency: '图片模型并发',
     evaluationConcurrency: '评估并发',
-    integratedFileConcurrency: '文件并发',
-    integratedOcrConcurrency: 'OCR 并发',
-    integratedVisionModelConcurrency: '图片模型并发',
-    integratedTextModelConcurrency: '文本模型并发',
-    integratedEvaluationConcurrency: '评估并发',
     scoreThreshold: '过滤阈值',
     ocrTimeoutSeconds: 'OCR 超时',
   };
@@ -1599,18 +1596,18 @@ function setupPipelineModuleConsole() {
         description: '文件、OCR、文本模型、图片模型和评估使用各自的资源池并发。',
         nodes: [
           { field: 'fileConcurrency' },
+          { field: 'ocrConcurrency' },
+          { field: 'visionModelConcurrency' },
           { field: 'textModelConcurrency' },
           { field: 'evaluationConcurrency' },
-          { field: 'integratedFileConcurrency' },
-          { field: 'integratedOcrConcurrency' },
-          { field: 'integratedVisionModelConcurrency' },
-          { field: 'integratedTextModelConcurrency' },
-          { field: 'integratedEvaluationConcurrency' },
         ],
         summary: () => {
-          const text = String($('#textModelConcurrency')?.value || $('#integratedTextModelConcurrency')?.value || '').trim() || '8';
-          const vision = String($('#integratedVisionModelConcurrency')?.value || '').trim() || '2';
-          return `文本 ${text} / 图片 ${vision}`;
+          const file = String($('#fileConcurrency')?.value || '').trim() || '3';
+          const ocr = String($('#ocrConcurrency')?.value || '').trim() || '1';
+          const vision = String($('#visionModelConcurrency')?.value || '').trim() || '2';
+          const text = String($('#textModelConcurrency')?.value || '').trim() || '8';
+          const evaluation = String($('#evaluationConcurrency')?.value || '').trim() || '8';
+          return `文件 ${file} / OCR ${ocr} / 图片 ${vision} / 文本 ${text} / 评估 ${evaluation}`;
         },
       },
       {
@@ -2173,7 +2170,14 @@ function setupWorkbenchHero() {
     items.push(createSummaryChip('生成', () => `${checkedQuestionTypesSummary()} / 上限 ${$('#qaTotalLimit')?.value || 20}`, { moduleKey: 'pipeline.generation' }));
     items.push(createSummaryChip('检索', () => `BGE 固定链路 / 最多补证 ${$('#finalEvidenceK')?.value ?? 5} 组 / ${$('#evidenceTokenBudget')?.value || 4000} tokens`, { moduleKey: 'pipeline.retrieval' }));
     items.push(createSummaryChip('评估', () => pipelineEvaluationSummary(), { moduleKey: 'pipeline.evaluation' }));
-    items.push(createSummaryChip('并发', () => `文本 ${$('#textModelConcurrency')?.value || $('#integratedTextModelConcurrency')?.value || '8'} / 图片 ${$('#integratedVisionModelConcurrency')?.value || '2'}`, { moduleKey: 'pipeline.performance' }));
+    items.push(createSummaryChip('并发', () => {
+      const file = String($('#fileConcurrency')?.value || '').trim() || '3';
+      const ocr = String($('#ocrConcurrency')?.value || '').trim() || '1';
+      const vision = String($('#visionModelConcurrency')?.value || '').trim() || '2';
+      const text = String($('#textModelConcurrency')?.value || '').trim() || '8';
+      const evaluation = String($('#evaluationConcurrency')?.value || '').trim() || '8';
+      return `文件 ${file} / OCR ${ocr} / 图片 ${vision} / 文本 ${text} / 评估 ${evaluation}`;
+    }, { moduleKey: 'pipeline.performance' }));
     items.push(createSummaryChip('存储', () => pipelineStorageSummary(), { moduleKey: 'pipeline.output' }));
     items.forEach((item) => summary.appendChild(item));
   }
@@ -2320,11 +2324,8 @@ async function handlePipelineSubmit(e) {
     const integratedVlmModelVersion = $('#integratedVlmModelVersion')?.value || '';
     const imageFitCheckEnabled = $('#imageFitCheckEnabled')?.checked !== false;
     const imageFitMinScore = $('#imageFitMinScore')?.value || '0.65';
-    const integratedFileConcurrency = $('#integratedFileConcurrency')?.value || '';
-    const integratedOcrConcurrency = $('#integratedOcrConcurrency')?.value || '';
-    const integratedVisionModelConcurrency = $('#integratedVisionModelConcurrency')?.value || '';
-    const integratedTextModelConcurrency = $('#integratedTextModelConcurrency')?.value || '';
-    const integratedEvaluationConcurrency = $('#integratedEvaluationConcurrency')?.value || '';
+    const ocrConcurrency = $('#ocrConcurrency')?.value || '';
+    const visionModelConcurrency = $('#visionModelConcurrency')?.value || '';
     const qaDetailMode = $('#qaDetailMode')?.value || 'point';
     const knowledgeClassifier = $('#knowledgeClassifier')?.value || 'doc_level3_rule';
     const useCategoryPromptTemplates = $('#useCategoryPromptTemplates')?.checked !== false;
@@ -2417,11 +2418,8 @@ async function handlePipelineSubmit(e) {
       if (String(integratedVlmModelVersion).trim()) formData.append('vlm_model_version', integratedVlmModelVersion.trim());
       formData.append('image_fit_check_enabled', imageFitCheckEnabled ? 'true' : 'false');
       formData.append('image_fit_min_score', String(imageFitMinScore || '0.65'));
-      if (String(integratedFileConcurrency).trim()) formData.append('file_concurrency', String(integratedFileConcurrency).trim());
-      if (String(integratedOcrConcurrency).trim()) formData.append('ocr_concurrency', String(integratedOcrConcurrency).trim());
-      if (String(integratedVisionModelConcurrency).trim()) formData.append('vision_model_concurrency', String(integratedVisionModelConcurrency).trim());
-      if (String(integratedTextModelConcurrency).trim()) formData.append('text_model_concurrency', String(integratedTextModelConcurrency).trim());
-      if (String(integratedEvaluationConcurrency).trim()) formData.append('evaluation_concurrency', String(integratedEvaluationConcurrency).trim());
+      if (String(ocrConcurrency).trim()) formData.append('ocr_concurrency', String(ocrConcurrency).trim());
+      if (String(visionModelConcurrency).trim()) formData.append('vision_model_concurrency', String(visionModelConcurrency).trim());
     }
     formData.append('qa_detail_mode', qaDetailMode);
     formData.append('knowledge_classifier', knowledgeClassifier);

@@ -464,27 +464,6 @@
                 图片回填最小分数（image_fit_min_score）
                 <input type="number" id="imageFitMinScore" value="0.65" min="0" max="1" step="0.01" />
               </label>
-              <label>
-                文件并发（file_concurrency）
-                <input type="number" id="integratedFileConcurrency" min="1" max="64" step="1" placeholder="留空默认 3" />
-              </label>
-              <label>
-                OCR 并发（ocr_concurrency）
-                <input type="number" id="integratedOcrConcurrency" min="1" max="64" step="1" placeholder="留空默认 1" />
-              </label>
-              <label>
-                图片模型并发（vision_model_concurrency）
-                <input type="number" id="integratedVisionModelConcurrency" min="1" max="64" step="1" placeholder="留空默认 2" />
-              </label>
-              <label>
-                文本模型并发（text_model_concurrency）
-                <input type="number" id="integratedTextModelConcurrency" min="1" max="64" step="1" placeholder="留空默认 8" />
-              </label>
-              <label>
-                评估并发（evaluation_concurrency）
-                <input type="number" id="integratedEvaluationConcurrency" min="1" max="64" step="1" placeholder="留空默认 8" />
-                <small>仅控制本地评估或评估 worker；LLM 评估使用文本模型并发。</small>
-              </label>
             </div>
             <details style="margin-top: 10px">
               <summary>图片理解 VLM 覆盖参数（可选）</summary>
@@ -864,7 +843,7 @@
             </select>
           </label>
           <label>
-            文件并发（file_concurrency，仅批量，可选）
+            文件并发（file_concurrency，可选）
             <input
               type="number"
               id="fileConcurrency"
@@ -872,6 +851,26 @@
               placeholder="留空默认 3…"
             />
             <small>同时处理多少个文件。</small>
+          </label>
+          <label>
+            OCR 并发（ocr_concurrency，可选）
+            <input
+              type="number"
+              id="ocrConcurrency"
+              min="1"
+              placeholder="留空默认 1…"
+            />
+            <small>一体流程的 OCR 资源并发；标准流程忽略此项。</small>
+          </label>
+          <label>
+            图片模型并发（vision_model_concurrency，可选）
+            <input
+              type="number"
+              id="visionModelConcurrency"
+              min="1"
+              placeholder="留空默认 2…"
+            />
+            <small>一体流程的图片理解 VLM 并发；标准流程忽略此项。</small>
           </label>
           <label>
             文本模型并发（text_model_concurrency，可选）
