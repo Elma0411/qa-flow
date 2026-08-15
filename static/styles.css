@@ -1704,14 +1704,69 @@ pre {
   margin-top: 10px;
 }
 
+.pipeline-debug-batch-section {
+  padding: 0;
+  overflow: hidden;
+}
+
+.pipeline-debug-batch-section > summary,
+.pipeline-debug-batch-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.pipeline-debug-batch-section > summary {
+  justify-content: space-between;
+  padding: 12px;
+  font-size: 13px;
+}
+
+.pipeline-debug-batch-section > summary::-webkit-details-marker,
+.pipeline-debug-batch-summary::-webkit-details-marker {
+  display: none;
+}
+
+.pipeline-debug-batch-section > summary::before,
+.pipeline-debug-batch-summary::before {
+  flex: 0 0 auto;
+  color: var(--muted);
+  content: '▸';
+  font-size: 12px;
+}
+
+.pipeline-debug-batch-section[open] > summary::before,
+.pipeline-debug-batch-card[open] > .pipeline-debug-batch-summary::before {
+  content: '▾';
+}
+
+.pipeline-debug-batch-section-count {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.pipeline-debug-batch-scroll {
+  height: min(520px, 60vh);
+  overflow: auto;
+  padding: 0 12px 12px;
+  overscroll-behavior: contain;
+}
+
 .pipeline-debug-batch-card,
 .pipeline-debug-scenario {
   display: grid;
   gap: 8px;
-  padding: 10px;
   border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
   border-radius: 10px;
   background: color-mix(in srgb, var(--surface-2) 34%, transparent);
+}
+
+.pipeline-debug-batch-card {
+  overflow: hidden;
 }
 
 .pipeline-debug-batch-head {
@@ -1719,6 +1774,38 @@ pre {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+.pipeline-debug-batch-summary {
+  padding: 10px;
+}
+
+.pipeline-debug-batch-summary:hover {
+  background: color-mix(in srgb, var(--surface-2) 50%, transparent);
+}
+
+.pipeline-debug-batch-summary strong {
+  flex: 0 0 auto;
+}
+
+.pipeline-debug-batch-stats {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pipeline-debug-batch-summary .compact {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.pipeline-debug-batch-body {
+  display: grid;
+  gap: 8px;
+  padding: 0 10px 10px;
 }
 
 .pipeline-debug-batch-head strong,
@@ -1735,6 +1822,7 @@ pre {
 .pipeline-debug-scenario {
   border-style: dashed;
   background: color-mix(in srgb, var(--surface) 40%, transparent);
+  padding: 10px;
 }
 
 .pipeline-debug-empty {

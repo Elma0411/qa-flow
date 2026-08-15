@@ -13,6 +13,7 @@
 - `evaluation_concurrency` 只控制本地评估 worker/调度，不再限制 LLM 请求。独立评估页面和接口也改用 `text_model_concurrency` 与 `evaluation_concurrency`，删除旧的 hypothesis 专用并发字段。
 - 前端任务设置只保留一组五项并发控件（文件、OCR、图片模型、文本模型、评估）；标准流程自动忽略 OCR/图片模型值，一体流程提交完整五项，避免新旧控件重复渲染和同名参数重复提交。
 - 前端 `app.js` 资源版本已更新，避免浏览器继续使用旧 HTML/脚本组合导致性能面板只显示三项。
+- 场景规划批次调试区改为默认收起的双层折叠面板；展开后限制预览区高度并在内部滚动，批次原始响应按钮仍可单独打开查看。
 - 共享 LLM client 使用显式资源池并发配置；无监督 Faithfulness 改为复用同一 client pool，避免每个线程各自创建 client 后把文本请求数放大。
 - 普通 `llm` 评估采用有界队列。generation unit 产出一个通过校验的 QA 后立即进入评估；LLM 评估按单 QA 刷新，本地评估保留小批量以避免重复模型初始化。生成端继续运行，队列满时产生回压。
 - Point/Summary planner 继续并行建立两类候选池，但 planner 与其它文本阶段共用 `text_model_concurrency`，不再有单独的 planner 并发配置。

@@ -3598,33 +3598,60 @@ function renderPlannerBatchDetails(unitPlanSummary) {
     return String(left.batch_index || '').localeCompare(String(right.batch_index || ''));
   });
 
-  const section = document.createElement('section');
-  section.className = 'pipeline-debug-section';
-  const title = document.createElement('h4');
+  const section = document.createElement('details');
+  section.className = 'pipeline-debug-section pipeline-debug-batch-section';
+  const sectionSummary = document.createElement('summary');
+  sectionSummary.className = 'pipeline-debug-batch-section-summary';
+  const title = document.createElement('strong');
   title.textContent = '场景规划批次';
-  section.appendChild(title);
+  const batchCount = document.createElement('span');
+  batchCount.className = 'pipeline-debug-batch-section-count';
+  batchCount.textContent = `${batches.length} 个批次`;
+  sectionSummary.append(title, batchCount);
+  section.appendChild(sectionSummary);
   const hint = document.createElement('div');
   hint.className = 'pipeline-debug-empty';
   hint.textContent = '每个批次按逻辑 section 规划；模型原始响应可按类型和批次单独查看。';
-  section.appendChild(hint);
 
+  const scroll = document.createElement('div');
+  scroll.className = 'pipeline-debug-batch-scroll';
+  scroll.appendChild(hint);
   const list = document.createElement('div');
   list.className = 'pipeline-debug-batch-list';
   batches.forEach((batch) => {
-    const card = document.createElement('article');
+    const card = document.createElement('details');
     card.className = 'pipeline-debug-batch-card';
-    const head = document.createElement('div');
+    const batchSummary = document.createElement('summary');
+    batchSummary.className = 'pipeline-debug-batch-summary';
+    const head = document.createElement('span');
     head.className = 'pipeline-debug-batch-head';
     const heading = document.createElement('strong');
     heading.textContent = `${plannerScenarioTypeText(batch.scenarioType)} · 批次 ${batch.batch_index ?? '?'}`;
     head.appendChild(heading);
+    const summaryStats = document.createElement('span');
+    summaryStats.className = 'pipeline-debug-batch-stats';
+    summaryStats.textContent = [
+      `请求 ${batch.requested_count ?? 0}`,
+      `返回 ${batch.returned_count ?? 0}`,
+      `通过 ${batch.validated_count ?? batch.returned_count ?? 0}`,
+      `材料 ${batch.material_count ?? 0}`,
+    ].join(' · ');
+    head.appendChild(summaryStats);
     const rawButton = document.createElement('button');
     rawButton.type = 'button';
     rawButton.className = 'secondary compact';
     rawButton.textContent = '查看原始响应';
-    rawButton.addEventListener('click', () => openPlannerDebugRawModal(batch.scenarioType, batch.batch_index));
+    rawButton.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openPlannerDebugRawModal(batch.scenarioType, batch.batch_index);
+    });
     head.appendChild(rawButton);
-    card.appendChild(head);
+    batchSummary.appendChild(head);
+    card.appendChild(batchSummary);
+
+    const body = document.createElement('div');
+    body.className = 'pipeline-debug-batch-body';
 
     const metrics = document.createElement('div');
     metrics.className = 'pipeline-debug-kv-grid';
@@ -3633,7 +3660,7 @@ function renderPlannerBatchDetails(unitPlanSummary) {
     appendTextMetric(metrics, '校验通过', batch.validated_count ?? batch.returned_count);
     appendTextMetric(metrics, '材料数量', batch.material_count);
     appendTextMetric(metrics, '批次总数', batch.batch_count);
-    card.appendChild(metrics);
+    body.appendChild(metrics);
 
     const paths = document.createElement('div');
     paths.className = 'pipeline-debug-batch-paths';
@@ -3643,7 +3670,7 @@ function renderPlannerBatchDetails(unitPlanSummary) {
       ? Object.entries(batch.dropped_reasons).map(([key, value]) => `${translatedDropReason(key)}：${value}`).join('；')
       : '';
     if (dropped) appendTextMetric(paths, '丢弃原因', dropped);
-    card.appendChild(paths);
+    body.appendChild(paths);
 
     const scenarios = Array.isArray(batch.scenarios) ? batch.scenarios : [];
     if (scenarios.length) {
@@ -3664,11 +3691,13 @@ function renderPlannerBatchDetails(unitPlanSummary) {
         scenarioCard.appendChild(scenarioMeta);
         scenarioList.appendChild(scenarioCard);
       });
-      card.appendChild(scenarioList);
+      body.appendChild(scenarioList);
     }
+    card.appendChild(body);
     list.appendChild(card);
   });
-  section.appendChild(list);
+  scroll.appendChild(list);
+  section.appendChild(scroll);
   return section;
 }
 
