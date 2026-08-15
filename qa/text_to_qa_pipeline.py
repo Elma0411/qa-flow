@@ -166,13 +166,53 @@ def _question_identity(value: Any) -> str:
     return re.sub(r"[\s\W_]+", "", str(value or "")).casefold()
 
 
+def _question_semantic_tokens(value: Any) -> set[str]:
+    normalized = _question_identity(value)
+    if not normalized:
+        return set()
+    ascii_tokens = set(re.findall(r"[a-z0-9]{2,}", normalized))
+    cjk = "".join(re.findall(r"[\u4e00-\u9fff]", normalized))
+    cjk_tokens = {
+        cjk[index : index + 2]
+        for index in range(max(0, len(cjk) - 1))
+    }
+    return ascii_tokens | cjk_tokens
+
+
+def _questions_semantically_overlap(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+    left_text = _question_identity(left.get("question"))
+    right_text = _question_identity(right.get("question"))
+    if not left_text or not right_text:
+        return False
+    if left_text == right_text:
+        return True
+    left_sources = set(left.get("qa_generation_material_ids") or [])
+    right_sources = set(right.get("qa_generation_material_ids") or [])
+    if left_sources and right_sources and left_sources.isdisjoint(right_sources):
+        return False
+    if min(len(left_text), len(right_text)) >= 10 and (
+        left_text in right_text or right_text in left_text
+    ):
+        return True
+    left_tokens = _question_semantic_tokens(left_text)
+    right_tokens = _question_semantic_tokens(right_text)
+    if not left_tokens or not right_tokens:
+        return False
+    overlap = len(left_tokens & right_tokens)
+    dice = (2.0 * overlap) / (len(left_tokens) + len(right_tokens))
+    return dice >= 0.68
+
+
 def _deduplicate_document_questions(items: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int]:
     deduped: List[Dict[str, Any]] = []
     seen: set[str] = set()
     dropped = 0
     for item in items:
         key = _question_identity(item.get("question"))
-        if not key or key in seen:
+        if not key or key in seen or any(
+            _questions_semantically_overlap(item, existing)
+            for existing in deduped
+        ):
             dropped += 1
             continue
         seen.add(key)
@@ -440,8 +480,6 @@ def process_text_to_qa_one_step(
         except Exception:
             pass
 
-    max_workers = max(1, min(int(runtime.text_model_concurrency), len(generation_units)))
-
     results: List[Dict[str, Any]] = []
     unit_items_by_index: Dict[int, List[Dict[str, Any]]] = {}
     unit_errors: List[str] = []
@@ -466,7 +504,16 @@ def process_text_to_qa_one_step(
         "chunk_total_seconds": 0.0,
     }
     streamed_question_keys: set[str] = set()
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    streamed_items: List[Dict[str, Any]] = []
+    completed_units = 0
+    scheduled_generation_units = len(generation_units)
+
+    def _run_unit_batch(unit_batch: List[Any]) -> None:
+        nonlocal completed_units, scheduled_generation_units
+        if not unit_batch:
+            return
+        max_workers = max(1, min(int(runtime.text_model_concurrency), len(unit_batch)))
+        executor = ThreadPoolExecutor(max_workers=max_workers)
         future_map = {
             executor.submit(
                 run_one_step_unit_worker,
@@ -478,9 +525,8 @@ def process_text_to_qa_one_step(
                 item_normalizer_with_reason=_validate_and_normalize_item_with_reason,
                 source_override_handler=_maybe_override_source,
             ): unit
-            for unit in generation_units
+            for unit in unit_batch
         }
-        completed_units = 0
         for future in as_completed(future_map):
             completed_units += 1
             unit = future_map.get(future)
@@ -519,9 +565,17 @@ def process_text_to_qa_one_step(
                         if not isinstance(item, dict):
                             continue
                         question_key = _question_identity(item.get("question"))
-                        if not question_key or question_key in streamed_question_keys:
+                        if (
+                            not question_key
+                            or question_key in streamed_question_keys
+                            or any(
+                                _questions_semantically_overlap(item, existing)
+                                for existing in streamed_items
+                            )
+                        ):
                             continue
                         streamed_question_keys.add(question_key)
+                        streamed_items.append(dict(item))
                         try:
                             qa_ready_callback(dict(item))
                         except Exception:
@@ -590,7 +644,7 @@ def process_text_to_qa_one_step(
                             "anchor_chunk_index": payload.get("anchor_chunk_index") or payload.get("chunk_index"),
                             "source_chunk_indexes": payload.get("source_chunk_indexes") or [],
                             "completed_units": completed_units,
-                            "total_generation_units": total_generation_units,
+                            "total_generation_units": scheduled_generation_units,
                             "completed_chunks": completed_units,
                             "total_chunks": total_chunks,
                             "valid_items": len(items_list),
@@ -613,12 +667,41 @@ def process_text_to_qa_one_step(
                     )
                 except Exception:
                     pass
+        executor.shutdown(wait=True)
+
+    _run_unit_batch(generation_units)
+    target_qa_count = (
+        max(0, int(runtime.qa_total_limit))
+        if runtime.qa_total_limit is not None
+        else int(unit_plan.effective_total_qa)
+    )
+    reserve_units = list(unit_plan.reserve_units)
+    reserve_cursor = 0
+    while reserve_cursor < len(reserve_units):
+        current_items = [
+            item
+            for unit_index in sorted(unit_items_by_index)
+            for item in unit_items_by_index[unit_index]
+            if isinstance(item, dict)
+        ]
+        current_unique, _ = _deduplicate_document_questions(current_items)
+        shortage = max(0, target_qa_count - len(current_unique))
+        if shortage <= 0:
+            break
+        reserve_batch = reserve_units[reserve_cursor : reserve_cursor + shortage]
+        if not reserve_batch:
+            break
+        reserve_cursor += len(reserve_batch)
+        scheduled_generation_units += len(reserve_batch)
+        _run_unit_batch(reserve_batch)
+
+    total_generation_units = scheduled_generation_units
 
     # Non-strict mode: do not fail the whole file if some chunks produce 0 items.
     # Keep chunk_errors for debugging only.
 
     _ = original_filename  # reserved for future logging/telemetry
-    for idx in range(1, total_generation_units + 1):
+    for idx in sorted(unit_items_by_index):
         items_list = unit_items_by_index.get(idx) or []
         for item in items_list:
             if isinstance(item, dict):

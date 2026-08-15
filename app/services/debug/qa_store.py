@@ -124,6 +124,15 @@ def _build_debug_payload(item: Dict[str, Any]) -> Dict[str, Any]:
         "qa_generation_scenario_intent": item.get("qa_generation_scenario_intent"),
         "qa_generation_reader_need": item.get("qa_generation_reader_need"),
         "qa_generation_material_ids": item.get("qa_generation_material_ids") or [],
+        "qa_generation_required_material_ids": item.get(
+            "qa_generation_required_material_ids"
+        ) or [],
+        "qa_generation_optional_material_ids": item.get(
+            "qa_generation_optional_material_ids"
+        ) or [],
+        "qa_generation_subject_label": item.get("qa_generation_subject_label"),
+        "evidence_mode": item.get("evidence_mode") or "text",
+        "required_image_refs": item.get("required_image_refs") or [],
         "qa_generation_unit_source_chunk_indexes": item.get(
             "qa_generation_unit_source_chunk_indexes"
         )

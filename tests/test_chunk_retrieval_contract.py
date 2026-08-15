@@ -104,10 +104,20 @@ class ChunkRetrievalContractTests(unittest.TestCase):
         self.assertEqual("mixed", chunks[0]["content_kind"])
         self.assertEqual(["img_1"], chunks[0]["image_replacements"]["accepted_ids"])
         self.assertEqual(1, len(chunks[0]["image_replacements"]["placement_details"]))
+        self.assertEqual(
+            [{
+                "image_id": "img_1",
+                "description": "图片事实",
+                "context_before": "",
+                "context_after": "",
+            }],
+            chunks[0]["image_materials"],
+        )
         self.assertEqual([], chunks[1]["source_asset_ids"])
         self.assertEqual("text", chunks[1]["content_kind"])
         self.assertEqual([], chunks[1]["image_replacements"]["accepted_ids"])
         self.assertEqual([], chunks[1]["image_replacements"]["placement_details"])
+        self.assertEqual([], chunks[1]["image_materials"])
         self.assertIn("图片事实", final_chunks[0])
 
     def test_heading_plus_single_image_is_an_image_description_chunk(self):

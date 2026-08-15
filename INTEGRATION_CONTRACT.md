@@ -352,6 +352,11 @@ Stable metadata keys:
 - `image_context_summary`: optional integrated image context summary.
 - `image_replacements`: optional integrated image placement details local to
   this chunk only; unrelated accepted image IDs/details must not be copied in.
+- `image_materials`: optional ordered typed image blocks local to this chunk.
+  Each accepted block contains `image_id`, `description`, `context_before`, and
+  `context_after`. The description is still present in `text`/
+  `text_for_embedding` for retrieval, but QA planning consumes this typed field
+  so visual evidence is not flattened into ordinary prose.
 
 Rules:
 
@@ -489,8 +494,12 @@ Rules:
   intervals.
 - QA generation first reorganizes content into `section materials`: every
   logical `section_path` is one atomic material containing that section's body
-  fragments, text, and accepted image descriptions. Different sections are
-  never merged merely because they share a chapter or parent heading.
+  fragments and typed image blocks. Planner input separates `text_content`
+  from `image_materials`; every image receives a request-local alias such as
+  `图片-A`. Different sections are never merged merely because they share a
+  chapter or parent heading. `subject_label` is derived from the readable node
+  path and may be used only to make an otherwise ambiguous standalone question
+  explicit.
 - A scenario-planning LLM then returns evidence-bound `PointScenario` and
   `SummaryScenario` candidates. Point scenarios bind exactly one section
   material and one fact need. Summary scenarios bind one material with a real
@@ -500,6 +509,11 @@ Rules:
   more `required_materials` and may have `optional_materials`. Summary
   coverage checks inspect only required materials; an optional material that is
   not cited is not a failure.
+  Each scenario also carries `evidence_mode=text|visual|mixed` and
+  `required_image_refs`. An image is required only when removing its
+  description would make the planned question impossible to answer completely;
+  image-bearing sections are considered for visual scenarios but no final
+  image-question quota is forced.
   In `qa_detail_mode=auto`, the planner builds both pools and the allocator
   targets 35% summary scenarios; missing summary capacity flows to point
   scenarios rather than being fabricated. Explicit `point` or `summary` mode
@@ -507,8 +521,9 @@ Rules:
   question. Large documents are planned in internal character-bounded batches:
   point batches may contain independent sections, while summary batches retain
   structural parent neighborhoods so related sibling sections remain visible.
-  Pool selection and punctuation-insensitive final-question de-duplication are
-  document-wide. If a planner call underfills the point pool, deterministic
+  Pool selection and conservative semantic final-question de-duplication are
+  document-wide and apply across Point/Summary pools. If a planner call
+  underfills the point pool, deterministic
   one-material point scenarios fill only the missing capacity; summary
   scenarios are never synthesized as fallback. Planner calls use internal
   character-bounded batches and the shared `text_model_concurrency` pool passed
@@ -517,17 +532,26 @@ Rules:
   planner response is accepted only into the matching Point/Summary pool; a
   mismatched `scenario_type` is discarded. One section material may still
   contribute several Point scenarios when their intents cover distinct facts.
+  The plan may retain a small reserve of otherwise valid candidates. Reserve
+  units run only when editor, answer, coverage, or document-level de-duplication
+  drops leave the requested final count short; they are not generated when the
+  selected units already fill the target.
 - Point and summary scenarios use distinct question-generation instructions.
-  Every generated candidate then passes through one question-editor LLM call
+  Every generated candidate and every augmented question passes through the
+  same question-editor LLM contract
   that returns `keep`, `rewrite`, or `drop`. The editor may naturalize wording,
-  remove copied clause syntax and vague references, but may not change the
-  scenario intent, evidence boundary, or question type. Only JSON shape,
-  non-empty values, valid IDs/types, and exact duplicates are checked in code;
-  linguistic naturalness is not decided by hard-coded rules.
+  remove copied clause syntax and vague references, reduce a Point draft to its
+  single core intent, and turn Summary details into one umbrella question. It
+  also reclassifies genuinely required versus optional materials and image
+  dependency without changing the reader need or question type. Lightweight
+  clause-shape, pronoun, multi-intent, and length signals may trigger one extra
+  LLM review of a `keep` decision; they never rewrite or delete a question in
+  code.
 - After the candidate-question and answer LLM calls, generation performs only
   structural normalization: required JSON fields, supported question types,
   valid multiple-choice options/correct option, valid judgment answers, and
-  exact-question deduplication. It does not discard an otherwise structured QA
+  conservative same-source semantic question de-duplication. It does not
+  discard an otherwise structured QA
   item through ambiguous-reference, question-shape, source-fact segment,
   grounding, or source-anchor heuristics. Quality acceptance belongs to the
   downstream evaluation stage.
@@ -547,6 +571,10 @@ Rules:
   retained only when `evidence_usage` cites at least one primary chunk from
   every bound material; otherwise it enters the existing generation retry path.
   Retrieved-only evidence never becomes the scalar primary source.
+  Persisted QA/debug items include `evidence_mode`, stable source image IDs in
+  `required_image_refs`, `qa_generation_subject_label`, and the reviewed
+  `qa_generation_required_material_ids`/
+  `qa_generation_optional_material_ids`.
 - When `include_evaluation=true` and `evaluation_method` is `llm` or `local`,
   generation may publish validated QA items to a bounded evaluation queue before
   the file finishes. LLM evaluation uses `text_model_concurrency`; local

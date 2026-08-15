@@ -118,7 +118,7 @@ def build_scenario_planner_system_prompt(
     """Build typed, evidence-bound scenarios before any question is written."""
     mode = str(qa_detail_mode or "auto").strip().lower()
     allowed = (
-        "point only" if mode == "point" else "summary only" if mode == "summary" else "point and summary"
+        "point" if mode == "point" else "summary" if mode == "summary" else "point or summary"
     )
     if language_code == "en":
         return f"""# Role: QA scenario planner
@@ -129,11 +129,13 @@ Plan at most {max(0, int(requested_count))} useful QA scenarios from logical sec
 {language_instruction.strip()}
 
 ## Material contract
-- Each material is one logical section. Its body fragments, text, and accepted image descriptions have already been combined.
+- Each material is one logical section. `text_content` is ordinary text; every accepted image description remains a separate typed block in `image_materials` with its local context.
 - The input uses an opaque `material_ref` such as `主材料-A`; the alias has no article number, chunk number, or ordering meaning.
 - Use `node_path` and `parent_node_path` to understand the subject and scope. Never infer meaning from the alias.
 - Never merge materials merely because they share a chapter or parent heading.
 - Use only the supplied material_ref values and never invent one.
+- Treat every `image_ref` as another opaque temporary alias. Consider whether its description supports a useful visual fact, but never infer facts from the alias itself.
+- `context_before` and `context_after` only locate the image in the section. A visual scenario must be supported by `description`, not by surrounding context alone.
 
 ## Scenario contract
 - point: exactly one material and one atomic fact need; one fact can fully answer the future question.
@@ -143,12 +145,14 @@ Plan at most {max(0, int(requested_count))} useful QA scenarios from logical sec
 - A material may appear in both a point and a summary scenario when the intents differ. The same material is not permanently assigned to either type.
 - Allowed scenario types: {allowed}.
 - Prefer distinct, practical reader needs and output fewer scenarios when evidence is insufficient.
+- For a material with image blocks, actively consider a useful visual or mixed scenario. Do not force one when the image adds no answerable fact.
 
 ## Required JSON fields
-Each item must contain `scenario_type`, `intent`, `reader_need`, `required_material_refs`, and `optional_material_refs`.
+Each item must contain `scenario_type`, `intent`, `reader_need`, `required_material_refs`, `optional_material_refs`, `evidence_mode`, and `required_image_refs`.
 - `required_material_refs` are the materials whose facts the answer must use.
 - `optional_material_refs` are helpful context only; an answer may omit them without making the scenario invalid.
 - A point scenario has exactly one required ref and no optional refs. A summary may use one material with a real list or multiple related materials.
+- `evidence_mode` is `text`, `visual`, or `mixed`. List an image in `required_image_refs` only when removing that image description would make the future question impossible to answer completely. `visual` and `mixed` require at least one such image; `text` requires none.
 
 Output ONLY raw JSON: {{"items":[...]}}.
 """
@@ -160,11 +164,13 @@ Output ONLY raw JSON: {{"items":[...]}}.
 {language_instruction.strip()}
 
 ## 材料契约
-- 每份材料就是一个逻辑 section；其正文、物理 fragment 和已接受的图片描述已经合并。
+- 每份材料就是一个逻辑 section；`text_content` 是普通正文，已接受的图片描述以 `image_materials` 独立块保留，并附有局部上下文。
 - 输入中的 `material_ref` 是如 `主材料-A` 的临时别名，不包含条款号、chunk 编号或任何业务含义；不得从别名中的字符推断事实。
 - 必须结合 `node_path`、`parent_node_path` 和正文理解材料的主体与范围；节点路径是给模型理解结构的，不是让问题照抄的来源标签。
 - 不得仅因为材料同属一章或同一父标题就把它们合并。
 - 只能引用输入给出的 material_ref，不得编造别名。
+- `image_ref` 同样只是临时别名；可以根据图片描述规划视觉事实，但不得从别名本身推断内容。
+- `context_before/context_after` 只用于定位图片；视觉场景的事实必须来自 `description`，不能只依赖周边正文。
 
 ## 场景契约
 - point：只绑定一份材料，围绕一个原子事实需求；未来问题用一个事实即可完整回答。
@@ -174,11 +180,13 @@ Output ONLY raw JSON: {{"items":[...]}}.
 - 同一材料在意图不同的情况下，可以同时参与 point 和 summary 场景；材料本身不预先固定为某一种类型。
 - 允许的场景类型：{allowed}。
 - 优先选择真实读者会关心且互不重复的需求；证据不足时少生成，不要凑数。
+- 材料含图片块时，应主动判断其中是否有值得单独提问的视觉事实或与正文互补的事实；图片没有新增可回答信息时不要强行出视觉题。
 
 ## 每条 JSON 必填字段
-`scenario_type`、`intent`、`reader_need`、`required_material_refs`、`optional_material_refs`。
+`scenario_type`、`intent`、`reader_need`、`required_material_refs`、`optional_material_refs`、`evidence_mode`、`required_image_refs`。
 - `required_material_refs` 是答案必须使用的材料；`optional_material_refs` 只是可选背景，未被答案使用时不应判为失败。
 - point 必须恰好有一个 required ref 且没有 optional ref；summary 可以绑定同一材料中的真实列表，也可以绑定多个真正相关的材料。
+- `evidence_mode` 只能是 `text`、`visual`、`mixed`。只有删掉某张图片描述后将无法完整回答未来问题时，才把它放入 `required_image_refs`；visual/mixed 至少需要一张，text 必须为空。
 
 只输出纯 JSON：{{"items":[...]}}。
 """
@@ -202,11 +210,15 @@ Review one generated {mode} question against its scenario and source material.
 
 Return exactly one decision:
 - keep: already natural, standalone, focused, and directly answerable.
-- rewrite: preserve the exact intent and answer boundary while making it sound like a real reader question.
+- rewrite: preserve the reader need and supported facts while making it sound like a real reader question; accidental extra asks are not part of the Point answer boundary.
 - drop: no faithful natural rewrite is possible from the supplied material.
 
-Remove copied clause syntax, source-sentence prefixes, vague references, source/document viewpoints, and joined independent asks. Do not add a condition, subject, fact, or scope not present in the scenario. A summary question must still require all bound materials; a point question must still ask one fact. Keep question_type unchanged.
+Remove copied clause syntax, source-sentence prefixes, vague references, source/document viewpoints, and joined independent asks. Do not add a condition, subject, fact, or scope not present in the scenario. Keep question_type unchanged.
 - Check that the question names the concrete subject and object; do not leave a pronoun without an explicit antecedent.
+- `subject_label` is semantic context, not a citation. Use it only when the standalone question would otherwise say an unclear "it/this regulation"; do not mechanically prefix every question with it.
+- Point: when the draft joins independent asks, keep the single most useful core intent supported by reader_need. Summary: write one natural umbrella question and leave its related details to the answer; do not list several subquestions in the question.
+- Reassess source dependency after editing. Put in `required_material_refs` only materials genuinely needed to answer the edited question; move background to `optional_material_refs`. Point still has exactly one required material and no optional material.
+- Reassess image dependency by asking: if all image descriptions were removed, could the edited question still be answered completely? If yes, return `evidence_mode=text` and no required images. If no, return `visual` or `mixed` and the indispensable `required_image_refs`.
 - Bad: "What should it do?" Good: "What should the applicant do after the application materials are accepted?"
 
 ## Strict rewrite examples
@@ -216,7 +228,7 @@ Remove copied clause syntax, source-sentence prefixes, vague references, source/
   Rewrite: "How long does the review take after a complete application is accepted?"
 - A question is not natural merely because it is grammatical or directly answerable. If it copies a source precondition followed by a comma or conditional clause, choose rewrite unless that condition is indispensable to distinguish the rule.
 
-Output ONLY raw JSON: {{"decision":"keep|rewrite|drop","question":"...","reason":"..."}}.
+Output ONLY raw JSON: {{"decision":"keep|rewrite|drop","question":"...","reason":"...","required_material_refs":[],"optional_material_refs":[],"evidence_mode":"text|visual|mixed","required_image_refs":[]}}.
 """
     return f"""# 角色：最终问题编辑器
 
@@ -227,11 +239,15 @@ Output ONLY raw JSON: {{"decision":"keep|rewrite|drop","question":"...","reason"
 
 只能作出一个决定：
 - keep：问题已经自然、独立、聚焦且能由材料直接回答。
-- rewrite：严格保持原意和答案边界，只把表达改成真实读者会问的自然问句。
+- rewrite：保持读者需求和有证据的事实边界，把表达改成真实读者会问的自然问句；单点草稿误拼的额外问项不属于必须保留的答案边界。
 - drop：无法在不改变事实或范围的前提下合理改写。
 
-需要消除条文照搬、原句前半段式问法、模糊指代、文件/原文视角和多个独立事项拼问。不得新增场景中没有的条件、主体、事实或范围。总结题改写后仍必须需要全部绑定材料；单点题仍只能问一个事实。question_type 不得改变。
+需要消除条文照搬、原句前半段式问法、模糊指代、文件/原文视角和多个独立事项拼问。不得新增场景中没有的条件、主体、事实或范围。question_type 不得改变。
 - 检查问题是否直接写出明确主体和对象；没有明确先行词时，不得保留“该、其、上述、其中、此类、他们”等指代。
+- `subject_label` 是用于理解主体的语义信息，不是引用来源。只有独立问题否则会写成不清楚的“该条例/该系统”时才自然带入它，不要给每道题机械添加文件名。
+- 单点题若拼接了多个独立问法，应依据 reader_need 只保留最有价值的一个核心意图；总结题应写成一个自然的总括问题，具体要点放在答案里，不要在问题中罗列多个子问题。
+- 编辑后重新判断材料依赖：`required_material_refs` 只保留完整回答确实必需的材料，背景材料移到 `optional_material_refs`。单点题仍必须恰好一个 required 且没有 optional。
+- 重新判断图片依赖：假设删掉全部图片描述，问题是否仍能完整回答？若能，返回 `evidence_mode=text` 且 required_image_refs 为空；若不能，返回 visual 或 mixed，并列出不可缺少的图片别名。
 - 反例：“该人员如何办理？”；正确：“申请材料齐全的申请人应当如何办理登记？”
 
 ## 严格改写示例
@@ -241,7 +257,7 @@ Output ONLY raw JSON: {{"decision":"keep|rewrite|drop","question":"...","reason"
   改写：“材料齐全的申请获受理后，审核需要多长时间？”
 - 语法通顺、能够作答，不等于自然。凡是把原文的条件从句直接搬到逗号前，再把后半句改成疑问的，原则上必须 rewrite；只有该条件用于区分不同规则时才保留最少必要部分。
 
-只输出纯 JSON：{{"decision":"keep|rewrite|drop","question":"...","reason":"..."}}。
+只输出纯 JSON：{{"decision":"keep|rewrite|drop","question":"...","reason":"...","required_material_refs":[],"optional_material_refs":[],"evidence_mode":"text|visual|mixed","required_image_refs":[]}}。
 """
 
 
@@ -285,10 +301,13 @@ Generate at most {max_candidates} training-data questions from the supplied sour
 - Do not convert the first half of a source sentence into a question, carry every legal predicate into the question, or imitate source syntax.
 - Do not mention sources, documents, sections, article numbers, titles, "according to", or vague references.
 - State the concrete subject, object, condition, and action whenever the source fragment could otherwise be ambiguous.
+- Use the supplied `subject_label` only when needed to replace an otherwise unclear reference. It identifies the subject; it must not become an "according to the document" citation prefix.
 - Do not use "it", "this", "that", "the former", or another pronoun without an explicit antecedent in the question itself.
 - Bad: "What obligations does it have?" Good: "What obligations does a physician have when treating a couple with a hereditary condition that makes pregnancy inadvisable?"
 - Prefer a practical rule, amount, step, condition, responsibility, prohibition, deadline, exception, mechanism, or comparison over background or slogans.
 - Example: write "How much additional maternity leave is available after childbirth?", not "For employees who legally give birth, how many additional leave days apply beyond statutory maternity leave?"
+- Point scenarios ask only the most useful single intent. Summary scenarios use one natural umbrella question; do not enumerate every answer facet as a chain of asks.
+- Follow `evidence_mode` and `required_image_refs`. For visual/mixed scenarios, the question must depend on facts found in those image descriptions. Ask the fact naturally instead of adding "in the image" merely to signal provenance.
 
 {detail_mode_section}
 
@@ -321,10 +340,13 @@ Output ONLY raw JSON: {{"items":[...]}}.
 - 不要把原文一句话的前半句改成问题，也不要把完整法规前提、原文句式或检索细节搬进问题。
 - 不要出现“根据/依据”、条号、文件名、章节名、“文中指出”等来源视角，也不要使用指代不明的词。
 - 如果脱离材料后主体、对象、条件或动作可能不清楚，必须在问题中直接写出来。
+- 只有问题否则会出现不清楚的“该条例/该系统”等指代时，才使用输入的 `subject_label` 补足主体；它不是引用前缀，不得写成“根据该文件”。
 - 禁止使用没有明确先行词的“该、其、上述、其中、此类、相关人员、他们”等指代。
 - 反例：“其需要履行哪些义务？”；正确：“医师对患有不宜生育遗传性疾病的夫妻需要履行哪些义务？”
 - 优先问实际会关心的规则、金额、步骤、条件、责任、禁止、期限、例外、机制或对比；跳过背景、口号和空泛管理表述。
 - 例如写“生育后还能增加多少天产假？”，不要写“职工合法生育子女的，在法定产假之外可以增加多少天产假？”。
+- 单点场景只问最有价值的一个核心意图；总结场景写一个自然的总括问题，不要把答案中的各要点逐项串成多个问法。
+- 严格遵循 `evidence_mode` 和 `required_image_refs`。visual/mixed 场景的问题必须依赖对应图片描述中的事实，但不要仅为标记来源而机械添加“图中显示”。
 
 {detail_mode_section}
 
@@ -388,6 +410,7 @@ def build_evidence_answer_system_prompt(
 6. Fill evidence_usage with only `evidence_ref` and `role` for every material section that directly supports the answer. Do not invent or output chunk IDs, snippets, or usage descriptions.
 7. Treat labels such as `主材料-1` and `检索证据-1` as bookkeeping only; never copy them into question, answer, answer_explanation, or source_fact_text.
 8. For a summary question, cite every primary material required by the question. Do not answer only the first half of a multi-fact scenario.
+9. Follow `evidence_mode`. For visual/mixed questions, directly use the descriptions identified by `required_image_refs`; do not replace their facts with nearby text or expose bookkeeping labels in the answer.
 
 {detail_mode_section}
 
@@ -459,6 +482,7 @@ qa_detail_mode={qa_detail_mode}
 6. 填写 evidence_usage，只列出真正支撑答案的 `evidence_ref` 和 `role`；不得编造或输出 chunk_id、snippet、usage。
 7. `主材料-1`、`检索证据-1` 等标签仅用于证据追踪，不得写进 question、answer、answer_explanation 或 source_fact_text。
 8. 总结题必须引用回答该问题所必需的每份主材料，不得只回答多事实场景的前半部分。
+9. 严格遵循 `evidence_mode`：visual/mixed 问题必须直接使用 `required_image_refs` 对应图片描述里的事实，不能拿邻近正文代替，也不能在答案中暴露记账标签。
 
 {detail_mode_section}
 

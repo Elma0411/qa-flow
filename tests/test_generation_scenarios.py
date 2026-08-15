@@ -45,6 +45,16 @@ class _ScenarioClient:
         return json.dumps({"items": self.items}, ensure_ascii=False)
 
 
+class _RecordingScenarioClient(_ScenarioClient):
+    def __init__(self, items):
+        super().__init__(items)
+        self.messages = []
+
+    def create_chat_completion_text(self, **kwargs):
+        self.messages = kwargs["messages"]
+        return super().create_chat_completion_text(**kwargs)
+
+
 class GenerationScenarioTests(unittest.TestCase):
     def test_planner_receives_batch_context_and_records_it(self):
         chunks = [
@@ -214,6 +224,95 @@ class GenerationScenarioTests(unittest.TestCase):
         self.assertEqual(["img-1"], first.source_asset_ids)
         self.assertEqual([1, 2], plan.units[0].source_chunk_indexes)
 
+    def test_image_description_stays_a_typed_material_block(self):
+        chunk = _chunk(
+            1,
+            "1.1",
+            "陕西省人口与计划生育条例>第三章>第二十五条",
+            "第二十五条正文。\n\n【图片描述：界面显示需选择婚姻状况。】",
+        )
+        chunk["image_materials"] = [{
+            "image_id": "internal-image-id",
+            "description": "界面显示需选择婚姻状况。",
+            "context_before": "办理信息填写",
+            "context_after": "提交申请",
+        }]
+        client = _RecordingScenarioClient([{
+            "scenario_type": "point only",
+            "intent": "询问界面必填项",
+            "reader_need": "了解办理时需要选择什么",
+            "required_material_refs": ["主材料-A"],
+            "optional_material_refs": [],
+            "evidence_mode": "visual",
+            "required_image_refs": ["图片-A"],
+        }])
+
+        def planner(materials, count, mode):
+            return call_scenario_planner_llm(
+                client=client,
+                model="test",
+                section_materials=list(materials),
+                requested_count=count,
+                qa_detail_mode=mode,
+                prompt_language="zh",
+                request_timeout=10,
+            )
+
+        plan = plan_generation_units(
+            [chunk],
+            qa_total_limit=1,
+            qa_per_chunk=1,
+            qa_detail_mode="point",
+            chunk_size=600,
+            scenario_planner=planner,
+        )
+
+        material = plan.section_materials[0]
+        prompt_material = material.to_prompt_dict()
+        self.assertNotIn("【图片描述", material.text_content)
+        self.assertEqual("《陕西省人口与计划生育条例》", material.subject_label)
+        self.assertEqual("界面显示需选择婚姻状况。", prompt_material["image_materials"][0]["description"])
+        self.assertEqual("visual", plan.units[0].evidence_mode)
+        self.assertEqual(["internal-image-id"], plan.units[0].required_image_ids)
+        planner_input = client.messages[1]["content"]
+        self.assertIn("图片-A", planner_input)
+        self.assertNotIn("internal-image-id", planner_input)
+
+    def test_one_visual_material_can_support_a_real_summary_scenario(self):
+        chunk = _chunk(
+            1,
+            "1.1",
+            "申报指南>导入流程",
+            "【图片描述：操作流程包括文件选择和数据校验。第一步选择文件。第二步检查校验结果。】",
+        )
+        chunk["image_materials"] = [{
+            "image_id": "img-flow",
+            "description": "操作流程包括文件选择和数据校验。第一步选择文件。第二步检查校验结果。",
+            "context_before": "",
+            "context_after": "",
+        }]
+
+        plan = plan_generation_units(
+            [chunk],
+            qa_total_limit=1,
+            qa_per_chunk=1,
+            qa_detail_mode="summary",
+            chunk_size=600,
+            scenario_planner=lambda materials, _count, _mode: [{
+                "scenario_type": "summary",
+                "intent": "总结导入流程",
+                "reader_need": "了解完整导入步骤",
+                "required_material_ids": [materials[0].material_id],
+                "optional_material_ids": [],
+                "evidence_mode": "visual",
+                "required_image_ids": ["img-flow"],
+            }],
+        )
+
+        self.assertEqual(1, len(plan.units))
+        self.assertEqual("summary", plan.units[0].qa_mode)
+        self.assertEqual("visual", plan.units[0].evidence_mode)
+
     def test_repeated_markdown_heading_is_removed_after_first_fragment(self):
         chunks = [
             _chunk(1, "1.1", "文档>材料", "## 材料\n第一段正文。", fragment=1, fragment_count=2),
@@ -286,6 +385,12 @@ class GenerationScenarioTests(unittest.TestCase):
         self.assertEqual(4, len(plan.units))
         self.assertEqual(1, plan.scenario_selected_by_type["summary"])
         self.assertEqual(3, plan.scenario_selected_by_type["point"])
+        self.assertTrue(plan.reserve_units)
+        self.assertEqual(
+            len(plan.reserve_units),
+            plan.summary()["reserve_generation_units_total"],
+        )
+        self.assertLessEqual(len(plan.reserve_units), 2)
 
     def test_point_budget_covers_distinct_small_batches(self):
         chunks = [
@@ -489,6 +594,30 @@ class GenerationScenarioTests(unittest.TestCase):
             {"question": "办理需要多久？", "answer": "五天"},
             {"question": "办理 需要 多久", "answer": "五个工作日"},
             {"question": "需要提交哪些材料？", "answer": "身份证明"},
+        ]
+
+        deduped, dropped = _deduplicate_document_questions(items)
+
+        self.assertEqual(2, len(deduped))
+        self.assertEqual(1, dropped)
+
+    def test_document_question_dedup_removes_cross_mode_semantic_duplicate(self):
+        items = [
+            {
+                "question": "申请办理登记需要经过哪些步骤？",
+                "qa_generation_unit_mode": "point",
+                "qa_generation_material_ids": ["section-1"],
+            },
+            {
+                "question": "办理登记需要经过哪些具体步骤？",
+                "qa_generation_unit_mode": "summary",
+                "qa_generation_material_ids": ["section-1", "section-2"],
+            },
+            {
+                "question": "办理登记需要提交哪些材料？",
+                "qa_generation_unit_mode": "point",
+                "qa_generation_material_ids": ["section-1"],
+            },
         ]
 
         deduped, dropped = _deduplicate_document_questions(items)

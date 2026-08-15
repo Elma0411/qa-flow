@@ -24,6 +24,7 @@ _EXPORTS = {
     "normalize_question_types": ".qa_generation_flow",
     "GenerationUnit": ".structure_units",
     "GenerationUnitPlan": ".structure_units",
+    "ImageMaterial": ".structure_units",
     "SectionMaterial": ".structure_units",
     "plan_generation_units": ".structure_units",
     "QADocumentEvidenceIndex": ".evidence_units",

@@ -395,6 +395,15 @@ def build_consolidated_entry(
             "qa_generation_scenario_intent": merged.get("qa_generation_scenario_intent"),
             "qa_generation_reader_need": merged.get("qa_generation_reader_need"),
             "qa_generation_material_ids": merged.get("qa_generation_material_ids") or [],
+            "qa_generation_required_material_ids": merged.get(
+                "qa_generation_required_material_ids"
+            ) or [],
+            "qa_generation_optional_material_ids": merged.get(
+                "qa_generation_optional_material_ids"
+            ) or [],
+            "qa_generation_subject_label": merged.get("qa_generation_subject_label"),
+            "evidence_mode": merged.get("evidence_mode") or "text",
+            "required_image_refs": merged.get("required_image_refs") or [],
             "qa_generation_unit_source_chunk_indexes": merged.get(
                 "qa_generation_unit_source_chunk_indexes"
             )

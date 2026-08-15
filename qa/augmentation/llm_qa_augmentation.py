@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, List, Optional
 
 from qa.common import build_language_instruction, detect_language
+from qa.generation import call_question_editor_llm
 from qa.prompts.qa_augmentation_prompts import build_augment_prompt
 from app.services.llm import LLMClientProtocol, VLMClientConfig, create_vlm_client
 
@@ -331,6 +332,39 @@ def _augment_single(
             q_new = str(item.get("question") or "").strip()
             a_new = str(item.get("answer") or "").strip()
             if not q_new or not a_new:
+                continue
+            edited, _editor_status = call_question_editor_llm(
+                client=client,
+                model=model,
+                candidate={
+                    "question": q_new,
+                    "question_type": question_type,
+                },
+                source_material=str(
+                    qa.get("qa_generation_unit_text")
+                    or qa.get("source_fact_text")
+                    or answer
+                    or ""
+                ),
+                scenario_intent=str(qa.get("qa_generation_scenario_intent") or question),
+                reader_need=str(qa.get("qa_generation_reader_need") or question),
+                qa_detail_mode=str(qa.get("qa_generation_unit_mode") or "point"),
+                prompt_language=language_code if language_code in {"zh", "en"} else "zh",
+                request_timeout=45,
+                source_material_path=str(qa.get("source_chunk_title_path") or "") or None,
+                source_material_paths=(
+                    list(qa.get("source_chunk_title_paths") or [])
+                    if isinstance(qa.get("source_chunk_title_paths"), list)
+                    else None
+                ),
+                source_chunk_meta={
+                    "qa_generation_unit_subject_label": qa.get("qa_generation_subject_label"),
+                },
+            )
+            if not edited:
+                continue
+            q_new = str(edited.get("question") or "").strip()
+            if not q_new:
                 continue
             if q_new in seen_questions:
                 continue

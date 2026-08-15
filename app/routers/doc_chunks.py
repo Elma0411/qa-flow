@@ -640,6 +640,19 @@ async def chunk_debug(
                     "qa_generation_material_ids"
                 )
                 or [],
+                "qa_generation_required_material_ids": debug_detail.get(
+                    "qa_generation_required_material_ids"
+                )
+                or [],
+                "qa_generation_optional_material_ids": debug_detail.get(
+                    "qa_generation_optional_material_ids"
+                )
+                or [],
+                "qa_generation_subject_label": debug_detail.get(
+                    "qa_generation_subject_label"
+                ),
+                "evidence_mode": debug_detail.get("evidence_mode") or "text",
+                "required_image_refs": debug_detail.get("required_image_refs") or [],
                 "qa_generation_unit_source_chunk_indexes": debug_detail.get(
                     "qa_generation_unit_source_chunk_indexes"
                 )

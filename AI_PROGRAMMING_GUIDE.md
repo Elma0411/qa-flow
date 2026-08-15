@@ -46,8 +46,9 @@ The QA question path is fixed:
 `content chunks -> SectionMaterial -> PointScenario/SummaryScenario -> typed question draft -> question editor -> evidence retrieval -> answer`
 
 `SectionMaterial` is the atomic generation material for one exact
-`section_path`; it restores that section's physical fragments and accepted
-image descriptions without merging sibling sections. Scenario planning uses
+`section_path`; it restores that section's physical fragments and keeps
+accepted image descriptions as typed image blocks beside ordinary text without
+merging sibling sections. Scenario planning uses
 bounded internal batches, but Point/Summary allocation and final question
 deduplication are document-wide. These are internal planning rules rather than
 request-level tuning parameters.

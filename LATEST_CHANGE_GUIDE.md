@@ -1,43 +1,59 @@
 # Latest Change Guide
 
-更新时间：2026-08-15（Asia/Shanghai）
+更新时间：2026-08-16（Asia/Shanghai）
 
 ## Objective
 
-统一 QA Flow 的并发资源模型，并让集成文档流水线支持“文件就绪即交接、问答生成与评估重叠执行”。本轮不再让多个旧的阶段参数互相钳制同一类请求。
+提升 Point/Summary 出题的自然性、主体明确性与图片利用率，并修复 Summary
+材料过绑定、跨题型重复和生成后数量不足。图片识别模型本身不在本轮范围内。
 
 ## Effective Changes
 
-- `file_concurrency` 是文件级槽位上限。集成文档流程使用有界文件队列：文件 A 完成 OCR/文本预处理后立即进入 chunk、planner、问答生成和评估，文件 B 可以同时继续 OCR；队列满时自动回压。
-- `ocr_concurrency` 只控制 OCR 资源；`vision_model_concurrency` 只控制图片理解 VLM；`text_model_concurrency` 是文本模型共享池，覆盖 chunk summary、Point/Summary planner、候选题、问题编辑、答案、图片契合度、增广、普通 LLM 评估和无监督 Faithfulness 的假设句改写。
-- `evaluation_concurrency` 只控制本地评估 worker/调度，不再限制 LLM 请求。独立评估页面和接口也改用 `text_model_concurrency` 与 `evaluation_concurrency`，删除旧的 hypothesis 专用并发字段。
-- 前端任务设置只保留一组五项并发控件（文件、OCR、图片模型、文本模型、评估）；标准流程自动忽略 OCR/图片模型值，一体流程提交完整五项，避免新旧控件重复渲染和同名参数重复提交。
-- 前端 `app.js` 资源版本已更新，避免浏览器继续使用旧 HTML/脚本组合导致性能面板只显示三项。
-- 场景规划批次调试区改为默认收起的双层折叠面板；展开后限制预览区高度并在内部滚动，批次原始响应按钮仍可单独打开查看。
-- UI 资源与页面导航改用相对 `/ui/` 路径，并根据当前 URL 自动推断 API 代理前缀，兼容直连、SSLVPN Web 代理和 WebVPN 前缀访问；所有页面资源统一使用构建号 `2026-08-15-4`。
-- `/ui`、`/ui/`、HTML、脚本、样式和图片统一返回 `no-store/no-cache` 及代理禁缓存头；目录入口显式返回当前 `index.html`，不再让 VPN 网关缓存旧目录索引。
-- 根地址 `/` 改为相对跳转到 `./ui/`，避免 WebVPN/SSLVPN 前缀被绝对 `/ui/...` 路径截断。
-- 主流水线页面移除旧的 LLM 调试兜底逻辑，并在新版 `app.js` 完成同步初始化前隐藏原始 DOM；旧/半加载脚本只显示加载失败提示，不会再把旧式表单和 Chunk Tree 暴露给用户。
-- 共享 LLM client 使用显式资源池并发配置；无监督 Faithfulness 改为复用同一 client pool，避免每个线程各自创建 client 后把文本请求数放大。
-- 普通 `llm` 评估采用有界队列。generation unit 产出一个通过校验的 QA 后立即进入评估；LLM 评估按单 QA 刷新，本地评估保留小批量以避免重复模型初始化。生成端继续运行，队列满时产生回压。
-- Point/Summary planner 继续并行建立两类候选池，但 planner 与其它文本阶段共用 `text_model_concurrency`，不再有单独的 planner 并发配置。
-- Docker compose、集成 API 文档、集成契约、批量/独立评估前端字段同步为五个并发参数；旧 `doc_*`、`image_*`、`chunk_*`、`eval_*`、`faithfulness_hypothesis_max_concurrency` 公共字段移除。
+- 集成文档交接在原有可检索正文之外新增 `image_materials`。每张已接受图片保留
+  稳定来源 ID、描述以及图片前后上下文；SectionMaterial 给模型的材料改成
+  `text_content + image_materials`，图片使用请求内 `图片-A` 别名，不暴露来源 ID。
+- 场景新增 `evidence_mode=text|visual|mixed` 与 `required_image_refs`。planner 会考虑
+  图片是否提供可独立提问的新事实，但不强制图片题配额；删除图片描述后仍可完整
+  回答的问题归为 text。
+- 从可读节点路径推导 `subject_label`。候选题和问题编辑器只在独立问题主体不明时
+  使用它，解决“该条例/该系统”脱离文档后无先行词的问题。
+- 候选题从 `reader_need` 出发。Point 只保留一个核心意图；Summary 使用一个自然
+  总括问题，细节留在答案中。问题编辑器可以把不必需材料从 required 调整为
+  optional，从而让 Summary 覆盖校验只约束编辑后真正必需的材料。
+- `keep` 决定若命中模糊指代、原句条件从句形态、多意图或异常长度信号，会额外
+  进行一次 LLM 复审；信号本身不执行机械改写或删除。问答增广问题也经过同一编辑器。
+- planner 输出的 `point only`/`summary only` 会规范成有效枚举；提示词只要求
+  `point`/`summary`。文档级去重增加保守语义比较，并跨 Point/Summary 生效。
+- 规划结果保留少量候补 generation unit。主单元因编辑、答案、覆盖或去重造成
+  数量不足时才按缺口执行候补；达到目标时不会生成多余问答。
+- 持久化和调试记录新增 `evidence_mode`、`required_image_refs`、
+  `qa_generation_subject_label`、reviewed required/optional material IDs。
+
+## Open-Source Design References
+
+- Docling：文档层级、reading order 与 Picture/Table typed item 思路。
+- LlamaIndex：文本节点与图片节点分离、在合成阶段保留多模态来源关系。
+- RAG-Anything：图片描述与局部上下文绑定、按模态保留元数据。
+- Ragas：先规划场景/读者需求，再生成具体问题以及按分布选择场景。
+
+本轮只借鉴这些数据建模和流程原则，没有复制第三方实现，也没有把
+`external_repos/` 纳入提交。
 
 ## Expected Behavior
 
-任务状态中会记录五个 resolved 并发值以及 `streaming_files`。集成任务的 `file_progress` 可以看到文件预处理阶段和 QA 生成/评估阶段交错推进；LLM 评估阶段会显示流式批次数和已评估数量。无监督评估仍在文件生成完成后运行其本地模型套件，因为它需要统一的文档级批次和聚合结果。
+带图片任务的 planner 调试输入能看到独立图片块；visual/mixed 问题必须依赖所列
+图片描述。普通问题不再为了图片而写“图中显示”。问题编辑后应尽量避免模糊指代、
+条文前半句式问法和多个独立问项；Summary 不再因可选背景未引用而触发
+`incomplete_summary_primary_coverage`。最终数量不足时会在候补场景存在的范围内补齐。
 
 ## Validation
 
-已通过：
-
 ```bash
-git diff --check
-for f in static/*.js; do node --check "$f"; done
-docker exec qa-flow-runtime sh -lc 'cd /app && python -m compileall -q app qa scripts tests && python -m unittest discover -s tests -v'
+docker exec qa-flow-runtime sh -lc 'cd /app && python -m compileall -q app qa scripts tests'
+docker exec qa-flow-runtime sh -lc 'cd /app && python -m unittest discover -s tests -v'
 docker exec qa-flow-runtime sh -lc 'cd /app && python -c "import app.main"'
 curl -fsS http://localhost:12000/test-connection
 curl -fsS http://localhost:12000/health
 ```
 
-修改文件需保持 UTF-8 无 BOM。`AGENTS.md` 的已有本地修改属于用户既有内容，本轮不应提交。
+修改文件必须保持 UTF-8 无 BOM。`AGENTS.md` 的既有本地修改仍属于用户，不纳入本轮提交。

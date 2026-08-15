@@ -7,6 +7,7 @@ from unittest.mock import patch
 from qa.generation.qa_generation_flow import (
     call_candidate_question_llm,
     call_evidence_answer_llm,
+    call_question_editor_llm,
 )
 from qa.pipeline_runtime import parse_one_step_pipeline_runtime
 from qa.prompts.qa_generation_prompts import (
@@ -107,6 +108,11 @@ class QAGenerationContractTests(unittest.TestCase):
             "qa_generation_scenario_intent": "总结办理要求",
             "qa_generation_reader_need": "一次了解材料和时限",
             "qa_generation_material_ids": ["section-1", "section-2"],
+            "qa_generation_required_material_ids": ["section-1"],
+            "qa_generation_optional_material_ids": ["section-2"],
+            "qa_generation_subject_label": "办理指南",
+            "evidence_mode": "mixed",
+            "required_image_refs": ["img-1"],
             "qa_generation_unit_source_chunk_indexes": [1, 2],
             "qa_generation_unit_section_path": "1",
             "qa_generation_unit_quality_child_coverage": 1.0,
@@ -136,6 +142,9 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertEqual("summary_scenario", consolidated["qa_generation_unit_type"])
         self.assertEqual("summary", consolidated["qa_generation_unit_mode"])
         self.assertEqual(["c1", "c2"], consolidated["source_chunk_ids"])
+        self.assertEqual(["section-1"], consolidated["qa_generation_required_material_ids"])
+        self.assertEqual("mixed", consolidated["evidence_mode"])
+        self.assertEqual(["img-1"], consolidated["required_image_refs"])
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = str(Path(tmp_dir) / "qa-debug.sqlite3")
@@ -146,6 +155,7 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertEqual("summary_scenario", debug_payload["qa_generation_unit_type"])
         self.assertEqual("summary", debug_payload["qa_generation_unit_mode"])
         self.assertEqual(["section-1", "section-2"], debug_payload["qa_generation_material_ids"])
+        self.assertEqual(["section-2"], debug_payload["qa_generation_optional_material_ids"])
 
     def test_summary_candidate_prompt_requires_one_question_per_item(self):
         zh_prompt = build_candidate_question_system_prompt(
@@ -289,6 +299,95 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertIn("女职工生育后，可以额外休多少天产假", zh_prompt)
         self.assertIn("把原文的条件从句直接搬到逗号前", zh_prompt)
         self.assertIn("not natural merely because it is grammatical", en_prompt)
+
+    def test_question_editor_rewrites_subject_and_reclassifies_material_dependency(self):
+        client = _StaticChatClient({
+            "decision": "rewrite",
+            "question": "《陕西省人口与计划生育条例》还禁止歧视、虐待哪些妇女？",
+            "reason": "补足主体并去掉模糊指代",
+            "required_material_refs": ["主材料-B"],
+            "optional_material_refs": ["主材料-A"],
+            "evidence_mode": "text",
+            "required_image_refs": [],
+        })
+        edited, status = call_question_editor_llm(
+            client=client,
+            model="test-model",
+            candidate={"question": "该条例还禁止歧视、虐待哪些妇女？", "question_type": "简答题"},
+            source_material="条例正文。",
+            scenario_intent="询问禁止歧视虐待的对象",
+            reader_need="了解具体保护对象",
+            qa_detail_mode="summary",
+            prompt_language="zh",
+            request_timeout=10,
+            source_chunk_meta={
+                "qa_generation_unit_subject_label": "《陕西省人口与计划生育条例》",
+                "qa_generation_unit_evidence_mode": "text",
+                "qa_generation_unit_required_material_ids": ["section-1", "section-2"],
+                "qa_generation_unit_optional_material_ids": [],
+                "qa_generation_unit_material_ref_map": {
+                    "主材料-A": "section-1",
+                    "主材料-B": "section-2",
+                },
+                "qa_generation_unit_image_ref_map": {},
+                "qa_generation_unit_prompt_materials": [
+                    {"material_ref": "主材料-A", "node_path": "总则", "text_content": "背景。", "image_materials": []},
+                    {"material_ref": "主材料-B", "node_path": "保护对象", "text_content": "禁止歧视虐待妇女。", "image_materials": []},
+                ],
+            },
+        )
+
+        self.assertEqual("rewrite", status)
+        self.assertEqual(["section-2"], edited["required_material_ids"])
+        self.assertEqual(["section-1"], edited["optional_material_ids"])
+        self.assertTrue(edited["question"].startswith("《陕西省人口与计划生育条例》"))
+
+    def test_required_image_promotes_its_parent_material_to_required(self):
+        client = _StaticChatClient({
+            "decision": "keep",
+            "question": "申报界面显示的文件大小上限是多少？",
+            "reason": "问题依赖界面截图",
+            "required_material_refs": ["主材料-B"],
+            "optional_material_refs": ["主材料-A"],
+            "evidence_mode": "mixed",
+            "required_image_refs": ["图片-A"],
+        })
+        edited, status = call_question_editor_llm(
+            client=client,
+            model="test-model",
+            candidate={"question": "申报界面显示的文件大小上限是多少？", "question_type": "简答题"},
+            source_material="操作说明。",
+            scenario_intent="询问上传限制",
+            reader_need="了解文件大小上限",
+            qa_detail_mode="summary",
+            prompt_language="zh",
+            request_timeout=10,
+            source_chunk_meta={
+                "qa_generation_unit_required_material_ids": ["section-1", "section-2"],
+                "qa_generation_unit_optional_material_ids": [],
+                "qa_generation_unit_evidence_mode": "mixed",
+                "qa_generation_unit_required_image_ids": ["img-1"],
+                "qa_generation_unit_material_ref_map": {
+                    "主材料-A": "section-1",
+                    "主材料-B": "section-2",
+                },
+                "qa_generation_unit_image_ref_map": {"图片-A": "img-1"},
+                "qa_generation_unit_prompt_materials": [
+                    {
+                        "material_ref": "主材料-A",
+                        "node_path": "上传界面",
+                        "text_content": "",
+                        "image_materials": [{"image_ref": "图片-A", "description": "文件不超过100MB。"}],
+                    },
+                    {"material_ref": "主材料-B", "node_path": "操作说明", "text_content": "点击上传。", "image_materials": []},
+                ],
+            },
+        )
+
+        self.assertEqual("keep", status)
+        self.assertEqual(["section-2", "section-1"], edited["required_material_ids"])
+        self.assertEqual([], edited["optional_material_ids"])
+        self.assertEqual(["img-1"], edited["required_image_ids"])
 
     def test_answer_prompt_requires_standalone_reader_explanation(self):
         zh_prompt = build_evidence_answer_system_prompt(

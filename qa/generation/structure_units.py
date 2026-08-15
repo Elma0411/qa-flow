@@ -37,11 +37,35 @@ def _planning_material_ref(position: int) -> str:
     return "主材料-" + "".join(reversed(letters))
 
 
+def _planning_image_ref(position: int) -> str:
+    number = max(1, int(position))
+    letters: List[str] = []
+    while number:
+        number, remainder = divmod(number - 1, 26)
+        letters.append(chr(ord("A") + remainder))
+    return "图片-" + "".join(reversed(letters))
+
+
 def _parent_node_path(title_path: str) -> str:
     value = _safe_text(title_path).replace("＞", ">")
     if ">" not in value:
         return ""
     return value.rsplit(">", 1)[0].strip(" >")
+
+
+def _subject_label(title_path: str) -> str:
+    """Derive a concise standalone subject from the human-readable path."""
+    value = _safe_text(title_path).replace("＞", ">")
+    first = next((part.strip() for part in value.split(">") if part.strip()), "")
+    first = re.sub(r"^#{1,6}\s*", "", first).strip()
+    first = re.sub(r"\.(?:pdf|docx?|txt|md)$", "", first, flags=re.I).strip()
+    if not first:
+        return ""
+    if first.startswith("《") and first.endswith("》"):
+        return first
+    if re.search(r"(条例|办法|规定|细则|规则|规范|标准|指南|手册|方案|通知|意见|决定|法律|法)$", first):
+        return f"《{first}》"
+    return first
 
 
 def _invoke_scenario_planner(
@@ -251,6 +275,32 @@ class StructureGraph:
 
 
 @dataclass(frozen=True)
+class ImageMaterial:
+    image_id: str
+    description: str
+    context_before: str
+    context_after: str
+    source_chunk_index: int
+
+    def to_prompt_dict(self, image_ref: str) -> Dict[str, Any]:
+        return {
+            "image_ref": image_ref,
+            "description": self.description,
+            "context_before": self.context_before,
+            "context_after": self.context_after,
+        }
+
+    def to_debug_dict(self) -> Dict[str, Any]:
+        return {
+            "image_id": self.image_id,
+            "source_chunk_index": self.source_chunk_index,
+            "description_char_count": len(self.description),
+            "context_before_char_count": len(self.context_before),
+            "context_after_char_count": len(self.context_after),
+        }
+
+
+@dataclass(frozen=True)
 class SectionMaterial:
     material_id: str
     material_index: int
@@ -263,17 +313,34 @@ class SectionMaterial:
     content_kinds: List[str]
     source_asset_ids: List[str]
     material_text: str
+    text_content: str
+    image_materials: List[ImageMaterial]
+    subject_label: str
     usable: bool
     quality_score: float
 
-    def to_prompt_dict(self, material_ref: Optional[str] = None) -> Dict[str, Any]:
+    def to_prompt_dict(
+        self,
+        material_ref: Optional[str] = None,
+        image_refs_by_id: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
         """Render a material for the planner without exposing internal IDs."""
         node_path = self.title_path or "未标注章节"
+        image_ref_map = image_refs_by_id or {
+            image.image_id: _planning_image_ref(index)
+            for index, image in enumerate(self.image_materials, start=1)
+        }
         return {
             "material_ref": material_ref or _planning_material_ref(self.material_index),
             "node_path": node_path,
             "parent_node_path": _parent_node_path(node_path),
-            "content": self.material_text,
+            "subject_label": self.subject_label,
+            "text_content": self.text_content,
+            "image_materials": [
+                image.to_prompt_dict(image_ref_map[image.image_id])
+                for image in self.image_materials
+                if image.image_id in image_ref_map
+            ],
         }
 
     def to_debug_dict(self) -> Dict[str, Any]:
@@ -289,6 +356,9 @@ class SectionMaterial:
             "content_kinds": list(self.content_kinds),
             "source_asset_ids": list(self.source_asset_ids),
             "material_char_count": len(self.material_text),
+            "text_char_count": len(self.text_content),
+            "subject_label": self.subject_label,
+            "image_materials": [image.to_debug_dict() for image in self.image_materials],
             "usable": self.usable,
             "quality_score": round(float(self.quality_score), 4),
         }
@@ -305,6 +375,12 @@ class GenerationUnit:
     material_ids: List[str]
     required_material_ids: List[str]
     optional_material_ids: List[str]
+    evidence_mode: str
+    required_image_ids: List[str]
+    subject_label: str
+    prompt_materials: List[Dict[str, Any]]
+    material_ref_map: Dict[str, str]
+    image_ref_map: Dict[str, str]
     material_source_chunk_indexes: Dict[str, List[int]]
     anchor_chunk_index: int
     source_chunk_indexes: List[int]
@@ -332,6 +408,12 @@ class GenerationUnit:
             "material_ids": list(self.material_ids),
             "required_material_ids": list(self.required_material_ids),
             "optional_material_ids": list(self.optional_material_ids),
+            "evidence_mode": self.evidence_mode,
+            "required_image_ids": list(self.required_image_ids),
+            "subject_label": self.subject_label,
+            "prompt_materials": [dict(value) for value in self.prompt_materials],
+            "material_ref_map": dict(self.material_ref_map),
+            "image_ref_map": dict(self.image_ref_map),
             "material_paths": list(self.debug.get("material_paths") or []),
             "material_source_chunk_indexes": {
                 key: list(value)
@@ -359,6 +441,7 @@ class GenerationUnit:
 @dataclass(frozen=True)
 class GenerationUnitPlan:
     units: List[GenerationUnit]
+    reserve_units: List[GenerationUnit]
     section_materials: List[SectionMaterial]
     chunk_quality: Dict[int, ChunkQuality]
     graph: StructureGraph
@@ -384,6 +467,7 @@ class GenerationUnitPlan:
             "chunks_total": self.graph.chunk_count,
             "section_materials_total": len(self.section_materials),
             "generation_units_total": len(self.units),
+            "reserve_generation_units_total": len(self.reserve_units),
             "requested_total_qa": self.requested_total_qa,
             "effective_total_qa": self.effective_total_qa,
             "qa_total_limit": self.qa_total_limit,
@@ -497,6 +581,7 @@ def evaluate_chunk_quality(
 
 
 _MARKDOWN_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+\S")
+_IMAGE_DESCRIPTION_RE = re.compile(r"\s*【图片描述：(.*?)】\s*", re.DOTALL)
 
 
 def _strip_repeated_fragment_heading(text: str) -> str:
@@ -511,10 +596,16 @@ def _strip_repeated_fragment_heading(text: str) -> str:
     return "\n".join(lines[first_content_index + 1 :]).strip()
 
 
-def _render_material_text(chunks: Sequence[Dict[str, Any]]) -> str:
+def _render_material_text(
+    chunks: Sequence[Dict[str, Any]],
+    *,
+    exclude_image_descriptions: bool = False,
+) -> str:
     pieces: List[str] = []
     for chunk in sorted(chunks, key=lambda item: int(item.get("chunk_index") or 0)):
         text = _text_for_quality(chunk).strip()
+        if exclude_image_descriptions:
+            text = _IMAGE_DESCRIPTION_RE.sub("\n", text).strip()
         if int(chunk.get("fragment_index") or 1) > 1:
             text = _strip_repeated_fragment_heading(text)
         if not text:
@@ -523,6 +614,53 @@ def _render_material_text(chunks: Sequence[Dict[str, Any]]) -> str:
             continue
         pieces.append(text)
     return "\n\n".join(pieces).strip()
+
+
+def _build_image_materials(chunks: Sequence[Dict[str, Any]]) -> List[ImageMaterial]:
+    """Restore typed image blocks, including old integrated chunk metadata."""
+    restored: List[ImageMaterial] = []
+    seen: set[str] = set()
+    for chunk in sorted(chunks, key=lambda item: int(item.get("chunk_index") or 0)):
+        chunk_index = int(chunk.get("chunk_index") or 0)
+        raw_materials = chunk.get("image_materials")
+        if isinstance(raw_materials, list):
+            for raw in raw_materials:
+                if not isinstance(raw, dict):
+                    continue
+                image_id = _safe_text(raw.get("image_id") or raw.get("source_asset_id"))
+                description = _safe_text(raw.get("description"))
+                if not image_id or not description or image_id in seen:
+                    continue
+                seen.add(image_id)
+                restored.append(
+                    ImageMaterial(
+                        image_id=image_id,
+                        description=description,
+                        context_before=_safe_text(raw.get("context_before")),
+                        context_after=_safe_text(raw.get("context_after")),
+                        source_chunk_index=chunk_index,
+                    )
+                )
+        accepted_ids = [
+            _safe_text(value)
+            for value in (chunk.get("image_replacements") or {}).get("accepted_ids", [])
+            if _safe_text(value)
+        ] if isinstance(chunk.get("image_replacements"), dict) else []
+        descriptions = [match.strip() for match in _IMAGE_DESCRIPTION_RE.findall(_text_for_quality(chunk))]
+        for image_id, description in zip(accepted_ids, descriptions):
+            if not image_id or not description or image_id in seen:
+                continue
+            seen.add(image_id)
+            restored.append(
+                ImageMaterial(
+                    image_id=image_id,
+                    description=description,
+                    context_before="",
+                    context_after="",
+                    source_chunk_index=chunk_index,
+                )
+            )
+    return restored
 
 
 def _batch_section_materials(
@@ -814,6 +952,10 @@ def _merge_cross_batch_summary_candidates(
                     optional_ids.append(material_id)
             if len(required_ids) < 2:
                 continue
+            required_image_ids = list(dict.fromkeys([
+                *[str(value) for value in left.get("required_image_ids") or [] if str(value)],
+                *[str(value) for value in right.get("required_image_ids") or [] if str(value)],
+            ]))
             merged.append(
                 {
                     "scenario_type": SCENARIO_TYPE_SUMMARY,
@@ -822,6 +964,8 @@ def _merge_cross_batch_summary_candidates(
                     or _safe_text(right.get("reader_need")),
                     "required_material_ids": required_ids,
                     "optional_material_ids": optional_ids,
+                    "evidence_mode": "mixed" if required_image_ids else "text",
+                    "required_image_ids": required_image_ids,
                     "cross_batch_merge": True,
                     "cross_batch_merge_from": [left_batch, right.get("_planning_batch_index")],
                 }
@@ -869,6 +1013,7 @@ def build_section_materials(
                 if value and value not in assets:
                     assets.append(value)
         material_id = f"section-{material_index}"
+        image_materials = _build_image_materials(retained)
         materials.append(
             SectionMaterial(
                 material_id=material_id,
@@ -882,6 +1027,12 @@ def build_section_materials(
                 content_kinds=content_kinds,
                 source_asset_ids=assets,
                 material_text=_render_material_text(retained),
+                text_content=_render_material_text(
+                    retained,
+                    exclude_image_descriptions=True,
+                ),
+                image_materials=image_materials,
+                subject_label=_subject_label(_safe_text(retained[0].get("title_path"))),
                 usable=usable_count > 0,
                 quality_score=sum(chunk_quality[index].score for index in indexes) / max(1, len(indexes)),
             )
@@ -891,11 +1042,22 @@ def build_section_materials(
 
 def _normalize_scenario_type(value: Any) -> str:
     normalized = _safe_text(value).lower()
-    if normalized in {"point", "single", "single_hop", "单点", "单点题"}:
+    if normalized in {"point", "point only", "single", "single_hop", "单点", "单点题"}:
         return SCENARIO_TYPE_POINT
-    if normalized in {"summary", "multi", "multi_hop", "总结", "总结题"}:
+    if normalized in {"summary", "summary only", "multi", "multi_hop", "总结", "总结题"}:
         return SCENARIO_TYPE_SUMMARY
     return ""
+
+
+def _normalize_evidence_mode(value: Any, *, has_required_images: bool) -> str:
+    normalized = _safe_text(value).lower()
+    if normalized not in {"text", "visual", "mixed"}:
+        normalized = "mixed" if has_required_images else "text"
+    if has_required_images and normalized == "text":
+        return "mixed"
+    if not has_required_images and normalized in {"visual", "mixed"}:
+        return "text"
+    return normalized
 
 
 def _normalize_material_id_list(raw: Any, materials_by_id: Dict[str, SectionMaterial]) -> List[str]:
@@ -941,9 +1103,35 @@ def _build_generation_unit(
         return None
     materials = [materials_by_id[material_id] for material_id in material_ids]
     required_materials = [materials_by_id[material_id] for material_id in required_material_ids]
+    available_image_ids = {
+        image.image_id
+        for material in materials
+        for image in material.image_materials
+    }
+    required_image_ids: List[str] = []
+    for value in raw.get("required_image_ids") or []:
+        image_id = _safe_text(value)
+        if image_id in available_image_ids and image_id not in required_image_ids:
+            required_image_ids.append(image_id)
+    evidence_mode = _normalize_evidence_mode(
+        raw.get("evidence_mode"),
+        has_required_images=bool(required_image_ids),
+    )
     if scenario_type == SCENARIO_TYPE_SUMMARY and len(required_materials) == 1:
         material = required_materials[0]
-        if len(material.source_chunk_indexes) < 2 and not _has_list_signal(material.material_text):
+        image_supports_summary = len(material.image_materials) >= 2 or any(
+            _has_list_signal(image.description)
+            or (
+                _structure_signal(image.description)
+                and len(re.findall(r"[。！？!?；;]", image.description)) >= 2
+            )
+            for image in material.image_materials
+        )
+        if (
+            len(material.source_chunk_indexes) < 2
+            and not _has_list_signal(material.material_text)
+            and not image_supports_summary
+        ):
             return None
     source_indexes: List[int] = []
     for material in materials:
@@ -959,8 +1147,31 @@ def _build_generation_unit(
         if scenario_type == SCENARIO_TYPE_POINT
         else UNIT_TYPE_SUMMARY_SCENARIO
     )
-    raw_id = f"{scenario_type}|||{intent}|||{'|'.join(material_ids)}"
+    raw_id = (
+        f"{scenario_type}|||{intent}|||{'|'.join(material_ids)}|||"
+        f"{evidence_mode}|||{'|'.join(required_image_ids)}"
+    )
     unit_id = hashlib.sha1(raw_id.encode("utf-8")).hexdigest()
+    material_ref_map = {
+        _planning_material_ref(index): material.material_id
+        for index, material in enumerate(materials, start=1)
+    }
+    image_ref_map: Dict[str, str] = {}
+    for material in materials:
+        for image in material.image_materials:
+            if image.image_id not in image_ref_map.values():
+                image_ref_map[_planning_image_ref(len(image_ref_map) + 1)] = image.image_id
+    image_alias_by_id = {image_id: ref for ref, image_id in image_ref_map.items()}
+    prompt_materials = [
+        material.to_prompt_dict(
+            material_ref=next(
+                ref for ref, material_id in material_ref_map.items()
+                if material_id == material.material_id
+            ),
+            image_refs_by_id=image_alias_by_id,
+        )
+        for material in materials
+    ]
     unit_sections: List[str] = []
     for material in materials:
         is_required = material.material_id in required_material_ids
@@ -983,6 +1194,12 @@ def _build_generation_unit(
             "qa_generation_unit_material_ids": material_ids,
             "qa_generation_unit_required_material_ids": required_material_ids,
             "qa_generation_unit_optional_material_ids": optional_material_ids,
+            "qa_generation_unit_evidence_mode": evidence_mode,
+            "qa_generation_unit_required_image_ids": required_image_ids,
+            "qa_generation_unit_subject_label": materials[0].subject_label,
+            "qa_generation_unit_prompt_materials": prompt_materials,
+            "qa_generation_unit_material_ref_map": material_ref_map,
+            "qa_generation_unit_image_ref_map": image_ref_map,
             "qa_generation_unit_material_source_chunk_indexes": {
                 material.material_id: list(material.source_chunk_indexes)
                 for material in materials
@@ -1016,6 +1233,12 @@ def _build_generation_unit(
         material_ids=material_ids,
         required_material_ids=required_material_ids,
         optional_material_ids=optional_material_ids,
+        evidence_mode=evidence_mode,
+        required_image_ids=required_image_ids,
+        subject_label=materials[0].subject_label,
+        prompt_materials=prompt_materials,
+        material_ref_map=material_ref_map,
+        image_ref_map=image_ref_map,
         material_source_chunk_indexes={
             material.material_id: list(material.source_chunk_indexes)
             for material in materials
@@ -1043,6 +1266,9 @@ def _build_generation_unit(
                 for material in materials
                 if material.material_id in optional_material_ids and material.title_path
             ],
+            "evidence_mode": evidence_mode,
+            "required_image_ids": list(required_image_ids),
+            "subject_label": materials[0].subject_label,
         },
         source_chunk_meta=source_meta,
     )
@@ -1093,7 +1319,7 @@ def _select_scenarios(
     requested_mode: str,
     requested_total: int,
     auto_summary_ratio: float,
-) -> Tuple[List[GenerationUnit], Dict[str, int], Dict[str, int], int]:
+) -> Tuple[List[GenerationUnit], List[GenerationUnit], Dict[str, int], Dict[str, int], int]:
     deduped: List[GenerationUnit] = []
     seen: set[Tuple[str, str, Tuple[str, ...]]] = set()
     for unit in candidates:
@@ -1103,6 +1329,26 @@ def _select_scenarios(
             tuple(unit.material_ids),
         )
         if key in seen:
+            continue
+        unit_text = _collapse_text(
+            f"{unit.scenario_intent} {unit.reader_need}"
+        ).casefold()
+        unit_tokens = _token_set(unit_text)
+        semantically_duplicated = False
+        for existing in deduped:
+            if not set(unit.material_ids).intersection(existing.material_ids):
+                continue
+            existing_text = _collapse_text(
+                f"{existing.scenario_intent} {existing.reader_need}"
+            ).casefold()
+            containment = (
+                min(len(unit_text), len(existing_text)) >= 10
+                and (unit_text in existing_text or existing_text in unit_text)
+            )
+            if containment or _jaccard(unit_tokens, _token_set(existing_text)) >= 0.78:
+                semantically_duplicated = True
+                break
+        if semantically_duplicated:
             continue
         seen.add(key)
         deduped.append(unit)
@@ -1133,11 +1379,13 @@ def _select_scenarios(
         selected = selected_point + selected_summary
     selected.sort(key=lambda unit: (unit.anchor_chunk_index, unit.qa_mode, unit.unit_id))
     selected = [unit.with_index_and_budget(index, 1) for index, unit in enumerate(selected, 1)]
+    selected_ids = {unit.unit_id for unit in selected}
+    reserves = [unit for unit in deduped if unit.unit_id not in selected_ids]
     selected_counts = {
         SCENARIO_TYPE_POINT: sum(unit.qa_mode == SCENARIO_TYPE_POINT for unit in selected),
         SCENARIO_TYPE_SUMMARY: sum(unit.qa_mode == SCENARIO_TYPE_SUMMARY for unit in selected),
     }
-    return selected, candidate_counts, selected_counts, max(0, len(deduped) - len(selected))
+    return selected, reserves, candidate_counts, selected_counts, max(0, len(deduped) - len(selected))
 
 
 def plan_generation_units(
@@ -1317,14 +1565,33 @@ def plan_generation_units(
                 requested_count=max(0, point_planning_count - existing_point_count),
             )
         )
-    units, candidate_counts, selected_counts, dropped = _select_scenarios(
+    units, reserve_candidates, candidate_counts, selected_counts, dropped = _select_scenarios(
         candidates,
         requested_mode=qa_detail_mode,
         requested_total=requested_total,
         auto_summary_ratio=auto_summary_ratio,
     )
+    reserve_target = min(
+        requested_total,
+        max(2, (requested_total + 4) // 5),
+    ) if requested_total > 0 else 0
+    reserve_units = list(reserve_candidates[:reserve_target])
+    if mode in {"auto", SCENARIO_TYPE_POINT} and len(reserve_units) < reserve_target:
+        reserve_units.extend(
+            _fallback_point_units(
+                usable_materials,
+                chunks_by_index=chunks_by_index,
+                existing_units=[*units, *reserve_units],
+                requested_count=reserve_target - len(reserve_units),
+            )
+        )
+    reserve_units = [
+        unit.with_index_and_budget(len(units) + index, 1)
+        for index, unit in enumerate(reserve_units[:reserve_target], start=1)
+    ]
     return GenerationUnitPlan(
         units=units,
+        reserve_units=reserve_units,
         section_materials=materials,
         chunk_quality=quality,
         graph=graph,
@@ -1367,6 +1634,7 @@ __all__ = [
     "DEFAULT_SCENARIO_PLANNING_BATCH_CHARS",
     "GenerationUnit",
     "GenerationUnitPlan",
+    "ImageMaterial",
     "QUALITY_STATUS_CONTEXT_ONLY",
     "QUALITY_STATUS_DROP",
     "QUALITY_STATUS_USABLE",

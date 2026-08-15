@@ -87,8 +87,9 @@ _Avoid_: Persisted aggregate parent text
 
 **Section Material**:
 The atomic source material used for question planning. It contains the body,
-physical fragments, and accepted image descriptions belonging to one exact
-`section_path`; it never means all children under a chapter.
+physical fragments, and typed accepted-image blocks belonging to one exact
+`section_path`; ordinary `text_content` and `image_materials` remain distinct
+for planning, and it never means all children under a chapter.
 _Avoid_: Parent-chapter aggregate, arbitrary chunk group
 
 **Question Scenario**:

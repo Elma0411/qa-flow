@@ -395,6 +395,7 @@ def run_one_step_chunk_worker(
                         if isinstance(source_chunk_meta.get("qa_generation_unit_material_paths"), list)
                         else None
                     ),
+                    source_chunk_meta=source_chunk_meta,
                     debug_writer=debug_writer,
                 )
             except Exception as exc:
@@ -503,9 +504,39 @@ def run_one_step_chunk_worker(
                 validation_started_at,
             )
             unit_started_at = time.perf_counter()
+            candidate_source_unit_payload = dict(source_unit_payload)
+            required_material_ids = candidate.get("required_material_ids")
+            optional_material_ids = candidate.get("optional_material_ids")
+            if isinstance(required_material_ids, list) and required_material_ids:
+                candidate_source_unit_payload["required_material_ids"] = list(required_material_ids)
+            if isinstance(optional_material_ids, list):
+                candidate_source_unit_payload["optional_material_ids"] = list(optional_material_ids)
+            if isinstance(candidate.get("required_material_refs"), list):
+                candidate_source_unit_payload["required_material_refs"] = list(
+                    candidate.get("required_material_refs") or []
+                )
+            if isinstance(candidate.get("optional_material_refs"), list):
+                candidate_source_unit_payload["optional_material_refs"] = list(
+                    candidate.get("optional_material_refs") or []
+                )
+            candidate_source_unit_payload["material_ids"] = list(dict.fromkeys([
+                *candidate_source_unit_payload.get("required_material_ids", []),
+                *candidate_source_unit_payload.get("optional_material_ids", []),
+            ]))
+            candidate_source_unit_payload["evidence_mode"] = str(
+                candidate.get("evidence_mode") or candidate_source_unit_payload.get("evidence_mode") or "text"
+            )
+            if isinstance(candidate.get("required_image_ids"), list):
+                candidate_source_unit_payload["required_image_ids"] = list(
+                    candidate.get("required_image_ids") or []
+                )
+            if isinstance(candidate.get("required_image_refs"), list):
+                candidate_source_unit_payload["required_image_refs"] = list(
+                    candidate.get("required_image_refs") or []
+                )
             generation_unit = evidence_index.build_generation_unit(
                 source_chunk_index=chunk_index,
-                source_unit=source_unit_payload,
+                source_unit=candidate_source_unit_payload,
                 question=question_key,
                 retrieval_result=retrieval_result,
                 final_evidence_k=runtime.final_evidence_k,
@@ -721,6 +752,16 @@ def run_one_step_unit_worker(
             item["qa_generation_scenario_intent"] = unit.scenario_intent
             item["qa_generation_reader_need"] = unit.reader_need
             item["qa_generation_material_ids"] = list(unit.material_ids)
+            item.setdefault(
+                "qa_generation_required_material_ids",
+                list(unit.required_material_ids),
+            )
+            item.setdefault(
+                "qa_generation_optional_material_ids",
+                list(unit.optional_material_ids),
+            )
+            item.setdefault("evidence_mode", unit.evidence_mode)
+            item.setdefault("required_image_refs", list(unit.required_image_ids))
             item["qa_generation_unit_source_chunk_indexes"] = list(unit.source_chunk_indexes)
             item["qa_generation_unit_section_path"] = unit.section_path
             item["qa_generation_unit_quality_child_coverage"] = unit.quality_child_coverage

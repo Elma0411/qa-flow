@@ -7,7 +7,7 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Tuple
 
 try:
     from fastapi import UploadFile
@@ -133,8 +133,9 @@ def _apply_image_replacements_to_chunks(
     chunks_meta: List[Dict[str, Any]],
     replacements: Dict[str, str],
     placement_details: List[Dict[str, Any]],
+    image_anchors: Optional[Mapping[str, ImageAnchorContext]] = None,
 ) -> List[str]:
-    """Restore image descriptions and retain only assets owned by each chunk."""
+    """Restore image descriptions and retain typed visual blocks per chunk."""
 
     def visible_body_without_markers(text: str) -> str:
         restored = restore_markers_in_text(text, {}, remove_missing=True)
@@ -176,6 +177,21 @@ def _apply_image_replacements_to_chunks(
         meta["text"] = restored_text
         meta["text_for_embedding"] = restored_embedding_text
         meta["source_asset_ids"] = source_asset_ids
+        image_materials: List[Dict[str, Any]] = []
+        for image_id in accepted_ids:
+            description = str(replacements.get(image_id) or "").strip()
+            if not description:
+                continue
+            anchor = (image_anchors or {}).get(image_id)
+            image_materials.append(
+                {
+                    "image_id": image_id,
+                    "description": description,
+                    "context_before": str(getattr(anchor, "context_before", "") or "").strip(),
+                    "context_after": str(getattr(anchor, "context_after", "") or "").strip(),
+                }
+            )
+        meta["image_materials"] = image_materials
         if accepted_ids:
             visible_without_descriptions = visible_body_without_markers(original_text)
             meta["content_kind"] = "mixed" if visible_without_descriptions else "image_description"
@@ -748,6 +764,7 @@ class IntegratedPipelineRunner:
             chunks_meta,
             replacements,
             placement_details,
+            anchors,
         )
 
         final_markdown = "\n\n".join(str(meta.get("text") or "") for meta in chunks_meta if str(meta.get("text") or "").strip())

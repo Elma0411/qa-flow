@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import random
+import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from qa.common import (
@@ -327,6 +328,15 @@ def _planning_material_ref(position: int) -> str:
     return "主材料-" + "".join(reversed(letters))
 
 
+def _planning_image_ref(position: int) -> str:
+    number = max(1, int(position))
+    letters: List[str] = []
+    while number:
+        number, remainder = divmod(number - 1, 26)
+        letters.append(chr(ord("A") + remainder))
+    return "图片-" + "".join(reversed(letters))
+
+
 def _prompt_paths_from_meta(meta: Optional[Dict[str, Any]]) -> List[str]:
     source_meta = meta if isinstance(meta, dict) else {}
     values: List[Any] = []
@@ -361,6 +371,56 @@ def _format_source_material_for_prompt(
         "主材料正文：\n"
         f"{str(text or '').strip()}"
     )
+
+
+def _prompt_generation_context(
+    text: str,
+    meta: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    source_meta = meta if isinstance(meta, dict) else {}
+    prompt_materials = source_meta.get("qa_generation_unit_prompt_materials")
+    if isinstance(prompt_materials, list) and prompt_materials:
+        material_ref_map = source_meta.get("qa_generation_unit_material_ref_map")
+        image_ref_map = source_meta.get("qa_generation_unit_image_ref_map")
+        material_ref_map = material_ref_map if isinstance(material_ref_map, dict) else {}
+        image_ref_map = image_ref_map if isinstance(image_ref_map, dict) else {}
+        required_material_ids = set(
+            str(value)
+            for value in source_meta.get("qa_generation_unit_required_material_ids") or []
+        )
+        optional_material_ids = set(
+            str(value)
+            for value in source_meta.get("qa_generation_unit_optional_material_ids") or []
+        )
+        required_image_ids = set(
+            str(value)
+            for value in source_meta.get("qa_generation_unit_required_image_ids") or []
+        )
+        return {
+            "subject_label": str(source_meta.get("qa_generation_unit_subject_label") or "").strip(),
+            "evidence_mode": str(source_meta.get("qa_generation_unit_evidence_mode") or "text").strip(),
+            "required_material_refs": [
+                ref for ref, material_id in material_ref_map.items()
+                if str(material_id) in required_material_ids
+            ],
+            "optional_material_refs": [
+                ref for ref, material_id in material_ref_map.items()
+                if str(material_id) in optional_material_ids
+            ],
+            "required_image_refs": [
+                ref for ref, image_id in image_ref_map.items()
+                if str(image_id) in required_image_ids
+            ],
+            "materials": [dict(item) for item in prompt_materials if isinstance(item, dict)],
+        }
+    return {
+        "subject_label": str(source_meta.get("qa_generation_unit_subject_label") or "").strip(),
+        "evidence_mode": "text",
+        "required_material_refs": ["主材料-A"],
+        "optional_material_refs": [],
+        "required_image_refs": [],
+        "source_material": _format_source_material_for_prompt(text, source_meta),
+    }
 
 
 def _ensure_evidence_paths_for_prompt(
@@ -412,8 +472,17 @@ def call_scenario_planner_llm(
     """Plan typed scenarios using opaque aliases mapped back by the backend."""
     if requested_count <= 0 or not section_materials:
         return _ScenarioPlannerResult([], {"items_raw_count": 0, "items_validated_count": 0})
+    image_refs_by_id: Dict[str, str] = {}
+    for material in section_materials:
+        for image in getattr(material, "image_materials", []) or []:
+            image_id = str(getattr(image, "image_id", "") or "").strip()
+            if image_id and image_id not in image_refs_by_id:
+                image_refs_by_id[image_id] = _planning_image_ref(len(image_refs_by_id) + 1)
     readable_materials = [
-        material.to_prompt_dict(material_ref=_planning_material_ref(index))
+        material.to_prompt_dict(
+            material_ref=_planning_material_ref(index),
+            image_refs_by_id=image_refs_by_id,
+        )
         for index, material in enumerate(section_materials, start=1)
     ]
     material_by_ref = {
@@ -421,7 +490,20 @@ def call_scenario_planner_llm(
         for readable, material in zip(readable_materials, section_materials)
     }
     material_by_id = {str(material.material_id): material for material in section_materials}
-    joined_text = "\n\n".join(str(item.get("content") or "") for item in readable_materials)
+    joined_text = "\n\n".join(
+        "\n".join(
+            [
+                str(item.get("text_content") or ""),
+                *[
+                    str(image.get("description") or "")
+                    for image in item.get("image_materials") or []
+                    if isinstance(image, dict)
+                ],
+            ]
+        )
+        for item in readable_materials
+    )
+    image_id_by_ref = {ref: image_id for image_id, ref in image_refs_by_id.items()}
     language_code, language_instruction = _resolve_generation_language(
         prompt_language,
         joined_text,
@@ -475,6 +557,10 @@ def call_scenario_planner_llm(
     dropped: Dict[str, int] = {}
     for item in raw_items:
         scenario_type = str(item.get("scenario_type") or item.get("type") or "").strip().lower()
+        scenario_type = {
+            "point only": "point",
+            "summary only": "summary",
+        }.get(scenario_type, scenario_type)
         if scenario_type not in {"point", "summary"}:
             dropped["invalid_scenario_type"] = dropped.get("invalid_scenario_type", 0) + 1
             continue
@@ -531,6 +617,31 @@ def call_scenario_planner_llm(
         ):
             dropped["point_requires_one_material"] = dropped.get("point_requires_one_material", 0) + 1
             continue
+        selected_material_ids = set(material_ids)
+        available_image_ids = {
+            str(getattr(image, "image_id", "") or "").strip()
+            for material in section_materials
+            if str(material.material_id) in selected_material_ids
+            for image in getattr(material, "image_materials", []) or []
+        }
+        required_image_ids: List[str] = []
+        unknown_image_refs = 0
+        for value in item.get("required_image_refs") or []:
+            image_id = image_id_by_ref.get(str(value or "").strip())
+            if not image_id or image_id not in available_image_ids:
+                unknown_image_refs += 1
+                continue
+            if image_id not in required_image_ids:
+                required_image_ids.append(image_id)
+        if unknown_image_refs:
+            dropped["unknown_image_ref"] = dropped.get("unknown_image_ref", 0) + unknown_image_refs
+        evidence_mode = str(item.get("evidence_mode") or "").strip().lower()
+        if evidence_mode not in {"text", "visual", "mixed"}:
+            evidence_mode = "mixed" if required_image_ids else "text"
+        if required_image_ids and evidence_mode == "text":
+            evidence_mode = "mixed"
+        elif not required_image_ids and evidence_mode in {"visual", "mixed"}:
+            evidence_mode = "text"
         normalized.append(
             {
                 "scenario_type": scenario_type,
@@ -558,6 +669,13 @@ def call_scenario_planner_llm(
                         )
                     )
                     for material_id in optional_material_ids
+                ],
+                "evidence_mode": evidence_mode,
+                "required_image_ids": required_image_ids,
+                "required_image_refs": [
+                    image_refs_by_id[image_id]
+                    for image_id in required_image_ids
+                    if image_id in image_refs_by_id
                 ],
             }
         )
@@ -598,6 +716,29 @@ def call_scenario_planner_llm(
     )
 
 
+def _question_review_signals(question: str, language_code: str) -> List[str]:
+    """Return lightweight LLM re-review signals; never rewrite mechanically."""
+    value = " ".join(str(question or "").split())
+    signals: List[str] = []
+    if language_code == "zh":
+        if len(value) > 52:
+            signals.append("long_question")
+        if re.search(r"(?:该条例|该规定|该办法|该人员|上述|其中|此类|相关人员)", value):
+            signals.append("unclear_reference")
+        if re.match(r"^.{14,}[，,].+[？?]$", value):
+            signals.append("source_clause_shape")
+        if len(re.findall(r"(?:哪些|什么|如何|为什么|多少|多久|是否)", value)) >= 2:
+            signals.append("possible_multi_intent")
+    else:
+        if len(value) > 180:
+            signals.append("long_question")
+        if re.search(r"\b(?:it|this|that|the above|such persons?)\b", value, re.I):
+            signals.append("unclear_reference")
+        if len(re.findall(r"\b(?:what|which|how|why|when|where|who)\b", value, re.I)) >= 2:
+            signals.append("possible_multi_intent")
+    return signals
+
+
 def call_question_editor_llm(
     *,
     client: Any,
@@ -612,19 +753,18 @@ def call_question_editor_llm(
     chunk_index: Optional[int] = None,
     source_material_path: Optional[str] = None,
     source_material_paths: Optional[List[str]] = None,
+    source_chunk_meta: Optional[Dict[str, Any]] = None,
     debug_writer: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Tuple[Optional[Dict[str, Any]], str]:
     """Run one semantic editor decision; code validates only its output shape."""
     original_question = str(candidate.get("question") or "").strip()
     if not original_question:
         return None, "missing_question"
-    readable_source_material = _format_source_material_for_prompt(
-        source_material,
-        {
-            "source_material_path": source_material_path,
-            "source_material_paths": source_material_paths or [],
-        },
-    )
+    editor_meta = dict(source_chunk_meta or {})
+    editor_meta.setdefault("source_material_path", source_material_path)
+    editor_meta.setdefault("source_material_paths", source_material_paths or [])
+    generation_context = _prompt_generation_context(source_material, editor_meta)
+    readable_source_material = json.dumps(generation_context, ensure_ascii=False)
     language_code, language_instruction = _resolve_generation_language(
         prompt_language,
         readable_source_material or original_question,
@@ -640,7 +780,7 @@ def call_question_editor_llm(
         "reader_need": reader_need,
         "question_type": candidate.get("question_type"),
         "original_question": original_question,
-        "source_material": readable_source_material,
+        **generation_context,
     }
     user_content = json.dumps(payload, ensure_ascii=False)
     try:
@@ -677,6 +817,36 @@ def call_question_editor_llm(
         parsed = {}
     if not isinstance(parsed, dict):
         parsed = {}
+    initial_raw = raw
+    review_signals = _question_review_signals(original_question, language_code)
+    re_review_error = ""
+    if str(parsed.get("decision") or "").strip().lower() == "keep" and review_signals:
+        re_review_content = json.dumps(
+            {
+                **payload,
+                "initial_editor_decision": parsed,
+                "re_review_signals": review_signals,
+                "instruction": "这些信号只要求重新做一次语义审校；请由你判断 keep、rewrite 或 drop，不要按信号机械改写。",
+            },
+            ensure_ascii=False,
+        )
+        try:
+            second_raw = client.create_chat_completion_text(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": re_review_content},
+                ],
+                temperature=0.0,
+                response_format={"type": "json_object"},
+                timeout=float(request_timeout),
+            ).strip()
+            second_parsed = json.loads(second_raw)
+            if isinstance(second_parsed, dict):
+                parsed = second_parsed
+                raw = second_raw
+        except Exception as exc:
+            re_review_error = str(exc)
     decision = str(parsed.get("decision") or "").strip().lower()
     edited_question = str(parsed.get("question") or "").strip()
     reason = str(parsed.get("reason") or "").strip()
@@ -694,6 +864,87 @@ def call_question_editor_llm(
         status = "drop"
     else:
         status = "invalid_editor_response"
+    if result is not None:
+        material_ref_map = editor_meta.get("qa_generation_unit_material_ref_map")
+        image_ref_map = editor_meta.get("qa_generation_unit_image_ref_map")
+        material_ref_map = material_ref_map if isinstance(material_ref_map, dict) else {
+            ref: ref for ref in generation_context.get("required_material_refs") or ["主材料-A"]
+        }
+        image_ref_map = image_ref_map if isinstance(image_ref_map, dict) else {}
+        current_required_refs = [
+            str(value) for value in generation_context.get("required_material_refs") or []
+            if str(value) in material_ref_map
+        ]
+        current_optional_refs = [
+            str(value) for value in generation_context.get("optional_material_refs") or []
+            if str(value) in material_ref_map
+        ]
+        raw_required_refs = parsed.get("required_material_refs")
+        raw_optional_refs = parsed.get("optional_material_refs")
+        required_refs = [
+            str(value) for value in (
+                raw_required_refs if isinstance(raw_required_refs, list) else current_required_refs
+            )
+            if str(value) in material_ref_map
+        ]
+        optional_refs = [
+            str(value) for value in (
+                raw_optional_refs if isinstance(raw_optional_refs, list) else current_optional_refs
+            )
+            if str(value) in material_ref_map and str(value) not in required_refs
+        ]
+        if qa_detail_mode == "point":
+            required_refs = required_refs[:1] or current_required_refs[:1]
+            optional_refs = []
+        elif not required_refs:
+            required_refs = current_required_refs[:1]
+        for ref in [*current_required_refs, *current_optional_refs]:
+            if ref not in required_refs and ref not in optional_refs:
+                optional_refs.append(ref)
+        raw_required_image_refs = parsed.get("required_image_refs")
+        required_image_refs = [
+            str(value) for value in (
+                raw_required_image_refs
+                if isinstance(raw_required_image_refs, list)
+                else generation_context.get("required_image_refs") or []
+            )
+            if str(value) in image_ref_map
+        ]
+        image_parent_ref: Dict[str, str] = {}
+        for material in generation_context.get("materials") or []:
+            if not isinstance(material, dict):
+                continue
+            parent_ref = str(material.get("material_ref") or "")
+            for image in material.get("image_materials") or []:
+                if isinstance(image, dict) and str(image.get("image_ref") or ""):
+                    image_parent_ref[str(image.get("image_ref"))] = parent_ref
+        for image_ref in required_image_refs:
+            parent_ref = image_parent_ref.get(image_ref)
+            if parent_ref and parent_ref not in required_refs:
+                required_refs.append(parent_ref)
+                optional_refs = [ref for ref in optional_refs if ref != parent_ref]
+        if qa_detail_mode == "point" and len(required_refs) != 1:
+            required_image_refs = []
+            required_refs = current_required_refs[:1]
+            optional_refs = []
+        evidence_mode = str(parsed.get("evidence_mode") or generation_context.get("evidence_mode") or "text").strip().lower()
+        if evidence_mode not in {"text", "visual", "mixed"}:
+            evidence_mode = "mixed" if required_image_refs else "text"
+        if required_image_refs and evidence_mode == "text":
+            evidence_mode = "mixed"
+        elif not required_image_refs:
+            evidence_mode = "text"
+        result.update(
+            {
+                "required_material_refs": required_refs,
+                "optional_material_refs": optional_refs,
+                "required_material_ids": [material_ref_map[ref] for ref in required_refs],
+                "optional_material_ids": [material_ref_map[ref] for ref in optional_refs],
+                "evidence_mode": evidence_mode,
+                "required_image_refs": required_image_refs,
+                "required_image_ids": [image_ref_map[ref] for ref in required_image_refs],
+            }
+        )
     if debug_writer:
         debug_writer(
             {
@@ -710,6 +961,9 @@ def call_question_editor_llm(
                 "system_prompt": system_prompt,
                 "user_content": user_content,
                 "raw_response": raw,
+                "initial_raw_response": initial_raw,
+                "re_review_signals": review_signals,
+                "re_review_error": re_review_error,
                 "result_status": status,
             }
         )
@@ -750,14 +1004,15 @@ def call_candidate_question_llm(
     # path so a local fragment is not mistaken for a self-contained context.
     scenario_intent = str(source_chunk_meta.get("qa_generation_unit_scenario_intent") or "").strip()
     reader_need = str(source_chunk_meta.get("qa_generation_unit_reader_need") or "").strip()
-    readable_source_material = _format_source_material_for_prompt(
-        source_chunk_text,
-        source_chunk_meta,
-    )
-    user_content = (
-        f"scenario_intent: {scenario_intent}\n"
-        f"reader_need: {reader_need}\n\n"
-        + readable_source_material
+    generation_context = _prompt_generation_context(source_chunk_text, source_chunk_meta)
+    user_content = json.dumps(
+        {
+            "scenario_type": qa_detail_mode,
+            "scenario_intent": scenario_intent,
+            "reader_need": reader_need,
+            **generation_context,
+        },
+        ensure_ascii=False,
     )
 
     response_type: Optional[str] = None
@@ -888,9 +1143,35 @@ def call_evidence_answer_llm(
     prompt_template_key = resolve_category_prompt_template_key(prompt_template_category)
     candidate_question = str(candidate.get("question") or "").strip()
     question_type = str(candidate.get("question_type") or "简答题").strip() or "简答题"
+    source_unit_payload = generation_unit.get("source_unit")
+    if not isinstance(source_unit_payload, dict):
+        source_unit_payload = {}
+    image_ref_map = source_unit_payload.get("image_ref_map")
+    image_ref_map = image_ref_map if isinstance(image_ref_map, dict) else {}
+    required_image_ids = set(
+        str(value) for value in source_unit_payload.get("required_image_ids") or []
+    )
+    required_image_aliases = [
+        ref for ref, image_id in image_ref_map.items()
+        if str(image_id) in required_image_ids
+    ]
+    prompt_materials = source_unit_payload.get("prompt_materials")
+    evidence_mode = str(source_unit_payload.get("evidence_mode") or "text")
+    typed_materials = [
+        {
+            "material_ref": item.get("material_ref"),
+            "node_path": item.get("node_path"),
+            "image_materials": item.get("image_materials") or [],
+        }
+        for item in prompt_materials or []
+        if isinstance(item, dict) and item.get("image_materials")
+    ] if evidence_mode in {"visual", "mixed"} and isinstance(prompt_materials, list) else []
     user_content = (
         f"candidate_question: {candidate_question}\n"
         f"question_type: {question_type}\n"
+        f"evidence_mode: {evidence_mode}\n"
+        f"required_image_refs: {json.dumps(required_image_aliases, ensure_ascii=False)}\n"
+        f"typed_primary_materials: {json.dumps(typed_materials, ensure_ascii=False)}\n"
         "\n"
         "可读证据材料（仅使用这些正文）：\n"
         f"{prompt_unit_text}\n\n"
@@ -994,9 +1275,6 @@ def call_evidence_answer_llm(
             if isinstance(chunk, dict) and str(chunk.get("chunk_id") or "").strip()
         }
         primary_chunks = [chunks_by_id[chunk_id] for chunk_id in primary_ids if chunk_id in chunks_by_id]
-        source_unit_payload = generation_unit.get("source_unit")
-        if not isinstance(source_unit_payload, dict):
-            source_unit_payload = {}
         if qa_detail_mode == "summary" and not _primary_usage_covers_bound_materials(
             primary_ids,
             source_unit=source_unit_payload,
@@ -1024,6 +1302,21 @@ def call_evidence_answer_llm(
             normalized_item["evidence_chunk_ids"] = generation_unit.get("evidence_chunk_ids") or []
             normalized_item["qa_generation_unit_id"] = generation_unit.get("qa_generation_unit_id")
             normalized_item["qa_generation_unit_text"] = unit_text
+            normalized_item["evidence_mode"] = str(
+                source_unit_payload.get("evidence_mode") or "text"
+            )
+            normalized_item["required_image_refs"] = list(
+                source_unit_payload.get("required_image_ids") or []
+            )
+            normalized_item["qa_generation_subject_label"] = str(
+                source_unit_payload.get("subject_label") or ""
+            )
+            normalized_item["qa_generation_required_material_ids"] = list(
+                source_unit_payload.get("required_material_ids") or []
+            )
+            normalized_item["qa_generation_optional_material_ids"] = list(
+                source_unit_payload.get("optional_material_ids") or []
+            )
             normalized_item["retrieval_trace"] = generation_unit.get("retrieval_trace") or {}
             normalized_item["source"] = primary_source.get("chunk_id") or normalized_item.get("source")
             normalized_item["text_for_embedding"] = (
