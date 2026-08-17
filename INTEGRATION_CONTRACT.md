@@ -355,8 +355,9 @@ Stable metadata keys:
 - `image_materials`: optional ordered typed image blocks local to this chunk.
   Each accepted block contains `image_id`, `description`, `context_before`, and
   `context_after`. The description is still present in `text`/
-  `text_for_embedding` for retrieval, but QA planning consumes this typed field
-  so visual evidence is not flattened into ordinary prose.
+  `text_for_embedding` for retrieval, but QA planning and answer rendering use
+  this typed field. Answer evidence must render image facts separately from
+  ordinary text so a visual fact never silently becomes text-only evidence.
 
 Rules:
 
@@ -406,6 +407,9 @@ Required groups:
 - Generation: `chunk_size`, `qa_total_limit`, `qa_total_limit_scope`,
   `qa_detail_mode`, `prompt_language`, `question_type_mode`,
   `question_types`, `question_type_weights`, `few_shot_examples`.
+  `few_shot_examples` is optional wording-only guidance: when no compatible
+  reviewed example exists it is omitted from LLM input rather than serialized
+  as an empty/null prompt field.
   `qa_per_chunk` is retained only as a compatibility input when
   `qa_total_limit` is not supplied.
 - Chunking: `chunking_prefix_max_depth`, `chunking_split_type`,
@@ -470,16 +474,18 @@ Rules:
   - `completed_at`: present when the stage reaches a terminal state such as
     `completed`, `failed`, or `canceled`.
   Stage-specific timing in `extra` remains authoritative for domain metrics
-  such as QA candidate generation, retrieval, and answer generation; generic
+  such as scenario planning, candidate generation, question editing, retrieval,
+  and answer generation; generic
   `elapsed_seconds` is the fallback for live progress display.
 - QA generation timing may include both wall-clock and cumulative diagnostic
   views:
   - `generation_wall_detail`: wall-clock attribution for the QA generation
-    document run. Its `candidate_question_seconds`, `retrieval_seconds`,
-    `answer_generation_seconds`, `validation_and_bookkeeping_seconds`, and
-    `scheduler_gap_seconds` sum to `document_total_seconds` within normal
-    floating-point tolerance. Frontend main timing views must use this object
-    when present.
+    document run. Its `scenario_planning_seconds`,
+    `candidate_question_seconds`, `question_editor_seconds`,
+    `retrieval_seconds`, `answer_generation_seconds`,
+    `validation_and_bookkeeping_seconds`, and `scheduler_gap_seconds` sum to
+    `document_total_seconds` within normal floating-point tolerance. Frontend
+    main timing views must use this object when present.
   - `generation_cumulative_detail`: per-worker cumulative diagnostics across
     concurrent chunks. These values can be much larger than wall-clock elapsed
     time and must not be added to task or stage totals.
@@ -492,6 +498,10 @@ Rules:
   per-worker timing. `generation_chunk_details` is retained as a compatibility
   alias for older frontend/status consumers and does not carry raw timing
   intervals.
+  `latency_percentiles` records p50/p95 unit timing for total, candidate,
+  question-editor, retrieval, and answer stages. Unit tables must show the
+  question-editor duration and mark a unit with zero valid items as
+  `未产出`, not `完成`.
 - QA generation first reorganizes content into `section materials`: every
   logical `section_path` is one atomic material containing that section's body
   fragments and typed image blocks. Planner input separates `text_content`
@@ -505,14 +515,19 @@ Rules:
   material and one fact need. Summary scenarios bind one material with a real
   multi-fact enumeration or multiple materials that jointly serve one reader
   need. Every material reference is validated against the supplied material
-  catalog. A Point has exactly one `required_material`; a Summary has one or
-  more `required_materials` and may have `optional_materials`. Summary
-  coverage checks inspect only required materials; an optional material that is
-  not cited is not a failure.
+  catalog. A Point has exactly one `required_material`; a Summary has one to
+  three tightly related `required_materials` and may have
+  `optional_materials`. Summary coverage checks inspect only required
+  materials; an optional material that is not cited is not a failure.
   Each scenario also carries `evidence_mode=text|visual|mixed` and
   `required_image_refs`. An image is required only when removing its
   description would make the planned question impossible to answer completely;
-  image-bearing sections are considered for visual scenarios but no final
+  `mixed` requires both a text fact and an image fact. After backend alias
+  resolution these fields form an immutable `ScenarioContract`; no later LLM
+  may reclassify materials, images, mode, scenario type, or question type.
+  A required image promotes its owning Section Material to required before the
+  contract is frozen.
+  Image-bearing sections are considered for visual scenarios but no final
   image-question quota is forced.
   In `qa_detail_mode=auto`, the planner builds both pools and the allocator
   targets 35% summary scenarios; missing summary capacity flows to point
@@ -536,17 +551,17 @@ Rules:
   units run only when editor, answer, coverage, or document-level de-duplication
   drops leave the requested final count short; they are not generated when the
   selected units already fill the target.
-- Point and summary scenarios use distinct question-generation instructions.
-  Every generated candidate and every augmented question passes through the
-  same question-editor LLM contract
-  that returns `keep`, `rewrite`, or `drop`. The editor may naturalize wording,
-  remove copied clause syntax and vague references, reduce a Point draft to its
-  single core intent, and turn Summary details into one umbrella question. It
-  also reclassifies genuinely required versus optional materials and image
-  dependency without changing the reader need or question type. Lightweight
-  clause-shape, pronoun, multi-intent, and length signals may trigger one extra
-  LLM review of a `keep` decision; they never rewrite or delete a question in
-  code.
+- Category profiles are planning-only reader guidance. They are not injected
+  into question wording or answer prompts. At most one reviewed, mode-matched
+  wording example may be supplied to a writer/editor call; absent examples are
+  omitted entirely.
+- Point and summary scenarios use distinct writing briefs. The candidate writer
+  returns only `question`; backend code attaches the frozen question type. The
+  final wording editor also returns only `question`. Both calls see a readable
+  brief containing subject, reader need, goal, required text facts, and any
+  required visual fact, but never material IDs, image IDs, retrieval metadata,
+  or scenario-contract field names. The editor may naturalize wording only; it
+  cannot return `keep`, `rewrite`, `drop`, evidence mode, or source mappings.
 - After the candidate-question and answer LLM calls, generation performs only
   structural normalization: required JSON fields, supported question types,
   valid multiple-choice options/correct option, valid judgment answers, and
@@ -559,10 +574,14 @@ Rules:
   question with one central intent. The answer may summarize multiple related
   facts from one paragraph or a tightly connected passage group; unrelated
   questions must be emitted as separate items rather than concatenated.
-- Answer `evidence_usage` references are resolved back through the exact
-  `主材料-N` mapping. The model may return only `evidence_ref` and `role`;
-  the backend appends the audited `chunk_id`, `chunk_index`, and `title_path`.
-  Persistence removes legacy/free-form `snippet` and `usage` fields.
+- Answer input is rendered as readable `正文证据-N`, `图片证据-N`, and optional
+  supplemental text blocks. The answer model sees only these labels and returns
+  `evidence_usage` entries with `evidence_ref` and `role`; the backend resolves
+  them to audited material, image, chunk, and path pointers. A `visual` answer
+  must cite every required image block; a `mixed` answer must cite required text
+  and image blocks. Persistence removes legacy/free-form `snippet` and `usage`
+  fields while retaining backend-resolved `image_id` and `material_id` when
+  applicable.
   `source_chunk_id`, `source_chunk_index`, and
   `source_chunk_title_path` identify the first directly cited primary chunk;
   `source_chunk_ids`, `source_chunk_indexes`, and
@@ -694,8 +713,6 @@ Stable fields for primary QA items:
 - `knowledge_category_confidence`
 - `knowledge_category_reason`
 - `question_type`
-- `difficulty_level`
-- `difficulty_score`
 - `qa_generation_unit_id`
 - `qa_generation_unit_text`
 - `qa_generation_unit_index`
@@ -715,6 +732,10 @@ Stable fields for primary QA items:
 - `evidence_usage`
 - `retrieval_trace`
 
+QA pair vector storage uses the fixed `qa_pairs_collection_v2` schema. It does
+not contain `difficulty_level`, `difficulty_score`, or `question_type_reason`;
+the former `qa_pairs_collection` is not read or written by the application.
+
 Rules:
 
 - Primary QA item production does not imply a quality-pass decision. Consumers
@@ -724,15 +745,15 @@ Rules:
   available.
 - Evaluation should prefer `qa_generation_unit_text` as source context when it
   exists.
-- Candidate-question generation emits the natural question and question-quality
-  fields only. Retrieval uses that question deterministically; it does not ask
-  the LLM to emit a query, mandatory terms, or an answer-scope hint.
-- LLM-facing material is separate from retrieval trace. Candidate-question
-  generation receives readable source prose only. Answer generation receives
-  readable sections labelled `主材料-N` or `检索证据-N`; it returns
-  `evidence_ref` labels rather than real chunk IDs. The generation layer maps
-  those labels back to `evidence_usage[].chunk_id` before persistence. Real IDs,
-  title paths, ranks, and scores remain in `retrieval_trace` and debug artifacts.
+- Candidate-question generation emits only the natural question. Retrieval uses
+  that question deterministically; it does not ask the LLM to emit a query,
+  mandatory terms, answer-scope hints, type reasons, or difficulty fields.
+- LLM-facing material is separate from retrieval trace. Candidate and editor
+  calls receive readable writing briefs only. Answer generation receives
+  readable `正文证据-N`, `图片证据-N`, and optional supplemental evidence blocks;
+  it returns temporary evidence labels rather than real IDs. The generation
+  layer maps labels back to `evidence_usage` source/image pointers before
+  persistence. Real IDs, title paths, ranks, and scores remain backend-only.
 - `llm_evidence_ref_map` is an ephemeral generation-unit handoff used for that
   mapping; it is not a persisted QA item field and must not be sent to the LLM.
 - `retrieval_trace` is optional on old items. New primary QA items should carry

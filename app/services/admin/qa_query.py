@@ -26,7 +26,6 @@ def _build_milvus_expr(
     original_filenames: Optional[List[str]] = None,
     knowledge_categories: Optional[List[str]] = None,
     question_types: Optional[List[str]] = None,
-    difficulty_levels: Optional[List[str]] = None,
     filtered: Optional[bool] = None,
     evaluated: Optional[bool] = None,
     min_avg_score: Optional[float] = None,
@@ -49,8 +48,6 @@ def _build_milvus_expr(
         parts.append(_expr_in("knowledge_category", knowledge_categories))
     if question_types:
         parts.append(_expr_in("question_type", question_types))
-    if difficulty_levels:
-        parts.append(_expr_in("difficulty_level", difficulty_levels))
     if filtered is not None:
         parts.append(f"filtered == {str(bool(filtered)).lower()}")
     if evaluated is not None:
@@ -68,7 +65,6 @@ def list_qa_items(
     original_filenames: Optional[List[str]] = None,
     knowledge_categories: Optional[List[str]] = None,
     question_types: Optional[List[str]] = None,
-    difficulty_levels: Optional[List[str]] = None,
     filtered: Optional[bool] = None,
     evaluated: Optional[bool] = None,
     min_avg_score: Optional[float] = None,
@@ -84,7 +80,6 @@ def list_qa_items(
         original_filenames=original_filenames,
         knowledge_categories=knowledge_categories,
         question_types=question_types,
-        difficulty_levels=difficulty_levels,
         filtered=filtered,
         evaluated=evaluated,
         min_avg_score=min_avg_score,
@@ -101,7 +96,6 @@ def list_qa_items(
         "answer",
         "knowledge_category",
         "question_type",
-        "difficulty_level",
         "filtered",
         "average_score",
         "faithfulness",
@@ -162,7 +156,6 @@ def list_qa_items(
                 "answer": row.get("answer"),
                 "knowledge_category": row.get("knowledge_category"),
                 "question_type": row.get("question_type"),
-                "difficulty_level": row.get("difficulty_level"),
                 "filtered": row.get("filtered"),
                 "average_score": average_score,
                 "faithfulness": row.get("faithfulness"),
@@ -196,7 +189,6 @@ def list_qa_items(
             "original_filenames": original_filenames,
             "knowledge_categories": knowledge_categories,
             "question_types": question_types,
-            "difficulty_levels": difficulty_levels,
             "filtered": filtered,
             "evaluated": evaluated,
             "min_avg_score": min_avg_score,
@@ -226,13 +218,10 @@ def get_qa_item(qa_id: str) -> Dict[str, Any]:
         "question",
         "answer",
         "question_type",
-        "question_type_reason",
         "answer_explanation",
         "knowledge_category",
         "knowledge_category_reason",
         "knowledge_category_confidence",
-        "difficulty_level",
-        "difficulty_score",
         "llm_model",
         "embed_model",
         "embed_dim",
@@ -357,13 +346,10 @@ def get_qa_item(qa_id: str) -> Dict[str, Any]:
         "question": row.get("question"),
         "answer": row.get("answer"),
         "question_type": row.get("question_type"),
-        "question_type_reason": row.get("question_type_reason"),
         "answer_explanation": row.get("answer_explanation"),
         "knowledge_category": row.get("knowledge_category"),
         "knowledge_category_reason": row.get("knowledge_category_reason"),
         "knowledge_category_confidence": row.get("knowledge_category_confidence"),
-        "difficulty_level": row.get("difficulty_level"),
-        "difficulty_score": row.get("difficulty_score"),
         "filtered": row.get("filtered"),
         "average_score": average_score,
         "faithfulness": row.get("faithfulness"),

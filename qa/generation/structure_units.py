@@ -822,7 +822,7 @@ def _plan_scenario_pool(
         scenarios: List[Dict[str, Any]] = []
         for item in batch_items:
             required_ids = _normalize_material_id_list(
-                item.get("required_material_ids") or item.get("material_ids"),
+                item.get("required_material_ids"),
                 materials_by_id,
             )
             optional_ids = _normalize_material_id_list(
@@ -905,7 +905,7 @@ def _merge_cross_batch_summary_candidates(
     merged: List[Dict[str, Any]] = []
     for left_index, left in enumerate(summary_items):
         left_required = _normalize_material_id_list(
-            left.get("required_material_ids") or left.get("material_ids"), materials_by_id
+            left.get("required_material_ids"), materials_by_id
         )
         left_optional = _normalize_material_id_list(
             left.get("optional_material_ids"), materials_by_id
@@ -915,7 +915,7 @@ def _merge_cross_batch_summary_candidates(
             if right.get("_planning_batch_index") == left_batch:
                 continue
             right_required = _normalize_material_id_list(
-                right.get("required_material_ids") or right.get("material_ids"), materials_by_id
+                right.get("required_material_ids"), materials_by_id
             )
             right_optional = _normalize_material_id_list(
                 right.get("optional_material_ids"), materials_by_id
@@ -1085,12 +1085,6 @@ def _build_generation_unit(
     optional_material_ids = _normalize_material_id_list(
         raw.get("optional_material_ids"), materials_by_id
     )
-    legacy_material_ids = _normalize_material_id_list(raw.get("material_ids"), materials_by_id)
-    if not required_material_ids:
-        # Planner adapters created before the required/optional contract used
-        # material_ids. Treat those references as required rather than silently
-        # weakening the old validation behavior.
-        required_material_ids = legacy_material_ids
     material_ids: List[str] = []
     for material_id in [*required_material_ids, *optional_material_ids]:
         if material_id not in material_ids:
@@ -1100,6 +1094,8 @@ def _build_generation_unit(
     if scenario_type == SCENARIO_TYPE_POINT and (
         len(required_material_ids) != 1 or optional_material_ids
     ):
+        return None
+    if scenario_type == SCENARIO_TYPE_SUMMARY and len(required_material_ids) > 3:
         return None
     materials = [materials_by_id[material_id] for material_id in material_ids]
     required_materials = [materials_by_id[material_id] for material_id in required_material_ids]
@@ -1113,6 +1109,26 @@ def _build_generation_unit(
         image_id = _safe_text(value)
         if image_id in available_image_ids and image_id not in required_image_ids:
             required_image_ids.append(image_id)
+    for material in materials:
+        if not any(image.image_id in required_image_ids for image in material.image_materials):
+            continue
+        if material.material_id not in required_material_ids:
+            required_material_ids.append(material.material_id)
+        optional_material_ids = [
+            material_id for material_id in optional_material_ids
+            if material_id != material.material_id
+        ]
+    material_ids = []
+    for material_id in [*required_material_ids, *optional_material_ids]:
+        if material_id not in material_ids:
+            material_ids.append(material_id)
+    if scenario_type == SCENARIO_TYPE_POINT and (
+        len(required_material_ids) != 1 or optional_material_ids
+    ):
+        return None
+    if scenario_type == SCENARIO_TYPE_SUMMARY and len(required_material_ids) > 3:
+        return None
+    required_materials = [materials_by_id[material_id] for material_id in required_material_ids]
     evidence_mode = _normalize_evidence_mode(
         raw.get("evidence_mode"),
         has_required_images=bool(required_image_ids),
@@ -1298,7 +1314,10 @@ def _fallback_point_units(
             "scenario_type": SCENARIO_TYPE_POINT,
             "intent": reader_need,
             "reader_need": reader_need,
-            "material_ids": [material.material_id],
+            "required_material_ids": [material.material_id],
+            "optional_material_ids": [],
+            "evidence_mode": "text",
+            "required_image_ids": [],
             "fallback_reason": "llm_point_pool_underfilled",
         }
         unit = _build_generation_unit(

@@ -324,6 +324,42 @@ def _generation_timing_with_metadata(
     }
 
 
+def _percentile(values: List[float], quantile: float) -> Optional[float]:
+    ordered = sorted(value for value in values if value >= 0.0)
+    if not ordered:
+        return None
+    position = (len(ordered) - 1) * max(0.0, min(1.0, quantile))
+    lower = int(position)
+    upper = min(len(ordered) - 1, lower + 1)
+    fraction = position - lower
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
+
+
+def _unit_latency_percentiles(unit_details: List[Dict[str, Any]]) -> Dict[str, Dict[str, float]]:
+    fields = (
+        "chunk_total_seconds",
+        "candidate_question_seconds",
+        "question_editor_seconds",
+        "retrieval_seconds",
+        "answer_generation_seconds",
+    )
+    result: Dict[str, Dict[str, float]] = {}
+    for field in fields:
+        values: List[float] = []
+        for detail in unit_details:
+            timing = detail.get("timing") if isinstance(detail, dict) else None
+            if not isinstance(timing, dict):
+                continue
+            value = _safe_float(timing.get(field))
+            if value is not None:
+                values.append(value)
+        p50 = _percentile(values, 0.50)
+        p95 = _percentile(values, 0.95)
+        if p50 is not None and p95 is not None:
+            result[field] = {"p50": round(p50, 6), "p95": round(p95, 6), "count": len(values)}
+    return result
+
+
 def process_text_to_qa_one_step(
     client: Any,
     text: str,
@@ -369,6 +405,11 @@ def process_text_to_qa_one_step(
             qa_detail_mode=mode,
             prompt_language=runtime.prompt_language,
             request_timeout=runtime.request_timeout,
+            knowledge_category=(
+                runtime.fixed_knowledge_category
+                if runtime.use_category_prompt_templates
+                else None
+            ),
             debug_writer=debug_writer,
             planning_batch_index=planning_context.get("planning_batch_index"),
             planning_batch_count=planning_context.get("planning_batch_count"),
@@ -756,6 +797,7 @@ def process_text_to_qa_one_step(
                     material.to_debug_dict() for material in unit_plan.section_materials
                 ],
                 "duplicate_questions_dropped": duplicate_questions_dropped,
+                "latency_percentiles": _unit_latency_percentiles(generation_unit_debug_details),
             }
             progress_callback(
                 {

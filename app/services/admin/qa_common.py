@@ -33,14 +33,7 @@ def _get_allowed_fields() -> List[str]:
 
 
 def _resolve_source_field() -> str:
-    try:
-        fields = set(_get_allowed_fields())
-        if "source" in fields:
-            return "source"
-        if "source_id" in fields:
-            return "source_id"
-    except Exception:
-        return "source"
+    """The current QA schema has one fixed source field."""
     return "source"
 
 

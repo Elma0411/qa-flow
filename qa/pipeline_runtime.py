@@ -326,11 +326,6 @@ def run_one_step_chunk_worker(
                 few_shot_examples=runtime.few_shot_examples,
                 request_timeout=runtime.request_timeout,
                 qa_detail_mode=effective_qa_detail_mode,
-                knowledge_category=(
-                    runtime.fixed_knowledge_category
-                    if runtime.use_category_prompt_templates
-                    else None
-                ),
                 chunk_index=chunk_index,
                 debug_writer=debug_writer,
             )
@@ -396,6 +391,7 @@ def run_one_step_chunk_worker(
                         else None
                     ),
                     source_chunk_meta=source_chunk_meta,
+                    style_examples=runtime.few_shot_examples,
                     debug_writer=debug_writer,
                 )
             except Exception as exc:
@@ -504,39 +500,9 @@ def run_one_step_chunk_worker(
                 validation_started_at,
             )
             unit_started_at = time.perf_counter()
-            candidate_source_unit_payload = dict(source_unit_payload)
-            required_material_ids = candidate.get("required_material_ids")
-            optional_material_ids = candidate.get("optional_material_ids")
-            if isinstance(required_material_ids, list) and required_material_ids:
-                candidate_source_unit_payload["required_material_ids"] = list(required_material_ids)
-            if isinstance(optional_material_ids, list):
-                candidate_source_unit_payload["optional_material_ids"] = list(optional_material_ids)
-            if isinstance(candidate.get("required_material_refs"), list):
-                candidate_source_unit_payload["required_material_refs"] = list(
-                    candidate.get("required_material_refs") or []
-                )
-            if isinstance(candidate.get("optional_material_refs"), list):
-                candidate_source_unit_payload["optional_material_refs"] = list(
-                    candidate.get("optional_material_refs") or []
-                )
-            candidate_source_unit_payload["material_ids"] = list(dict.fromkeys([
-                *candidate_source_unit_payload.get("required_material_ids", []),
-                *candidate_source_unit_payload.get("optional_material_ids", []),
-            ]))
-            candidate_source_unit_payload["evidence_mode"] = str(
-                candidate.get("evidence_mode") or candidate_source_unit_payload.get("evidence_mode") or "text"
-            )
-            if isinstance(candidate.get("required_image_ids"), list):
-                candidate_source_unit_payload["required_image_ids"] = list(
-                    candidate.get("required_image_ids") or []
-                )
-            if isinstance(candidate.get("required_image_refs"), list):
-                candidate_source_unit_payload["required_image_refs"] = list(
-                    candidate.get("required_image_refs") or []
-                )
             generation_unit = evidence_index.build_generation_unit(
                 source_chunk_index=chunk_index,
-                source_unit=candidate_source_unit_payload,
+                source_unit=source_unit_payload,
                 question=question_key,
                 retrieval_result=retrieval_result,
                 final_evidence_k=runtime.final_evidence_k,
@@ -565,7 +531,6 @@ def run_one_step_chunk_worker(
                     fixed_knowledge_category=runtime.fixed_knowledge_category,
                     fixed_knowledge_category_confidence=runtime.fixed_knowledge_category_confidence,
                     fixed_knowledge_category_reason=runtime.fixed_knowledge_category_reason,
-                    use_category_prompt_templates=runtime.use_category_prompt_templates,
                     chunk_index=chunk_index,
                     debug_writer=debug_writer,
                 )

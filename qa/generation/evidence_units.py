@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -26,6 +27,14 @@ def _safe_text(value: Any) -> str:
 
 def _prompt_title_path(chunk: Dict[str, Any]) -> str:
     return _safe_text(chunk.get("title_path")) or "未标注章节"
+
+
+def _render_text_only(value: Any) -> str:
+    """Keep retrieval text intact in the index, but avoid duplicating typed images in LLM evidence."""
+    text = _safe_text(value)
+    text = re.sub(r"【图片描述[：:].*?】", "", text, flags=re.S)
+    text = re.sub(r"\[图片描述[：:].*?\]", "", text, flags=re.S)
+    return text.strip()
 
 
 def build_document_chunks(
@@ -187,7 +196,6 @@ class QADocumentEvidenceIndex:
         required_material_ids = [
             _safe_text(value)
             for value in source_unit_payload.get("required_material_ids")
-            or source_unit_payload.get("material_ids")
             or []
             if _safe_text(value)
         ]
@@ -233,40 +241,120 @@ class QADocumentEvidenceIndex:
                 seen_ids.add(chunk_id)
                 evidence_chunks.append(self._chunks_by_id[chunk_id])
 
-        sections: List[str] = ["【主来源材料】"]
+        prompt_materials = source_unit_payload.get("prompt_materials")
+        prompt_materials = prompt_materials if isinstance(prompt_materials, list) else []
+        material_ref_map = source_unit_payload.get("material_ref_map")
+        material_ref_map = material_ref_map if isinstance(material_ref_map, dict) else {}
+        image_ref_map = source_unit_payload.get("image_ref_map")
+        image_ref_map = image_ref_map if isinstance(image_ref_map, dict) else {}
+        required_image_ids = {
+            _safe_text(value)
+            for value in source_unit_payload.get("required_image_ids") or []
+            if _safe_text(value)
+        }
+        material_by_id: Dict[str, Dict[str, Any]] = {}
+        for material in prompt_materials:
+            if not isinstance(material, dict):
+                continue
+            material_id = _safe_text(material_ref_map.get(_safe_text(material.get("material_ref"))))
+            if material_id:
+                material_by_id[material_id] = material
+        chunks_by_index = {
+            _safe_int(chunk.get("chunk_index")): chunk
+            for chunk in source_chunks
+            if isinstance(chunk, dict)
+        }
+
+        def material_pointer(material_id: str) -> Dict[str, Any]:
+            for index in material_chunk_indexes.get(material_id) or []:
+                chunk = chunks_by_index.get(_safe_int(index))
+                if chunk:
+                    return chunk
+            return source_chunk
+
+        sections: List[str] = ["【必需正文证据】"]
         ref_map: Dict[str, Dict[str, Any]] = {}
-        for position, chunk in enumerate(required_chunks, start=1):
-            label = f"主材料-{position}"
-            sections.append(
-                f"{label}\n节点路径：{_prompt_title_path(chunk)}\n"
-                f"正文：{_safe_text(chunk.get('text'))}"
-            )
+        rendered_required_ids: List[str] = []
+        for position, material_id in enumerate(required_material_ids, start=1):
+            material = material_by_id.get(material_id)
+            chunk = material_pointer(material_id)
+            label = f"正文证据-{position}"
+            text = _safe_text(material.get("text_content")) if material else _render_text_only(chunk.get("text"))
+            path = _safe_text(material.get("node_path")) if material else _prompt_title_path(chunk)
+            if not text:
+                text = _render_text_only(chunk.get("text"))
+            sections.append(f"{label}\n节点路径：{path or '未标注章节'}\n正文：{text}")
             ref_map[label] = {
                 "chunk_id": chunk.get("chunk_id"),
                 "chunk_index": chunk.get("chunk_index"),
                 "title_path": chunk.get("title_path"),
+                "material_id": material_id,
                 "role": "primary_source",
             }
-        if optional_chunks:
-            sections.append("【可选主材料】")
-        for position, chunk in enumerate(optional_chunks, start=1):
-            label = f"可选材料-{position}"
+            rendered_required_ids.append(material_id)
+        if not rendered_required_ids:
+            for position, chunk in enumerate(required_chunks, start=1):
+                label = f"正文证据-{position}"
+                sections.append(
+                    f"{label}\n节点路径：{_prompt_title_path(chunk)}\n"
+                    f"正文：{_render_text_only(chunk.get('text'))}"
+                )
+                ref_map[label] = {
+                    "chunk_id": chunk.get("chunk_id"),
+                    "chunk_index": chunk.get("chunk_index"),
+                    "title_path": chunk.get("title_path"),
+                    "role": "primary_source",
+                }
+        if optional_material_ids:
+            sections.append("【可选正文证据】")
+        for position, material_id in enumerate(optional_material_ids, start=1):
+            material = material_by_id.get(material_id)
+            chunk = material_pointer(material_id)
+            label = f"可选正文证据-{position}"
+            text = _safe_text(material.get("text_content")) if material else _render_text_only(chunk.get("text"))
+            path = _safe_text(material.get("node_path")) if material else _prompt_title_path(chunk)
+            if not text:
+                continue
+            sections.append(f"{label}\n节点路径：{path or '未标注章节'}\n正文：{text}")
+            ref_map[label] = {
+                "chunk_id": chunk.get("chunk_id"),
+                "chunk_index": chunk.get("chunk_index"),
+                "title_path": chunk.get("title_path"),
+                "material_id": material_id,
+                "role": "optional_source",
+            }
+        required_images: List[tuple[str, str, str, Dict[str, Any]]] = []
+        for material_id, material in material_by_id.items():
+            for image in material.get("image_materials") or []:
+                if not isinstance(image, dict):
+                    continue
+                image_ref = _safe_text(image.get("image_ref"))
+                image_id = _safe_text(image_ref_map.get(image_ref))
+                if image_id and image_id in required_image_ids:
+                    required_images.append((material_id, image_id, image_ref, image))
+        if required_images:
+            sections.append("【必需图片证据】")
+        for position, (material_id, image_id, _image_ref, image) in enumerate(required_images, start=1):
+            chunk = material_pointer(material_id)
+            label = f"图片证据-{position}"
             sections.append(
                 f"{label}\n节点路径：{_prompt_title_path(chunk)}\n"
-                f"正文：{_safe_text(chunk.get('text'))}"
+                f"图片事实：{_safe_text(image.get('description'))}"
             )
             ref_map[label] = {
                 "chunk_id": chunk.get("chunk_id"),
                 "chunk_index": chunk.get("chunk_index"),
                 "title_path": chunk.get("title_path"),
-                "role": "optional_source",
+                "material_id": material_id,
+                "image_id": image_id,
+                "role": "primary_visual",
             }
         if evidence_chunks:
-            sections.append("【检索证据】")
+            sections.append("【补充正文证据】")
             for position, chunk in enumerate(evidence_chunks, start=1):
-                label = f"检索证据-{position}"
+                label = f"补充正文证据-{position}"
                 title_path = _safe_text(chunk.get("title_path"))
-                rendered = _safe_text(chunk.get("text"))
+                rendered = _render_text_only(chunk.get("text"))
                 rendered = (
                     f"节点路径：{title_path or '未标注章节'}\n正文：{rendered}"
                 )
@@ -304,6 +392,7 @@ class QADocumentEvidenceIndex:
                 }
                 for chunk in evidence_chunks
             ],
+            "required_image_ids": list(required_image_ids),
             "evidence_chunk_ids": evidence_ids,
             "qa_generation_unit_text": "\n\n".join(sections).strip(),
             "llm_evidence_ref_map": ref_map,

@@ -30,9 +30,6 @@ class QATagPatch(BaseModel):
     knowledge_category_reason: Optional[str] = None
     knowledge_category_confidence: Optional[float] = None
     question_type: Optional[str] = None
-    question_type_reason: Optional[str] = None
-    difficulty_level: Optional[str] = None
-    difficulty_score: Optional[float] = None
     filtered: Optional[bool] = None
 
 

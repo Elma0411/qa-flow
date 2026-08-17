@@ -24,16 +24,12 @@ def build_language_instruction(language: str) -> str:
     """根据检测结果生成对大模型的语言约束提示。"""
     if language == "zh":
         return (
-            "请确保题干、选项（如有）、答案、答案解释、各类理由等自然语言内容全部使用简体中文，"
-            "并与原文语气保持一致。枚举字段请严格按模板/Schema 规定的取值输出。"
+            "请使用简体中文书写面向读者的内容，并与原文语气保持一致。"
         )
 
     if language == "en":
         return (
-            "Please write the natural-language fields in English (question, answer, "
-            "answer_explanation, options text if any, knowledge_category, and all reason fields). "
-            "Keep enum fields exactly as specified by the schema/template (e.g., question_type and "
-            "difficulty_level use the provided Chinese enum values; correct_option is one of A/B/C/D)."
+            "Write reader-facing content in English and keep it consistent with the source tone."
         )
 
     # 兜底：跟随事实文本的主语言

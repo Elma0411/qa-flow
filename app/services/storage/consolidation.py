@@ -27,16 +27,17 @@ def _sanitize_evidence_usage(raw_value: Any) -> List[Dict[str, Any]]:
     if not isinstance(raw_value, list):
         return []
     cleaned: List[Dict[str, Any]] = []
-    seen: set[Tuple[str, str, str]] = set()
+    seen: set[Tuple[str, str, str, str]] = set()
     for raw_entry in raw_value:
         if not isinstance(raw_entry, dict):
             continue
         evidence_ref = str(raw_entry.get("evidence_ref") or "").strip()
         chunk_id = str(raw_entry.get("chunk_id") or "").strip()
-        if not evidence_ref and not chunk_id:
+        image_id = str(raw_entry.get("image_id") or "").strip()
+        if not evidence_ref and not chunk_id and not image_id:
             continue
         role = str(raw_entry.get("role") or "evidence").strip() or "evidence"
-        key = (evidence_ref, chunk_id, role)
+        key = (evidence_ref, chunk_id, image_id, role)
         if key in seen:
             continue
         seen.add(key)
@@ -46,6 +47,11 @@ def _sanitize_evidence_usage(raw_value: Any) -> List[Dict[str, Any]]:
         }
         if chunk_id:
             entry["chunk_id"] = chunk_id
+        material_id = str(raw_entry.get("material_id") or "").strip()
+        if material_id:
+            entry["material_id"] = material_id
+        if image_id:
+            entry["image_id"] = image_id
         if raw_entry.get("chunk_index") is not None:
             entry["chunk_index"] = raw_entry.get("chunk_index")
         title_path = str(raw_entry.get("title_path") or "").strip()
@@ -366,12 +372,9 @@ def build_consolidated_entry(
             "knowledge_category_confidence": kc_conf,
             "knowledge_category_reason": fact_info.get("knowledge_category_reason") or kc_reason,
             "question_type": merged.get("question_type", "简答题"),
-            "question_type_reason": merged.get("question_type_reason"),
             "options": options,
             "correct_option": correct_option,
             "answer_explanation": answer_explanation,
-            "difficulty_level": merged.get("difficulty_level") or "中等",
-            "difficulty_score": merged.get("difficulty_score"),
             "llm_model": llm_model,
             "embed_model": CONFIG["milvus"]["embedding_model"],
             "embed_dim": CONFIG["milvus"]["vector_dim"],

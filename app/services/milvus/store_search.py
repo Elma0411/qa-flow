@@ -61,17 +61,13 @@ def store_qa_payload_to_milvus(
             "task_id": 128,
             "original_filename": 512,
             "source": 512,
-            "source_id": 512,
             "source_fact_text": 4096,
             "question": 4096,
             "answer": 8192,
             "question_type": 64,
-            "question_type_reason": 1024,
             "answer_explanation": 8192,
             "knowledge_category": 256,
             "knowledge_category_reason": 1024,
-            "theme": 256,
-            "theme_reason": 1024,
             "llm_model": 256,
             "embed_model": 256,
             "evaluation_method": 64,
@@ -93,22 +89,6 @@ def store_qa_payload_to_milvus(
         }
 
         def _prepare_row(row_dict: Dict[str, Any]) -> Dict[str, Any]:
-
-            # Backward compatibility: if the connected collection requires legacy theme fields,
-            # populate them from the unified knowledge_category fields (or vice versa).
-            if allowed_fields is not None:
-                if "theme" in allowed_fields and "theme" not in row_dict:
-                    row_dict["theme"] = row_dict.get("knowledge_category") or ""
-                if "theme_reason" in allowed_fields and "theme_reason" not in row_dict:
-                    row_dict["theme_reason"] = row_dict.get("knowledge_category_reason") or ""
-                if "theme_confidence" in allowed_fields and "theme_confidence" not in row_dict:
-                    row_dict["theme_confidence"] = row_dict.get("knowledge_category_confidence") or 0.0
-                if "knowledge_category" in allowed_fields and "knowledge_category" not in row_dict:
-                    row_dict["knowledge_category"] = row_dict.get("theme") or ""
-                if "knowledge_category_reason" in allowed_fields and "knowledge_category_reason" not in row_dict:
-                    row_dict["knowledge_category_reason"] = row_dict.get("theme_reason") or ""
-                if "knowledge_category_confidence" in allowed_fields and "knowledge_category_confidence" not in row_dict:
-                    row_dict["knowledge_category_confidence"] = row_dict.get("theme_confidence") or 0.0
 
             for key, max_len in max_len_map.items():
                 value = row_dict.get(key)
@@ -152,26 +132,13 @@ def store_qa_payload_to_milvus(
                     local_eval = {}
 
                 # 知识类别与置信度
-                kc_value = item.get("knowledge_category") or item.get("theme") or ""
-                kc_reason = item.get("knowledge_category_reason") or item.get("theme_reason") or ""
-                kc_conf_val = item.get("knowledge_category_confidence") or item.get("theme_confidence")
+                kc_value = item.get("knowledge_category") or ""
+                kc_reason = item.get("knowledge_category_reason") or ""
+                kc_conf_val = item.get("knowledge_category_confidence")
                 try:
                     kc_conf = float(kc_conf_val) if kc_conf_val is not None else 0.0
                 except Exception:
                     kc_conf = 0.0
-
-                # 难度分数：
-                # 当前 Milvus schema 中 `difficulty_score` 是非 nullable FLOAT，
-                # 因此不能传入 None。对缺失/非法值统一写入 -1.0，明确表示
-                # “当前记录没有难度分数元数据”，避免和真实的 0.0（最简单）
-                # 混淆。
-                diff_score = -1.0
-                diff_score_val = item.get("difficulty_score")
-                if isinstance(diff_score_val, (int, float, str)):
-                    try:
-                        diff_score = float(diff_score_val)
-                    except Exception:
-                        diff_score = -1.0
 
                 # 平均分：统一转为 float，无法解析时退回 0.0
                 avg_raw = item.get("average_score", 0.0)
@@ -181,7 +148,7 @@ def store_qa_payload_to_milvus(
                     avg_score = 0.0
 
                 # 构造单条记录，先粗填充，再统一截断
-                source_value = str(item.get("source") or item.get("source_id") or "")
+                source_value = str(item.get("source") or "")
                 ue = item.get("unsupervised_evaluation") or {}
                 if not isinstance(ue, dict):
                     ue = {}
@@ -212,13 +179,10 @@ def store_qa_payload_to_milvus(
                     "question": (item.get("question", "") or ""),
                     "answer": (item.get("answer", "") or ""),
                     "question_type": (item.get("question_type", "简答题") or "简答题"),
-                    "question_type_reason": (item.get("question_type_reason", "") or ""),
                     "answer_explanation": (item.get("answer_explanation", "") or ""),
                     category_field: kc_value,
                     category_reason_field: kc_reason,
                     category_conf_field: kc_conf,
-                    "difficulty_level": (item.get("difficulty_level", "") or ""),
-                    "difficulty_score": diff_score,
                     "llm_model": (model_info.get("llm_model", "") or ""),
                     "embed_model": str(embed_model_name or ""),
                     "embed_dim": embed_dim,
@@ -370,8 +334,6 @@ def search_qa_pairs_in_milvus(
     min_avg_score: Optional[float] = None,
     categories: Optional[List[str]] = None,
     question_types: Optional[List[str]] = None,
-    difficulty_levels: Optional[List[str]] = None,
-    themes: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     if not _rt.MILVUS_AVAILABLE or not _rt.milvus_client:
         return {"success": False, "message": "Milvus未启用或未连接", "results": []}
@@ -391,16 +353,13 @@ def search_qa_pairs_in_milvus(
             filter_expressions.append(f'task_id == "{task_id}"')
         if only_filtered is not None:
             filter_expressions.append(f"filtered == {str(only_filtered).lower()}")
-        effective_categories = categories or themes
+        effective_categories = categories
         if effective_categories:
             cate_expr = " or ".join([f'{category_field} == \"{cate}\"' for cate in effective_categories])
             filter_expressions.append(f"({cate_expr})")
         if question_types:
             qtype_expr = " or ".join([f'question_type == \"{qt}\"' for qt in question_types])
             filter_expressions.append(f"({qtype_expr})")
-        if difficulty_levels:
-            diff_expr = " or ".join([f'difficulty_level == \"{dl}\"' for dl in difficulty_levels])
-            filter_expressions.append(f"({diff_expr})")
         filter_expr = " and ".join(filter_expressions) if filter_expressions else None
         search_params = CONFIG["milvus"]["search_params"]
         output_fields = [
@@ -412,13 +371,10 @@ def search_qa_pairs_in_milvus(
             "question",
             "answer",
             "question_type",
-            "question_type_reason",
             "answer_explanation",
             category_field,
             category_reason_field,
             category_conf_field,
-            "difficulty_level",
-            "difficulty_score",
             "llm_model",
             "embed_model",
             "embed_dim",
@@ -485,13 +441,10 @@ def search_qa_pairs_in_milvus(
                         "question": entity.get("question"),
                         "answer": entity.get("answer"),
                         "question_type": entity.get("question_type"),
-                        "question_type_reason": entity.get("question_type_reason"),
                         "answer_explanation": entity.get("answer_explanation"),
                         "knowledge_category": entity.get(category_field),
                         "knowledge_category_reason": entity.get(category_reason_field),
                         "knowledge_category_confidence": entity.get(category_conf_field),
-                        "difficulty_level": entity.get("difficulty_level"),
-                        "difficulty_score": entity.get("difficulty_score"),
                         "llm_model": entity.get("llm_model"),
                         "embed_model": entity.get("embed_model"),
                         "embed_dim": entity.get("embed_dim"),

@@ -1,4 +1,4 @@
-# 文件作用：校验并归一化问答条目的题型、难度和必要字段。
+# 文件作用：校验并归一化问答条目的题型和必要字段。
 # 关联说明：位于 generation/grounding 之后，统一归一化最终问答条目字段。
 
 from __future__ import annotations
@@ -7,7 +7,6 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 ALLOWED_QUESTION_TYPES = {"简答题", "单选题", "判断题", "计算题"}
-ALLOWED_DIFFICULTY_LEVELS = {"简单", "中等", "困难"}
 ALLOWED_CORRECT_OPTIONS = {"A", "B", "C", "D"}
 
 
@@ -51,20 +50,6 @@ def normalize_question_type(raw: Any, *, expected: Optional[str] = None) -> str:
     if expected in ALLOWED_QUESTION_TYPES:
         return str(expected)
     return "简答题"
-
-
-def normalize_difficulty_level(raw: Any) -> str:
-    s = str(raw or "").strip()
-    if s in ALLOWED_DIFFICULTY_LEVELS:
-        return s
-    lower = s.lower()
-    if "简单" in s or lower in {"easy", "easier", "basic"}:
-        return "简单"
-    if "困难" in s or lower in {"hard", "difficult"}:
-        return "困难"
-    if "中等" in s or lower in {"medium", "normal", "moderate"}:
-        return "中等"
-    return "中等"
 
 
 def normalize_judge_answer(answer: str, language_code: str) -> Optional[str]:
@@ -308,8 +293,6 @@ def validate_and_normalize_item_with_reason(
         if normalize_judge_answer(answer, language_code=language_code) is not None:
             question_type = "判断题"
 
-    difficulty_level = normalize_difficulty_level(get_first_str(["difficulty_level"]))
-
     options: Optional[List[str]] = None
     correct_option: Optional[str] = None
     if question_type == "单选题":
@@ -366,16 +349,6 @@ def validate_and_normalize_item_with_reason(
             kc_conf = 0.0
     kc_conf = max(0.0, min(1.0, kc_conf))
 
-    difficulty_score_raw = item.get("difficulty_score")
-    try:
-        difficulty_score = (
-            float(difficulty_score_raw) if difficulty_score_raw is not None else None
-        )
-    except Exception:
-        difficulty_score = None
-    if difficulty_score is not None:
-        difficulty_score = max(0.0, min(1.0, difficulty_score))
-
     normalized = {
         "question": question,
         "answer": answer,
@@ -386,9 +359,6 @@ def validate_and_normalize_item_with_reason(
         "knowledge_category_confidence": kc_conf,
         "knowledge_category_reason": knowledge_category_reason,
         "question_type": question_type,
-        "question_type_reason": get_first_str(["question_type_reason"]),
-        "difficulty_level": difficulty_level,
-        "difficulty_score": difficulty_score,
         "options": options,
         "correct_option": correct_option,
     }

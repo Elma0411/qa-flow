@@ -17,20 +17,7 @@ router = APIRouter()
 
 
 def _resolve_milvus_source_field() -> str:
-    """
-    Prefer unified `source`. If the connected collection still uses legacy `source_id`,
-    fall back to it.
-    """
-    try:
-        if not milvus_service.milvus_client:
-            return "source"
-        names = {f.name for f in milvus_service.milvus_client.schema.fields}
-        if "source" in names:
-            return "source"
-        if "source_id" in names:
-            return "source_id"
-    except Exception:
-        return "source"
+    """The current QA schema has one fixed source field."""
     return "source"
 
 
@@ -155,13 +142,10 @@ async def get_task_qa(
                 "question",
                 "answer",
                 "question_type",
-                "question_type_reason",
                 "answer_explanation",
                 "knowledge_category",
                 "knowledge_category_reason",
                 "knowledge_category_confidence",
-                "difficulty_level",
-                "difficulty_score",
                 "llm_model",
                 "embed_model",
                 "embed_dim",
@@ -279,13 +263,10 @@ async def get_task_qa(
                 "question": r.get("question"),
                 "answer": r.get("answer"),
                 "question_type": r.get("question_type"),
-                "question_type_reason": r.get("question_type_reason"),
                 "answer_explanation": r.get("answer_explanation"),
                 "knowledge_category": r.get("knowledge_category"),
                 "knowledge_category_reason": r.get("knowledge_category_reason"),
                 "knowledge_category_confidence": r.get("knowledge_category_confidence"),
-                "difficulty_level": r.get("difficulty_level"),
-                "difficulty_score": r.get("difficulty_score"),
                 "filtered": r.get("filtered"),
                 "average_score": r.get("average_score"),
                 "evaluation_method": r.get("evaluation_method"),
@@ -419,13 +400,10 @@ async def get_file_qa(
             "question",
             "answer",
             "question_type",
-            "question_type_reason",
             "answer_explanation",
             "knowledge_category",
             "knowledge_category_reason",
             "knowledge_category_confidence",
-            "difficulty_level",
-            "difficulty_score",
             "llm_model",
             "embed_model",
             "embed_dim",
@@ -530,15 +508,12 @@ async def get_file_qa(
                     "source_fact_text": r.get("source_fact_text"),
                     "context": r.get("source_fact_text"),
                     "question_type": r.get("question_type"),
-                    "question_type_reason": r.get("question_type_reason"),
                     "answer_explanation": r.get("answer_explanation"),
                     "knowledge_category": r.get("knowledge_category"),
                     "knowledge_category_reason": r.get("knowledge_category_reason"),
                     "knowledge_category_confidence": r.get(
                         "knowledge_category_confidence"
                     ),
-                    "difficulty_level": r.get("difficulty_level"),
-                    "difficulty_score": r.get("difficulty_score"),
                     "question": r.get("question"),
                     "answer": r.get("answer"),
                     "filtered": r.get("filtered"),

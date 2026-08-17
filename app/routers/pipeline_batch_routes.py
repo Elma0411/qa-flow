@@ -270,7 +270,7 @@ async def batch_upload_complete_pipeline_with_evaluation(
     ),
     use_category_prompt_templates: bool = Form(
         True,
-        description="是否按知识分类标签启用专用出题/答案提示词模板；False=统一使用通用模板",
+        description="是否按知识分类标签启用 planner 场景画像；不会注入候选题或答案提示词",
     ),
     ocr_enabled: bool = Form(True, description="是否启用自动 OCR/抽取（默认 True）"),
     ocr_timeout_seconds: Optional[int] = Form(None, description="转发 OCR 的超时时间（秒）"),

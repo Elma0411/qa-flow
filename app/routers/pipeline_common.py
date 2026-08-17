@@ -70,8 +70,6 @@ def _build_filtered_qa_row(
         "knowledge_category": qa_result.get("knowledge_category", ""),
         "knowledge_category_confidence": qa_result.get("knowledge_category_confidence"),
         "question_type": qa_result.get("question_type"),
-        "difficulty_level": qa_result.get("difficulty_level"),
-        "difficulty_score": qa_result.get("difficulty_score"),
         "average_score": qa_result.get("average_score", 0.0),
         "evaluation_scores": {},
     }
@@ -93,8 +91,6 @@ def _write_filtered_qa_csv(
         "knowledge_category",
         "knowledge_category_confidence",
         "question_type",
-        "difficulty_level",
-        "difficulty_score",
         "average_score",
     ] + [f"{metric}_score" for metric in criteria_list]
     with open(csv_file, "w", encoding="utf-8", newline="") as csvfile:
@@ -107,8 +103,6 @@ def _write_filtered_qa_csv(
                 "knowledge_category": qa_item["knowledge_category"],
                 "knowledge_category_confidence": qa_item.get("knowledge_category_confidence"),
                 "question_type": qa_item.get("question_type"),
-                "difficulty_level": qa_item.get("difficulty_level"),
-                "difficulty_score": qa_item.get("difficulty_score"),
                 "average_score": qa_item["average_score"],
             }
             scores_map = qa_item.get("evaluation_scores", {})

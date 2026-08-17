@@ -9,245 +9,58 @@ from qa.generation.structure_units import plan_generation_units
 from qa.text_to_qa_pipeline import _deduplicate_document_questions
 
 
-def _chunk(index, section_path, title, text, *, parent="1", fragment=1, fragment_count=1):
+def _chunk(index, section_path, title, text, *, image_materials=None, fragment=1, fragment_count=1):
     return {
         "chunk_id": f"c{index}",
         "chunk_index": index,
         "section_chunk_index": fragment,
         "section_path": section_path,
-        "section_parent_path": parent,
+        "section_parent_path": "文档",
         "section_level": 2,
         "section_is_leaf": True,
         "title_path": title,
         "fragment_group_id": f"g-{section_path}",
         "fragment_index": fragment,
         "fragment_count": fragment_count,
-        "content_kind": "mixed" if "图片" in text else "text",
-        "source_asset_ids": ["img-1"] if "图片" in text else [],
+        "content_kind": "text",
+        "source_asset_ids": [],
         "text": text,
         "text_for_embedding": text,
+        "image_materials": image_materials or [],
     }
 
 
-class _EditorClient:
-    def __init__(self, decision, question="", reason=""):
-        self.payload = {"decision": decision, "question": question, "reason": reason}
-
-    def create_chat_completion_text(self, **_kwargs):
-        return json.dumps(self.payload, ensure_ascii=False)
-
-
-class _ScenarioClient:
-    def __init__(self, items):
-        self.items = items
-
-    def create_chat_completion_text(self, **_kwargs):
-        return json.dumps({"items": self.items}, ensure_ascii=False)
-
-
-class _RecordingScenarioClient(_ScenarioClient):
-    def __init__(self, items):
-        super().__init__(items)
+class _JsonClient:
+    def __init__(self, payload):
+        self.payload = payload
         self.messages = []
 
     def create_chat_completion_text(self, **kwargs):
         self.messages = kwargs["messages"]
-        return super().create_chat_completion_text(**kwargs)
+        return json.dumps(self.payload, ensure_ascii=False)
 
 
 class GenerationScenarioTests(unittest.TestCase):
-    def test_planner_receives_batch_context_and_records_it(self):
-        chunks = [
-            _chunk(index, f"1.{index}", f"文档>第{index}节", f"第{index}节规定了事实{index}。")
-            for index in range(1, 4)
-        ]
-        contexts = []
+    def test_planner_uses_aliases_and_rejects_internal_material_ids(self):
+        chunks = [_chunk(1, "1.1", "文档>材料", "应提交身份证明。")]
+        captured = []
+        client = _JsonClient(
+            {
+                "items": [
+                    {
+                        "scenario_type": "point",
+                        "intent": "了解材料要求",
+                        "reader_need": "知道需要提交什么",
+                        "required_material_refs": ["section-1"],
+                        "optional_material_refs": [],
+                        "evidence_mode": "text",
+                        "required_image_refs": [],
+                    }
+                ]
+            }
+        )
 
         def planner(materials, count, mode, **kwargs):
-            contexts.append((mode, kwargs.get("planning_batch_index"), kwargs.get("planning_batch_count")))
-            return [
-                {
-                    "scenario_type": "point",
-                    "intent": f"询问{materials[0].material_id}",
-                    "reader_need": f"了解{materials[0].material_id}",
-                    "material_ids": [materials[0].material_id],
-                }
-            ] if materials and count else []
-
-        plan = plan_generation_units(
-            chunks,
-            qa_total_limit=2,
-            qa_per_chunk=1,
-            qa_detail_mode="point",
-            chunk_size=600,
-            scenario_planning_batch_chars=500,
-            scenario_planner=planner,
-        )
-
-        self.assertTrue(contexts)
-        self.assertTrue(all(index is not None and count is not None for _, index, count in contexts))
-        self.assertTrue(plan.summary()["scenario_planner_batch_details"]["point"])
-
-    def test_planner_batch_error_is_recorded_and_point_fallback_continues(self):
-        chunk = _chunk(1, "1.1", "文档>材料", "应提交身份证明。")
-
-        def planner(_materials, _count, _mode, **_kwargs):
-            raise RuntimeError("planner timeout")
-
-        plan = plan_generation_units(
-            [chunk],
-            qa_total_limit=1,
-            qa_per_chunk=1,
-            qa_detail_mode="point",
-            chunk_size=600,
-            scenario_planner=planner,
-        )
-
-        self.assertEqual(1, len(plan.units))
-        detail = plan.summary()["scenario_planner_batch_details"]["point"][0]
-        self.assertIn("planner timeout", detail["error"])
-        self.assertEqual("llm_point_pool_underfilled", plan.units[0].debug["raw_scenario"]["fallback_reason"])
-
-    def test_scenario_llm_validation_keeps_typed_candidate_pools_separate(self):
-        chunk = _chunk(1, "1.1", "文档>材料", "应提交身份证明。")
-        captured = []
-
-        def planner(materials, _count, _mode):
-            return call_scenario_planner_llm(
-                client=_ScenarioClient(
-                    [
-                        {
-                            "scenario_type": "summary",
-                            "intent": "错误类型",
-                            "reader_need": "总结材料",
-                            "material_ids": [materials[0].material_id],
-                        }
-                    ]
-                ),
-                model="test",
-                section_materials=list(materials),
-                requested_count=1,
-                qa_detail_mode="point",
-                prompt_language="zh",
-                request_timeout=10,
-                debug_writer=captured.append,
-            )
-
-        plan = plan_generation_units(
-            [chunk],
-            qa_total_limit=1,
-            qa_per_chunk=1,
-            qa_detail_mode="point",
-            chunk_size=600,
-            scenario_planner=planner,
-        )
-
-        self.assertEqual("point", plan.units[0].qa_mode)
-        self.assertEqual(1, captured[0]["dropped_validation_reasons"]["scenario_type_mismatch"])
-
-    def test_scenario_llm_validation_rejects_multi_material_point(self):
-        chunks = [
-            _chunk(1, "1.1", "文档>材料", "应提交身份证明。"),
-            _chunk(2, "1.2", "文档>时限", "五个工作日内办结。"),
-        ]
-        captured = []
-
-        def planner(materials, _count, _mode):
-            return call_scenario_planner_llm(
-                client=_ScenarioClient(
-                    [
-                        {
-                            "scenario_type": "point",
-                            "intent": "错误合并",
-                            "reader_need": "同时了解材料和时限",
-                            "material_ids": [materials[0].material_id, materials[1].material_id],
-                        }
-                    ]
-                ),
-                model="test",
-                section_materials=list(materials),
-                requested_count=1,
-                qa_detail_mode="point",
-                prompt_language="zh",
-                request_timeout=10,
-                debug_writer=captured.append,
-            )
-
-        plan = plan_generation_units(
-            chunks,
-            qa_total_limit=1,
-            qa_per_chunk=1,
-            qa_detail_mode="point",
-            chunk_size=600,
-            scenario_planner=planner,
-        )
-
-        self.assertEqual(1, len(plan.units))
-        self.assertEqual(["section-1"], plan.units[0].material_ids)
-        self.assertEqual(
-            "llm_point_pool_underfilled",
-            plan.units[0].debug["raw_scenario"]["fallback_reason"],
-        )
-        self.assertEqual(
-            1,
-            captured[0]["dropped_validation_reasons"]["point_requires_one_material"],
-        )
-
-    def test_same_section_fragments_and_image_are_one_material(self):
-        chunks = [
-            _chunk(1, "1.1", "文档>材料", "第一段正文。", fragment=1, fragment_count=2),
-            _chunk(2, "1.1", "文档>材料", "第二段正文和图片说明。", fragment=2, fragment_count=2),
-            _chunk(3, "1.2", "文档>时限", "办理期限为五个工作日。"),
-        ]
-
-        plan = plan_generation_units(
-            chunks,
-            qa_total_limit=1,
-            qa_per_chunk=1,
-            qa_detail_mode="point",
-            chunk_size=600,
-            scenario_planner=lambda materials, count, mode: [
-                {
-                    "scenario_type": "point",
-                    "intent": "询问材料内容",
-                    "reader_need": "了解申请材料",
-                    "material_ids": [materials[0].material_id],
-                }
-            ],
-        )
-
-        self.assertEqual(2, len(plan.section_materials))
-        first = plan.section_materials[0]
-        self.assertEqual([1, 2], first.source_chunk_indexes)
-        self.assertIn("第一段正文", first.material_text)
-        self.assertIn("第二段正文和图片说明", first.material_text)
-        self.assertEqual(["img-1"], first.source_asset_ids)
-        self.assertEqual([1, 2], plan.units[0].source_chunk_indexes)
-
-    def test_image_description_stays_a_typed_material_block(self):
-        chunk = _chunk(
-            1,
-            "1.1",
-            "陕西省人口与计划生育条例>第三章>第二十五条",
-            "第二十五条正文。\n\n【图片描述：界面显示需选择婚姻状况。】",
-        )
-        chunk["image_materials"] = [{
-            "image_id": "internal-image-id",
-            "description": "界面显示需选择婚姻状况。",
-            "context_before": "办理信息填写",
-            "context_after": "提交申请",
-        }]
-        client = _RecordingScenarioClient([{
-            "scenario_type": "point only",
-            "intent": "询问界面必填项",
-            "reader_need": "了解办理时需要选择什么",
-            "required_material_refs": ["主材料-A"],
-            "optional_material_refs": [],
-            "evidence_mode": "visual",
-            "required_image_refs": ["图片-A"],
-        }])
-
-        def planner(materials, count, mode):
             return call_scenario_planner_llm(
                 client=client,
                 model="test",
@@ -256,372 +69,232 @@ class GenerationScenarioTests(unittest.TestCase):
                 qa_detail_mode=mode,
                 prompt_language="zh",
                 request_timeout=10,
+                debug_writer=captured.append,
             )
 
         plan = plan_generation_units(
-            [chunk],
+            chunks,
             qa_total_limit=1,
             qa_per_chunk=1,
             qa_detail_mode="point",
             chunk_size=600,
             scenario_planner=planner,
         )
+        self.assertEqual(1, len(plan.units))
+        self.assertEqual("llm_point_pool_underfilled", plan.units[0].debug["raw_scenario"]["fallback_reason"])
+        self.assertEqual(1, captured[0]["dropped_validation_reasons"]["unknown_material_ref"])
+        self.assertNotIn("section-1", client.messages[1]["content"])
+        self.assertIn("主材料-A", client.messages[1]["content"])
 
-        material = plan.section_materials[0]
-        prompt_material = material.to_prompt_dict()
-        self.assertNotIn("【图片描述", material.text_content)
-        self.assertEqual("《陕西省人口与计划生育条例》", material.subject_label)
-        self.assertEqual("界面显示需选择婚姻状况。", prompt_material["image_materials"][0]["description"])
-        self.assertEqual("visual", plan.units[0].evidence_mode)
-        self.assertEqual(["internal-image-id"], plan.units[0].required_image_ids)
-        planner_input = client.messages[1]["content"]
-        self.assertIn("图片-A", planner_input)
-        self.assertNotIn("internal-image-id", planner_input)
+    def test_point_requires_one_required_material(self):
+        chunks = [
+            _chunk(1, "1.1", "文档>材料", "应提交身份证明。"),
+            _chunk(2, "1.2", "文档>时限", "五个工作日内办结。"),
+        ]
 
-    def test_one_visual_material_can_support_a_real_summary_scenario(self):
-        chunk = _chunk(
-            1,
-            "1.1",
-            "申报指南>导入流程",
-            "【图片描述：操作流程包括文件选择和数据校验。第一步选择文件。第二步检查校验结果。】",
-        )
-        chunk["image_materials"] = [{
-            "image_id": "img-flow",
-            "description": "操作流程包括文件选择和数据校验。第一步选择文件。第二步检查校验结果。",
-            "context_before": "",
-            "context_after": "",
-        }]
+        def planner(materials, _count, _mode, **_kwargs):
+            return [
+                {
+                    "scenario_type": "point",
+                    "intent": "错误合并",
+                    "reader_need": "同时了解材料和时限",
+                    "required_material_ids": [material.material_id for material in materials],
+                    "optional_material_ids": [],
+                    "evidence_mode": "text",
+                    "required_image_ids": [],
+                }
+            ]
 
         plan = plan_generation_units(
-            [chunk],
+            chunks,
+            qa_total_limit=1,
+            qa_per_chunk=1,
+            qa_detail_mode="point",
+            chunk_size=600,
+            scenario_planner=planner,
+        )
+        self.assertEqual(1, len(plan.units))
+        self.assertEqual("llm_point_pool_underfilled", plan.units[0].debug["raw_scenario"]["fallback_reason"])
+
+    def test_summary_rejects_more_than_three_required_materials(self):
+        chunks = [
+            _chunk(index, f"1.{index}", f"文档>第{index}节", f"事实{index}。")
+            for index in range(1, 5)
+        ]
+
+        def planner(materials, _count, _mode, **_kwargs):
+            return [
+                {
+                    "scenario_type": "summary",
+                    "intent": "概括整份手册",
+                    "reader_need": "了解所有内容",
+                    "required_material_ids": [material.material_id for material in materials],
+                    "optional_material_ids": [],
+                    "evidence_mode": "text",
+                    "required_image_ids": [],
+                }
+            ]
+
+        plan = plan_generation_units(
+            chunks,
             qa_total_limit=1,
             qa_per_chunk=1,
             qa_detail_mode="summary",
             chunk_size=600,
-            scenario_planner=lambda materials, _count, _mode: [{
-                "scenario_type": "summary",
-                "intent": "总结导入流程",
-                "reader_need": "了解完整导入步骤",
-                "required_material_ids": [materials[0].material_id],
-                "optional_material_ids": [],
-                "evidence_mode": "visual",
-                "required_image_ids": ["img-flow"],
-            }],
+            scenario_planner=planner,
         )
+        self.assertEqual([], plan.units)
 
-        self.assertEqual(1, len(plan.units))
-        self.assertEqual("summary", plan.units[0].qa_mode)
-        self.assertEqual("visual", plan.units[0].evidence_mode)
-
-    def test_repeated_markdown_heading_is_removed_after_first_fragment(self):
+    def test_same_section_fragments_and_images_stay_one_material(self):
         chunks = [
-            _chunk(1, "1.1", "文档>材料", "## 材料\n第一段正文。", fragment=1, fragment_count=2),
-            _chunk(2, "1.1", "文档>材料", "## 材料\n第二段正文。", fragment=2, fragment_count=2),
+            _chunk(1, "1.1", "文档>办理", "第一段正文。", fragment=1, fragment_count=2),
+            _chunk(
+                2,
+                "1.1",
+                "文档>办理",
+                "第二段正文。",
+                fragment=2,
+                fragment_count=2,
+                image_materials=[
+                    {
+                        "image_id": "image-1",
+                        "description": "页面提供导出按钮。",
+                        "context_before": "正文",
+                        "context_after": "结束",
+                    }
+                ],
+            ),
         ]
+
+        def planner(materials, _count, _mode, **_kwargs):
+            material = materials[0]
+            return [
+                {
+                    "scenario_type": "summary",
+                    "intent": "了解页面操作",
+                    "reader_need": "查看并导出记录",
+                    "required_material_ids": [material.material_id],
+                    "optional_material_ids": [],
+                    "evidence_mode": "mixed",
+                    "required_image_ids": ["image-1"],
+                }
+            ]
 
         plan = plan_generation_units(
             chunks,
             qa_total_limit=1,
             qa_per_chunk=1,
-            qa_detail_mode="point",
+            qa_detail_mode="summary",
             chunk_size=600,
-            scenario_planner=lambda materials, count, mode: [
-                {
-                    "scenario_type": "point",
-                    "intent": "询问材料",
-                    "reader_need": "了解材料",
-                    "material_ids": [materials[0].material_id],
-                }
-            ],
+            scenario_planner=planner,
         )
+        self.assertEqual(1, len(plan.section_materials))
+        self.assertEqual([1, 2], plan.section_materials[0].source_chunk_indexes)
+        self.assertEqual(1, len(plan.section_materials[0].image_materials))
+        self.assertEqual("mixed", plan.units[0].evidence_mode)
+        self.assertEqual(["image-1"], plan.units[0].required_image_ids)
 
-        self.assertEqual(1, plan.section_materials[0].material_text.count("## 材料"))
-        self.assertIn("第一段正文", plan.section_materials[0].material_text)
-        self.assertIn("第二段正文", plan.section_materials[0].material_text)
-
-    def test_auto_planning_uses_bounded_typed_batches_and_global_mix(self):
+    def test_required_image_promotes_its_parent_material_before_writing(self):
         chunks = [
-            _chunk(index, f"1.{index}", f"文档>第{index}节", f"第{index}节规定了事实{index}。")
-            for index in range(1, 7)
-        ]
-        calls = []
-
-        def planner(materials, count, mode):
-            calls.append((mode, len(materials), count))
-            if mode == "point":
-                return [
+            _chunk(1, "1.1", "文档>渠道", "可通过平台办理。"),
+            _chunk(
+                2,
+                "1.2",
+                "文档>界面",
+                "审核记录页面。",
+                image_materials=[
                     {
-                        "scenario_type": "point",
-                        "intent": f"询问{material.material_id}",
-                        "reader_need": f"了解{material.material_id}",
-                        "material_ids": [material.material_id],
+                        "image_id": "image-2",
+                        "description": "页面提供导出按钮。",
+                        "context_before": "",
+                        "context_after": "",
                     }
-                    for material in materials[:count]
-                ]
-            if len(materials) < 2 or count <= 0:
-                return []
+                ],
+            ),
+        ]
+
+        def planner(materials, _count, _mode, **_kwargs):
             return [
                 {
                     "scenario_type": "summary",
-                    "intent": "总结相邻要求",
-                    "reader_need": "共同了解两项要求",
-                    "material_ids": [materials[0].material_id, materials[1].material_id],
+                    "intent": "查看并导出申报记录",
+                    "reader_need": "了解平台渠道和导出操作",
+                    "required_material_ids": [materials[0].material_id],
+                    "optional_material_ids": [materials[1].material_id],
+                    "evidence_mode": "mixed",
+                    "required_image_ids": ["image-2"],
                 }
             ]
 
         plan = plan_generation_units(
             chunks,
-            qa_total_limit=4,
+            qa_total_limit=1,
             qa_per_chunk=1,
-            qa_detail_mode="auto",
+            qa_detail_mode="summary",
             chunk_size=600,
-            scenario_planning_batch_chars=500,
             scenario_planner=planner,
         )
+        self.assertEqual(["section-1", "section-2"], plan.units[0].required_material_ids)
+        self.assertEqual([], plan.units[0].optional_material_ids)
 
-        self.assertTrue(calls)
-        self.assertTrue(all(mode in {"point", "summary"} for mode, _size, _count in calls))
-        self.assertTrue(all(size < len(chunks) for _mode, size, _count in calls))
-        self.assertEqual(4, len(plan.units))
-        self.assertEqual(1, plan.scenario_selected_by_type["summary"])
-        self.assertEqual(3, plan.scenario_selected_by_type["point"])
-        self.assertTrue(plan.reserve_units)
-        self.assertEqual(
-            len(plan.reserve_units),
-            plan.summary()["reserve_generation_units_total"],
-        )
-        self.assertLessEqual(len(plan.reserve_units), 2)
-
-    def test_point_budget_covers_distinct_small_batches(self):
-        chunks = [
-            _chunk(index, f"1.{index}", f"文档>第{index}节", f"第{index}节规定了事实{index}。")
-            for index in range(1, 4)
-        ]
-        called_material_ids = []
-
-        def planner(materials, count, mode):
-            self.assertEqual("point", mode)
-            called_material_ids.extend(material.material_id for material in materials[:count])
-            return [
-                {
-                    "scenario_type": "point",
-                    "intent": f"询问{material.material_id}",
-                    "reader_need": f"了解{material.material_id}",
-                    "material_ids": [material.material_id],
-                }
-                for material in materials[:count]
-            ]
-
-        plan = plan_generation_units(
-            chunks,
-            qa_total_limit=3,
-            qa_per_chunk=1,
+    def test_editor_returns_one_final_question_without_contract_fields(self):
+        client = _JsonClient({"question": "材料齐全后，审核需要多久？"})
+        edited, status = call_question_editor_llm(
+            client=client,
+            model="test",
+            candidate={"question": "申请材料齐全并受理后，应当在多少个工作日内完成审核？", "question_type": "简答题"},
+            source_material="材料齐全后五个工作日内完成审核。",
+            scenario_intent="询问审核期限",
+            reader_need="了解审核需要多久",
             qa_detail_mode="point",
-            chunk_size=600,
-            scenario_planning_batch_chars=500,
-            scenario_planner=planner,
+            prompt_language="zh",
+            request_timeout=10,
         )
+        self.assertEqual("edited", status)
+        self.assertEqual("材料齐全后，审核需要多久？", edited["question"])
+        self.assertEqual({"question", "question_type"}, set(edited))
+        self.assertNotIn("required_material_refs", client.messages[1]["content"])
 
-        self.assertEqual(["section-1", "section-2", "section-3"], called_material_ids)
-        self.assertEqual(3, len(plan.units))
-
-    def test_one_section_can_supply_multiple_distinct_point_scenarios(self):
-        chunks = [
-            _chunk(
-                1,
-                "1.1",
-                "文档>办理要求",
-                "申请人应提交身份证明，受理后五个工作日内办结。",
-            )
-        ]
-
-        def planner(materials, count, mode):
-            self.assertEqual("point", mode)
-            self.assertEqual(2, count)
-            material_id = materials[0].material_id
-            return [
-                {
-                    "scenario_type": "point",
-                    "intent": "询问申请材料",
-                    "reader_need": "了解需要提交什么",
-                    "material_ids": [material_id],
-                },
-                {
-                    "scenario_type": "point",
-                    "intent": "询问办理时限",
-                    "reader_need": "了解多久办结",
-                    "material_ids": [material_id],
-                },
-            ]
-
-        plan = plan_generation_units(
-            chunks,
-            qa_total_limit=2,
-            qa_per_chunk=1,
-            qa_detail_mode="point",
-            chunk_size=600,
-            scenario_planner=planner,
-        )
-
-        self.assertEqual(2, len(plan.units))
-        self.assertEqual([["section-1"], ["section-1"]], [unit.material_ids for unit in plan.units])
-        self.assertEqual(
-            {"询问申请材料", "询问办理时限"},
-            {unit.scenario_intent for unit in plan.units},
-        )
-
-    def test_auto_budget_flows_back_to_point_when_summary_pool_is_short(self):
+    def test_auto_falls_back_to_points_when_summary_pool_is_empty(self):
         chunks = [
             _chunk(1, "1.1", "文档>材料", "应提交身份证明。"),
-            _chunk(2, "1.2", "文档>时限", "办理期限为五个工作日。"),
-            _chunk(3, "1.3", "文档>费用", "办理不收取费用。"),
+            _chunk(2, "1.2", "文档>时限", "五个工作日内办结。"),
         ]
 
-        def planner(materials, _count, _mode):
+        def planner(materials, _count, mode, **_kwargs):
+            if mode == "summary":
+                return []
             return [
                 {
                     "scenario_type": "point",
-                    "intent": f"询问{material.title_path}",
+                    "intent": f"了解{material.title_path}",
                     "reader_need": f"了解{material.title_path}",
-                    "material_ids": [material.material_id],
+                    "required_material_ids": [material.material_id],
+                    "optional_material_ids": [],
+                    "evidence_mode": "text",
+                    "required_image_ids": [],
                 }
                 for material in materials
             ]
 
         plan = plan_generation_units(
             chunks,
-            qa_total_limit=3,
+            qa_total_limit=2,
             qa_per_chunk=1,
             qa_detail_mode="auto",
             chunk_size=600,
             scenario_planner=planner,
         )
+        self.assertEqual(2, len(plan.units))
+        self.assertTrue(all(unit.qa_mode == "point" for unit in plan.units))
 
-        self.assertEqual(3, len(plan.units))
-        self.assertEqual({"point": 3, "summary": 0}, plan.scenario_selected_by_type)
-
-    def test_auto_uses_deterministic_point_fallback_when_planner_returns_only_summary(self):
-        chunks = [
-            _chunk(1, "1.1", "文档>材料", "应提交身份证明。"),
-            _chunk(2, "1.2", "文档>时限", "办理期限为五个工作日。"),
-            _chunk(3, "1.3", "文档>费用", "办理不收取费用。"),
-        ]
-
-        def planner(materials, _count, mode):
-            if mode == "point":
-                return []
-            return [
-                {
-                    "scenario_type": "summary",
-                    "intent": "总结材料和时限",
-                    "reader_need": "了解办理要求",
-                    "material_ids": [materials[0].material_id, materials[1].material_id],
-                }
-            ]
-
-        plan = plan_generation_units(
-            chunks,
-            qa_total_limit=3,
-            qa_per_chunk=1,
-            qa_detail_mode="auto",
-            chunk_size=600,
-            scenario_planner=planner,
-        )
-
-        self.assertEqual(3, len(plan.units))
-        self.assertEqual({"point": 2, "summary": 1}, plan.scenario_selected_by_type)
-        self.assertTrue(
-            any(
-                unit.debug["raw_scenario"].get("fallback_reason")
-                == "llm_point_pool_underfilled"
-                for unit in plan.units
-                if unit.qa_mode == "point"
-            )
-        )
-
-    def test_summary_scenario_can_bind_related_sibling_sections_only_when_planned(self):
-        chunks = [
-            _chunk(1, "1.1", "文档>材料", "应提交身份证明。"),
-            _chunk(2, "1.2", "文档>时限", "办理期限为五个工作日。"),
-        ]
-
-        plan = plan_generation_units(
-            chunks,
-            qa_total_limit=1,
-            qa_per_chunk=1,
-            qa_detail_mode="summary",
-            chunk_size=600,
-            scenario_planner=lambda materials, count, mode: [
-                {
-                    "scenario_type": "summary",
-                    "intent": "总结办理要求",
-                    "reader_need": "一次了解材料和时限",
-                    "material_ids": [material.material_id for material in materials],
-                }
-            ],
-        )
-
-        self.assertEqual([1, 2], plan.units[0].source_chunk_indexes)
-        self.assertEqual("summary", plan.units[0].qa_mode)
-
-    def test_question_editor_supports_keep_rewrite_and_drop(self):
-        common = {
-            "model": "test",
-            "candidate": {"question": "原问题？", "question_type": "简答题"},
-            "source_material": "产假增加六十天。",
-            "scenario_intent": "询问增加产假天数",
-            "reader_need": "了解额外产假",
-            "qa_detail_mode": "point",
-            "prompt_language": "zh",
-            "request_timeout": 10,
-        }
-        kept, kept_status = call_question_editor_llm(client=_EditorClient("keep"), **common)
-        rewritten, rewritten_status = call_question_editor_llm(
-            client=_EditorClient("rewrite", "生育后还能增加多少天产假？"),
-            **common,
-        )
-        dropped, dropped_status = call_question_editor_llm(client=_EditorClient("drop"), **common)
-
-        self.assertEqual("原问题？", kept["question"])
-        self.assertEqual("keep", kept_status)
-        self.assertEqual("生育后还能增加多少天产假？", rewritten["question"])
-        self.assertEqual("rewrite", rewritten_status)
-        self.assertIsNone(dropped)
-        self.assertEqual("drop", dropped_status)
-
-    def test_document_question_dedup_ignores_spacing_and_punctuation(self):
+    def test_document_dedup_removes_cross_mode_semantic_duplicate(self):
         items = [
-            {"question": "办理需要多久？", "answer": "五天"},
-            {"question": "办理 需要 多久", "answer": "五个工作日"},
-            {"question": "需要提交哪些材料？", "answer": "身份证明"},
+            {"question": "单位缴费基数诚信申报流程是什么？", "qa_generation_material_ids": ["section-1"]},
+            {"question": "单位缴费基数诚信申报流程是什么", "qa_generation_material_ids": ["section-1"]},
+            {"question": "申报可以通过哪些渠道办理？", "qa_generation_material_ids": ["section-2"]},
         ]
-
         deduped, dropped = _deduplicate_document_questions(items)
-
-        self.assertEqual(2, len(deduped))
-        self.assertEqual(1, dropped)
-
-    def test_document_question_dedup_removes_cross_mode_semantic_duplicate(self):
-        items = [
-            {
-                "question": "申请办理登记需要经过哪些步骤？",
-                "qa_generation_unit_mode": "point",
-                "qa_generation_material_ids": ["section-1"],
-            },
-            {
-                "question": "办理登记需要经过哪些具体步骤？",
-                "qa_generation_unit_mode": "summary",
-                "qa_generation_material_ids": ["section-1", "section-2"],
-            },
-            {
-                "question": "办理登记需要提交哪些材料？",
-                "qa_generation_unit_mode": "point",
-                "qa_generation_material_ids": ["section-1"],
-            },
-        ]
-
-        deduped, dropped = _deduplicate_document_questions(items)
-
         self.assertEqual(2, len(deduped))
         self.assertEqual(1, dropped)
 

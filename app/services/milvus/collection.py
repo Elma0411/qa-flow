@@ -10,39 +10,12 @@ from .runtime import MILVUS_RUNTIME as _rt
 
 
 def _resolve_source_field_name(allowed_fields: Optional[set] = None) -> str:
-    """Return the active source field name for the connected collection."""
-    if allowed_fields is not None:
-        names = set(allowed_fields)
-    else:
-        try:
-            names = {f.name for f in _rt.milvus_client.schema.fields} if _rt.milvus_client else set()
-        except Exception:
-            names = set()
-    if "source" in names:
-        return "source"
-    if "source_id" in names:
-        return "source_id"
+    """The v2 QA collection has one fixed source field."""
     return "source"
 
 
 def _resolve_category_field_names(allowed_fields: Optional[set] = None) -> tuple[str, str, str]:
-    """Return the active knowledge-category field triplet for the collection."""
-    if allowed_fields is not None:
-        names = set(allowed_fields)
-    else:
-        try:
-            names = {f.name for f in _rt.milvus_client.schema.fields} if _rt.milvus_client else set()
-        except Exception:
-            names = set()
-
-    if "knowledge_category" in names:
-        return (
-            "knowledge_category",
-            "knowledge_category_reason",
-            "knowledge_category_confidence",
-        )
-    if "theme" in names:
-        return ("theme", "theme_reason", "theme_confidence")
+    """The v2 QA collection has one fixed knowledge-category triplet."""
     return (
         "knowledge_category",
         "knowledge_category_reason",
@@ -169,13 +142,10 @@ def create_milvus_collection() -> tuple[bool, str]:
             _rt.FieldSchema(name="question", dtype=_rt.DataType.VARCHAR, max_length=4096),
             _rt.FieldSchema(name="answer", dtype=_rt.DataType.VARCHAR, max_length=8192),
             _rt.FieldSchema(name="question_type", dtype=_rt.DataType.VARCHAR, max_length=64),
-            _rt.FieldSchema(name="question_type_reason", dtype=_rt.DataType.VARCHAR, max_length=1024),
             _rt.FieldSchema(name="answer_explanation", dtype=_rt.DataType.VARCHAR, max_length=8192),
             _rt.FieldSchema(name="knowledge_category", dtype=_rt.DataType.VARCHAR, max_length=256),
             _rt.FieldSchema(name="knowledge_category_reason", dtype=_rt.DataType.VARCHAR, max_length=1024),
             _rt.FieldSchema(name="knowledge_category_confidence", dtype=_rt.DataType.FLOAT),
-            _rt.FieldSchema(name="difficulty_level", dtype=_rt.DataType.VARCHAR, max_length=64),
-            _rt.FieldSchema(name="difficulty_score", dtype=_rt.DataType.FLOAT),
             _rt.FieldSchema(name="llm_model", dtype=_rt.DataType.VARCHAR, max_length=256),
             _rt.FieldSchema(name="embed_model", dtype=_rt.DataType.VARCHAR, max_length=256),
             _rt.FieldSchema(name="embed_dim", dtype=_rt.DataType.INT64),
@@ -221,7 +191,6 @@ def create_milvus_collection() -> tuple[bool, str]:
             "task_id",
             "knowledge_category",
             "question_type",
-            "difficulty_level",
             "filtered",
             "average_score",
             "faithfulness",

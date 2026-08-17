@@ -4,6 +4,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from app.services.debug.qa_store import get_debug_map, upsert_qa_debug_items
+from app.services.storage.consolidation import build_consolidated_entry
+from app.services.unsupervised_evaluation import compute_unsupervised_average_score
+from qa.generation.evidence_units import QADocumentEvidenceIndex
 from qa.generation.qa_generation_flow import (
     call_candidate_question_llm,
     call_evidence_answer_llm,
@@ -13,734 +17,203 @@ from qa.pipeline_runtime import parse_one_step_pipeline_runtime
 from qa.prompts.qa_generation_prompts import (
     build_candidate_question_system_prompt,
     build_evidence_answer_system_prompt,
+    build_planner_category_profile,
     build_question_editor_system_prompt,
 )
+from qa.retrieval import EvidenceWindow
+from qa.text_to_qa_pipeline import _unit_latency_percentiles
 from qa.validation import validate_and_normalize_item_with_reason
-from app.services.debug.qa_store import get_debug_map, upsert_qa_debug_items
-from app.services.storage.consolidation import build_consolidated_entry
-from app.services.unsupervised_evaluation import compute_unsupervised_average_score
 
 
 class _StaticChatClient:
     def __init__(self, payload):
         self.payload = payload
+        self.messages = []
 
-    def create_chat_completion_text(self, **_kwargs):
+    def create_chat_completion_text(self, **kwargs):
+        self.messages = kwargs["messages"]
         return json.dumps(self.payload, ensure_ascii=False)
+
+
+def _generation_unit(*, mode="text", required_images=None, required_materials=None):
+    required_images = list(required_images or [])
+    required_materials = list(required_materials or ["section-1"])
+    chunks = [
+        {"chunk_id": "chunk-1", "chunk_index": 1, "title_path": "办理 > 正文", "text": "正文事实。"},
+        {"chunk_id": "chunk-2", "chunk_index": 2, "title_path": "办理 > 时限", "text": "时限事实。"},
+    ]
+    ref_map = {
+        "正文证据-1": {
+            "chunk_id": "chunk-1",
+            "chunk_index": 1,
+            "title_path": "办理 > 正文",
+            "material_id": "section-1",
+            "role": "primary_source",
+        },
+        "正文证据-2": {
+            "chunk_id": "chunk-2",
+            "chunk_index": 2,
+            "title_path": "办理 > 时限",
+            "material_id": "section-2",
+            "role": "primary_source",
+        },
+    }
+    rendered = "【必需正文证据】\n\n正文证据-1\n正文：正文事实。"
+    if mode in {"visual", "mixed"}:
+        ref_map["图片证据-1"] = {
+            "chunk_id": "chunk-1",
+            "chunk_index": 1,
+            "title_path": "办理 > 正文",
+            "material_id": "section-1",
+            "image_id": "image-1",
+            "role": "primary_visual",
+        }
+        rendered += "\n\n【必需图片证据】\n\n图片证据-1\n图片事实：页面显示导出按钮。"
+    return {
+        "source_chunk": chunks[0],
+        "source_chunks": chunks,
+        "source_unit_text": "正文事实。",
+        "qa_generation_unit_text": rendered,
+        "evidence_chunk_ids": [],
+        "qa_generation_unit_id": "unit-1",
+        "source_unit": {
+            "required_material_ids": required_materials,
+            "material_ids": required_materials,
+            "required_image_ids": required_images,
+            "evidence_mode": mode,
+        },
+        "llm_evidence_ref_map": ref_map,
+    }
 
 
 class QAGenerationContractTests(unittest.TestCase):
     def test_unsupervised_average_uses_three_visible_metrics_and_fixed_denominator(self):
-        self.assertAlmostEqual(0.5, compute_unsupervised_average_score({
-            "faithfulness": 1,
-            "answerability": 0.5,
-            "coverage_score": 0,
-            "unsupervised_f1": 0,
-        }))
-        self.assertAlmostEqual(1 / 3, compute_unsupervised_average_score({
-            "faithfulness": 1,
-            "answerability": "bad",
-            "coverage_score": float("nan"),
-        }))
-        self.assertAlmostEqual(1 / 3, compute_unsupervised_average_score({
-            "faithfulness": 0.5,
-            "p": 0.5,
-        }))
-
-    def test_consolidation_removes_model_freeform_evidence_fields(self):
-        entry = build_consolidated_entry(
-            task_id="task-evidence-clean",
-            original_filename="evidence.md",
-            facts=[],
-            categorized_facts=[],
-            qa_data=[{
-                "question": "谁负责办理？",
-                "answer": "登记机关负责办理。",
-                "evidence_usage": [{
-                    "evidence_ref": "主材料-1",
-                    "role": "primary_source",
-                    "chunk_id": "c1",
-                    "chunk_index": 1,
-                    "title_path": "办理要求",
-                    "snippet": "登记机关负责办理。",
-                    "usage": "支持主体判断",
-                }],
-            }],
-            evaluation_results=None,
-            filtered_qa_data=None,
-            include_evaluation=False,
-            evaluation_method="llm",
-            filter_by_threshold=False,
-            score_threshold=0.7,
-            chunk_size=600,
-            qa_per_chunk=1,
-            qa_detail_mode="point",
-            prompt_language="zh",
-            llm_model="test-model",
+        self.assertAlmostEqual(
+            0.5,
+            compute_unsupervised_average_score(
+                {"faithfulness": 1, "answerability": 0.5, "coverage_score": 0}
+            ),
         )
-        usage = entry["payload"]["items"][0]["evidence_usage"]
-        self.assertEqual([{
-            "evidence_ref": "主材料-1",
-            "role": "primary_source",
-            "chunk_id": "c1",
-            "chunk_index": 1,
-            "title_path": "办理要求",
-        }], usage)
-
-    def test_scenario_provenance_survives_consolidation_and_debug_storage(self):
-        qa_item = {
-            "id": "qa-scenario-1",
-            "question": "办理需要哪些材料和多长时间？",
-            "answer": "需提交申请表，五个工作日内办结。",
-            "source": "c1",
-            "source_fact_text": "提交申请表；五个工作日内办结。",
-            "source_chunk_id": "c1",
-            "source_chunk_index": 1,
-            "source_chunk_title_path": "材料",
-            "source_chunk_ids": ["c1", "c2"],
-            "source_chunk_indexes": [1, 2],
-            "source_chunk_title_paths": ["材料", "时限"],
-            "qa_generation_unit_id": "unit-summary-1",
-            "qa_generation_unit_text": "主材料-1\n提交申请表。\n主材料-2\n五个工作日内办结。",
-            "qa_generation_unit_index": 2,
-            "qa_generation_unit_type": "summary_scenario",
-            "qa_generation_unit_mode": "summary",
-            "qa_generation_scenario_intent": "总结办理要求",
-            "qa_generation_reader_need": "一次了解材料和时限",
-            "qa_generation_material_ids": ["section-1", "section-2"],
-            "qa_generation_required_material_ids": ["section-1"],
-            "qa_generation_optional_material_ids": ["section-2"],
-            "qa_generation_subject_label": "办理指南",
-            "evidence_mode": "mixed",
-            "required_image_refs": ["img-1"],
-            "qa_generation_unit_source_chunk_indexes": [1, 2],
-            "qa_generation_unit_section_path": "1",
-            "qa_generation_unit_quality_child_coverage": 1.0,
-            "question_type": "简答题",
-            "difficulty_level": "中等",
-        }
-        entry = build_consolidated_entry(
-            task_id="task-scenario",
-            original_filename="scenario.md",
-            facts=[],
-            categorized_facts=[],
-            qa_data=[qa_item],
-            evaluation_results=None,
-            filtered_qa_data=None,
-            include_evaluation=False,
-            evaluation_method="llm",
-            filter_by_threshold=False,
-            score_threshold=0.7,
-            chunk_size=600,
-            qa_per_chunk=1,
-            qa_detail_mode="auto",
-            prompt_language="zh",
-            llm_model="test-model",
+        self.assertAlmostEqual(
+            1 / 3,
+            compute_unsupervised_average_score(
+                {"faithfulness": 1, "answerability": "bad", "coverage_score": float("nan")}
+            ),
         )
 
-        consolidated = entry["payload"]["items"][0]
-        self.assertEqual("summary_scenario", consolidated["qa_generation_unit_type"])
-        self.assertEqual("summary", consolidated["qa_generation_unit_mode"])
-        self.assertEqual(["c1", "c2"], consolidated["source_chunk_ids"])
-        self.assertEqual(["section-1"], consolidated["qa_generation_required_material_ids"])
-        self.assertEqual("mixed", consolidated["evidence_mode"])
-        self.assertEqual(["img-1"], consolidated["required_image_refs"])
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            db_path = str(Path(tmp_dir) / "qa-debug.sqlite3")
-            with patch.dict("os.environ", {"QA_DEBUG_DB_PATH": db_path}):
-                upsert_qa_debug_items([consolidated])
-                debug_payload = get_debug_map([consolidated["id"]])[consolidated["id"]]
-
-        self.assertEqual("summary_scenario", debug_payload["qa_generation_unit_type"])
-        self.assertEqual("summary", debug_payload["qa_generation_unit_mode"])
-        self.assertEqual(["section-1", "section-2"], debug_payload["qa_generation_material_ids"])
-        self.assertEqual(["section-2"], debug_payload["qa_generation_optional_material_ids"])
-
-    def test_summary_candidate_prompt_requires_one_question_per_item(self):
-        zh_prompt = build_candidate_question_system_prompt(
+    def test_prompt_surface_is_closed_to_each_model_stage(self):
+        candidate_prompt = build_candidate_question_system_prompt(
             language_code="zh",
-            language_instruction="请使用中文。",
-            candidate_count=2,
-            question_type_plan=["简答题", "简答题"],
-            few_shot_examples=None,
+            language_instruction="请使用简体中文。",
+            qa_detail_mode="point",
+            style_example="风格示例：申请受理后，审核需要多久？",
+        )
+        editor_prompt = build_question_editor_system_prompt(
+            language_code="zh",
+            language_instruction="请使用简体中文。",
             qa_detail_mode="summary",
         )
-        en_prompt = build_candidate_question_system_prompt(
-            language_code="en",
-            language_instruction="Use English.",
-            candidate_count=2,
-            question_type_plan=["简答题", "简答题"],
-            few_shot_examples=None,
-            qa_detail_mode="summary",
-        )
-
-        self.assertIn("每个 item 只写一个围绕同一读者需求的完整问句", zh_prompt)
-        self.assertIn("“总结”是答案可以组织多个相关事实", zh_prompt)
-        self.assertNotIn("source_anchor_text", zh_prompt)
-        self.assertIn("one standalone question around one coherent reader need", en_prompt)
-        self.assertIn("Summary means the answer may organize related facts", en_prompt)
-        self.assertNotIn("source_anchor_text", en_prompt)
-
-    def test_candidate_prompt_requires_natural_user_questions(self):
-        zh_prompt = build_candidate_question_system_prompt(
+        answer_prompt = build_evidence_answer_system_prompt(
             language_code="zh",
-            language_instruction="请使用中文。",
-            candidate_count=1,
-            question_type_plan=["简答题"],
-            few_shot_examples=None,
-            knowledge_category="法律法规/婚姻登记",
-            qa_detail_mode="point",
+            language_instruction="请使用简体中文。",
+            qa_detail_mode="mixed",
+            question_type="简答题",
         )
-        en_prompt = build_candidate_question_system_prompt(
-            language_code="en",
-            language_instruction="Use English.",
-            candidate_count=1,
-            question_type_plan=["简答题"],
-            few_shot_examples=None,
-            knowledge_category="法律法规/婚姻登记",
-            qa_detail_mode="point",
+        for prompt in (candidate_prompt, editor_prompt, answer_prompt):
+            self.assertNotIn("chunk_id", prompt)
+            self.assertNotIn("snippet", prompt)
+            self.assertNotIn("typed_primary_materials", prompt)
+            self.assertNotIn("difficulty_level", prompt)
+            self.assertNotIn("difficulty_score", prompt)
+            self.assertNotIn("question_type_reason", prompt)
+        self.assertIn('{"question":"..."}', candidate_prompt)
+        self.assertIn('{"question":"..."}', editor_prompt)
+        self.assertIn("图片证据", answer_prompt)
+
+    def test_category_profile_stays_in_planning_and_few_shot_is_style_only(self):
+        profile = build_planner_category_profile(
+            knowledge_category="法律法规/部委规章/其他",
+            language_code="zh",
         )
+        self.assertIn("读者画像", profile)
+        prompt = build_candidate_question_system_prompt(
+            language_code="zh",
+            language_instruction="请使用简体中文。",
+            qa_detail_mode="point",
+            style_example="风格示例：申请受理后，审核需要多久？",
+        )
+        self.assertIn("风格示例", prompt)
+        self.assertNotIn("分类专用模板", prompt)
+        self.assertNotIn("few-shot", prompt)
 
-        self.assertIn("严格遵循输入给出的 scenario_intent 和 reader_need", zh_prompt)
-        self.assertIn("请使用中文。", zh_prompt)
-        self.assertIn("不要把原文一句话的前半句改成问题", zh_prompt)
-        self.assertIn("例如写", zh_prompt)
-        self.assertIn("生育后还能增加多少天产假", zh_prompt)
-        self.assertIn("默认提问者：办事人", zh_prompt)
-        self.assertIn("Follow the supplied scenario_intent and reader_need", en_prompt)
-        self.assertIn("Use English.", en_prompt)
-        self.assertIn("Do not convert the first half", en_prompt)
-        self.assertIn("Example: write", en_prompt)
-        self.assertIn("Default questioner: An applicant", en_prompt)
-
-    def test_candidate_input_contains_only_readable_source_material(self):
-        class RecordingClient:
-            def __init__(self):
-                self.messages = []
-
-            def create_chat_completion_text(self, **kwargs):
-                self.messages = kwargs["messages"]
-                return json.dumps(
-                    {
-                        "items": [
-                            {
-                                "question": "婚前医学检查费用如何承担？",
-                                "question_type": "简答题",
-                                "difficulty_level": "中等",
-                            }
-                        ]
-                    },
-                    ensure_ascii=False,
-                )
-
-        client = RecordingClient()
-        call_candidate_question_llm(
+    def test_candidate_writer_receives_only_a_writing_brief_and_backfills_question_type(self):
+        client = _StaticChatClient({"question": "婚前医学检查费用由谁承担？"})
+        items = call_candidate_question_llm(
             client=client,
             model="test-model",
             source_chunk_text="结婚登记前参加婚前医学检查的费用按规定承担。",
             source_chunk_meta={
-                "chunk_id": "chunk-1",
+                "chunk_id": "private-chunk-id",
                 "title_path": "婚姻登记 > 婚前医学检查",
+                "qa_generation_unit_subject_label": "婚前医学检查",
+                "qa_generation_unit_scenario_intent": "明确费用承担主体",
+                "qa_generation_unit_reader_need": "了解费用由谁承担",
             },
             candidate_count=1,
             prompt_language="zh",
             question_type_plan=["简答题"],
             few_shot_examples=None,
             request_timeout=10,
-            knowledge_category="法律法规/婚姻登记",
             qa_detail_mode="point",
         )
-
+        self.assertEqual([{"question": "婚前医学检查费用由谁承担？", "question_type": "简答题"}], items)
         user_content = client.messages[1]["content"]
-        self.assertIn("主材料节点路径", user_content)
-        self.assertIn("结婚登记前参加婚前医学检查的费用按规定承担。", user_content)
-        self.assertIn("婚姻登记 > 婚前医学检查", user_content)
-        self.assertNotIn("chunk-1", user_content)
-        self.assertNotIn('"chunk_id"', user_content)
+        self.assertIn("读者需求", user_content)
+        self.assertNotIn("private-chunk-id", user_content)
+        self.assertNotIn("material_ref", user_content)
+        self.assertNotIn("evidence_mode", user_content)
 
-    def test_answer_prompt_does_not_reject_candidate_as_quality_decision(self):
-        zh_prompt = build_evidence_answer_system_prompt(
-            language_code="zh",
-            language_instruction="请使用中文。",
-            qa_detail_mode="summary",
-        )
-        en_prompt = build_evidence_answer_system_prompt(
-            language_code="en",
-            language_instruction="Use English.",
-            qa_detail_mode="summary",
-        )
-
-        self.assertIn("不得基于质量判断输出空 items", zh_prompt)
-        self.assertIn("必须引用回答该问题所必需的每份主材料", zh_prompt)
-        self.assertIn("只输出包含 1 个 item", zh_prompt)
-        self.assertNotIn('{"items":[]}', zh_prompt)
-        self.assertIn("Do not output an empty items list as a quality decision", en_prompt)
-        self.assertIn("exactly one item", en_prompt)
-        self.assertIn("cite every primary material required by the question", en_prompt)
-        self.assertNotIn('{"items":[]}', en_prompt)
-        self.assertNotIn("- retrieval_query\n", zh_prompt)
-        self.assertNotIn("- must_have_terms\n", zh_prompt)
-        self.assertNotIn("- retrieval_query\n", en_prompt)
-        self.assertNotIn("- must_have_terms\n", en_prompt)
-
-    def test_question_editor_prompt_contains_clause_shape_rewrite_examples(self):
-        zh_prompt = build_question_editor_system_prompt(
-            language_code="zh",
-            language_instruction="请使用中文。",
-            qa_detail_mode="point",
-        )
-        en_prompt = build_question_editor_system_prompt(
-            language_code="en",
-            language_instruction="Use English.",
-            qa_detail_mode="point",
-        )
-
-        self.assertIn("女职工生育后，可以额外休多少天产假", zh_prompt)
-        self.assertIn("把原文的条件从句直接搬到逗号前", zh_prompt)
-        self.assertIn("not natural merely because it is grammatical", en_prompt)
-
-    def test_question_editor_rewrites_subject_and_reclassifies_material_dependency(self):
-        client = _StaticChatClient({
-            "decision": "rewrite",
-            "question": "《陕西省人口与计划生育条例》还禁止歧视、虐待哪些妇女？",
-            "reason": "补足主体并去掉模糊指代",
-            "required_material_refs": ["主材料-B"],
-            "optional_material_refs": ["主材料-A"],
-            "evidence_mode": "text",
-            "required_image_refs": [],
-        })
-        edited, status = call_question_editor_llm(
-            client=client,
-            model="test-model",
-            candidate={"question": "该条例还禁止歧视、虐待哪些妇女？", "question_type": "简答题"},
-            source_material="条例正文。",
-            scenario_intent="询问禁止歧视虐待的对象",
-            reader_need="了解具体保护对象",
-            qa_detail_mode="summary",
-            prompt_language="zh",
-            request_timeout=10,
-            source_chunk_meta={
-                "qa_generation_unit_subject_label": "《陕西省人口与计划生育条例》",
-                "qa_generation_unit_evidence_mode": "text",
-                "qa_generation_unit_required_material_ids": ["section-1", "section-2"],
-                "qa_generation_unit_optional_material_ids": [],
-                "qa_generation_unit_material_ref_map": {
-                    "主材料-A": "section-1",
-                    "主材料-B": "section-2",
-                },
-                "qa_generation_unit_image_ref_map": {},
-                "qa_generation_unit_prompt_materials": [
-                    {"material_ref": "主材料-A", "node_path": "总则", "text_content": "背景。", "image_materials": []},
-                    {"material_ref": "主材料-B", "node_path": "保护对象", "text_content": "禁止歧视虐待妇女。", "image_materials": []},
-                ],
-            },
-        )
-
-        self.assertEqual("rewrite", status)
-        self.assertEqual(["section-2"], edited["required_material_ids"])
-        self.assertEqual(["section-1"], edited["optional_material_ids"])
-        self.assertTrue(edited["question"].startswith("《陕西省人口与计划生育条例》"))
-
-    def test_required_image_promotes_its_parent_material_to_required(self):
-        client = _StaticChatClient({
-            "decision": "keep",
-            "question": "申报界面显示的文件大小上限是多少？",
-            "reason": "问题依赖界面截图",
-            "required_material_refs": ["主材料-B"],
-            "optional_material_refs": ["主材料-A"],
-            "evidence_mode": "mixed",
-            "required_image_refs": ["图片-A"],
-        })
-        edited, status = call_question_editor_llm(
-            client=client,
-            model="test-model",
-            candidate={"question": "申报界面显示的文件大小上限是多少？", "question_type": "简答题"},
-            source_material="操作说明。",
-            scenario_intent="询问上传限制",
-            reader_need="了解文件大小上限",
-            qa_detail_mode="summary",
-            prompt_language="zh",
-            request_timeout=10,
-            source_chunk_meta={
-                "qa_generation_unit_required_material_ids": ["section-1", "section-2"],
-                "qa_generation_unit_optional_material_ids": [],
-                "qa_generation_unit_evidence_mode": "mixed",
-                "qa_generation_unit_required_image_ids": ["img-1"],
-                "qa_generation_unit_material_ref_map": {
-                    "主材料-A": "section-1",
-                    "主材料-B": "section-2",
-                },
-                "qa_generation_unit_image_ref_map": {"图片-A": "img-1"},
-                "qa_generation_unit_prompt_materials": [
-                    {
-                        "material_ref": "主材料-A",
-                        "node_path": "上传界面",
-                        "text_content": "",
-                        "image_materials": [{"image_ref": "图片-A", "description": "文件不超过100MB。"}],
-                    },
-                    {"material_ref": "主材料-B", "node_path": "操作说明", "text_content": "点击上传。", "image_materials": []},
-                ],
-            },
-        )
-
-        self.assertEqual("keep", status)
-        self.assertEqual(["section-2", "section-1"], edited["required_material_ids"])
-        self.assertEqual([], edited["optional_material_ids"])
-        self.assertEqual(["img-1"], edited["required_image_ids"])
-
-    def test_answer_prompt_requires_standalone_reader_explanation(self):
-        zh_prompt = build_evidence_answer_system_prompt(
-            language_code="zh",
-            language_instruction="请使用中文。",
-            qa_detail_mode="summary",
-        )
-        en_prompt = build_evidence_answer_system_prompt(
-            language_code="en",
-            language_instruction="Use English.",
-            qa_detail_mode="summary",
-        )
-
-        self.assertIn("1 到 2 句完整、面向读者的说明", zh_prompt)
-        self.assertIn("不是证据追踪，也不是原文句子的后半截", zh_prompt)
-        self.assertIn("source_fact_text 和 evidence_usage 完成", zh_prompt)
-        self.assertIn("标签仅用于证据追踪", zh_prompt)
-        self.assertIn("不要以“该优惠、该答案、此项、上述、其中、它”等指代词开头", zh_prompt)
-        self.assertIn("农村独生子女或双女户父母参加新型农村合作医疗时", zh_prompt)
-        self.assertIn("办理流程、申请手续、主管机关或期限不得自行补全", zh_prompt)
-        self.assertIn("complete, reader-facing clarification", en_prompt)
-        self.assertIn("not a citation trace or a continuation of a source sentence", en_prompt)
-        self.assertIn('not a deictic phrase such as "this benefit"', en_prompt)
-        self.assertIn("Eligible rural one-child or two-daughter families", en_prompt)
-        self.assertIn("Do not invent an amount, ratio, procedure", en_prompt)
-
-    def test_zero_final_evidence_k_is_preserved(self):
-        runtime = parse_one_step_pipeline_runtime(
-            {
-                "chunk_size": 600,
-                "qa_per_chunk": 1,
-                "final_evidence_k": 0,
-            }
-        )
-
-        self.assertEqual(0, runtime.final_evidence_k)
-
-    def test_candidate_generation_discards_unrequested_planning_fields(self):
-        client = _StaticChatClient(
-            {
-                "items": [
-                    {
-                        "question": "其中应当如何处理？",
-                        "source_anchor_text": "旧字段不应进入候选题结果。",
-                        "retrieval_query": "处理方式",
-                        "must_have_terms": ["处理"],
-                        "answer_scope_hint": "source_primary",
-                        "question_type": "简答题",
-                        "difficulty_level": "中等",
-                    }
-                ]
-            }
-        )
-
-        items = call_candidate_question_llm(
-            client=client,
-            model="test-model",
-            source_chunk_text="输入块只包含另一段文字。",
-            source_chunk_meta={"chunk_id": "chunk-1"},
-            candidate_count=1,
-            prompt_language="zh",
-            question_type_plan=["简答题"],
-            few_shot_examples=None,
-            request_timeout=10,
-            qa_detail_mode="summary",
-        )
-
-        self.assertEqual(1, len(items))
-        self.assertEqual("其中应当如何处理？", items[0]["question"])
-        self.assertNotIn("source_anchor_text", items[0])
-        self.assertNotIn("retrieval_query", items[0])
-        self.assertNotIn("must_have_terms", items[0])
-        self.assertNotIn("answer_scope_hint", items[0])
-
-    def test_answer_semantic_rules_do_not_drop_normalized_item(self):
-        client = _StaticChatClient(
-            {
-                "items": [
-                    {
-                        "question": "模型自行改写的问题？",
-                        "answer": "其中由相关人员处理。",
-                        "answer_explanation": "其中给出了处理主体。",
-                        "source_fact_text": "这条事实并未出现在证据中。",
-                        "source": "模型来源",
-                        "evidence_usage": [
-                            {
-                                "evidence_ref": "主材料-1",
-                                "role": "primary_source",
-                                "snippet": "费用由责任主体承担。",
-                                "usage": "支持费用承担结论",
-                            }
-                        ],
-                        "question_type": "简答题",
-                        "difficulty_level": "中等",
-                    }
-                ]
-            }
-        )
-        candidate_question = "费用承担规则如何规定？"
-
-        item, reason = call_evidence_answer_llm(
-            client=client,
-            model="test-model",
-            candidate={
-                "question": candidate_question,
-                "source_anchor_text": "旧字段不应进入答案生成输入。",
-                "question_type": "简答题",
-                "difficulty_level": "中等",
-            },
-            generation_unit={
-                "source_chunk": {
-                    "chunk_id": "chunk-1",
-                    "chunk_index": 1,
-                    "text": "费用由责任主体承担。",
-                },
-                "source_unit_text": "费用由责任主体承担。",
-                "qa_generation_unit_text": "【主来源材料】\n主材料-1\n费用由责任主体承担。",
-                "evidence_chunk_ids": [],
-                "qa_generation_unit_id": "unit-1",
-                "llm_evidence_ref_map": {
-                    "主材料-1": {
-                        "chunk_id": "chunk-1",
-                        "chunk_index": 1,
-                        "role": "primary_source",
-                    }
-                },
-            },
-            qa_detail_mode="summary",
-            prompt_language="zh",
-            request_timeout=10,
-            item_normalizer_with_reason=validate_and_normalize_item_with_reason,
-            source_override_handler=lambda *_args, **_kwargs: None,
-        )
-
-        self.assertEqual("ok", reason)
-        self.assertIsNotNone(item)
-        self.assertEqual(candidate_question, item["question"])
-        self.assertEqual("这条事实并未出现在证据中。", item["source_fact_text"])
-        self.assertNotIn("source_anchor_text", item)
-        self.assertEqual("chunk-1", item["evidence_usage"][0]["chunk_id"])
-        self.assertEqual("主材料-1", item["evidence_usage"][0]["evidence_ref"])
-
-    def test_answer_source_attribution_uses_actually_cited_primary_materials(self):
-        client = _StaticChatClient(
-            {
-                "items": [
-                    {
-                        "question": "办理需要哪些材料和多长时间？",
-                        "answer": "需提交申请表，办理期限为五个工作日。",
-                        "answer_explanation": "申请材料和办理期限共同构成办理要求。",
-                        "source_fact_text": "提交申请表；五个工作日内办结。",
-                        "source": "文本内容",
-                        "evidence_usage": [
-                            {"evidence_ref": "主材料-2", "snippet": "提交申请表", "usage": "材料"},
-                            {"evidence_ref": "主材料-3", "snippet": "五个工作日", "usage": "时限"},
-                        ],
-                        "question_type": "简答题",
-                        "difficulty_level": "中等",
-                    }
-                ]
-            }
-        )
-        source_chunks = [
-            {"chunk_id": "c1", "chunk_index": 1, "title_path": "总则", "text": "总则。"},
-            {"chunk_id": "c2", "chunk_index": 2, "title_path": "材料", "text": "提交申请表。"},
-            {"chunk_id": "c3", "chunk_index": 3, "title_path": "时限", "text": "五个工作日内办结。"},
-        ]
-        ref_map = {
-            f"主材料-{index}": {
-                "chunk_id": chunk["chunk_id"],
-                "chunk_index": chunk["chunk_index"],
-                "title_path": chunk["title_path"],
-                "role": "primary_source",
-            }
-            for index, chunk in enumerate(source_chunks, 1)
+    def test_editor_changes_only_wording_and_preserves_frozen_contract(self):
+        client = _StaticChatClient({"question": "申报通过后，可以在平台上查看或导出哪些信息？"})
+        frozen_meta = {
+            "qa_generation_unit_subject_label": "单位缴费基数诚信申报",
+            "qa_generation_unit_scenario_intent": "了解审核通过后的界面操作",
+            "qa_generation_unit_reader_need": "查看审核状态并导出申报记录",
+            "qa_generation_unit_evidence_mode": "mixed",
+            "qa_generation_unit_required_material_ids": ["section-1"],
+            "qa_generation_unit_required_image_ids": ["image-1"],
+            "qa_generation_unit_material_ref_map": {"主材料-A": "section-1"},
+            "qa_generation_unit_image_ref_map": {"图片-A": "image-1"},
+            "qa_generation_unit_prompt_materials": [
+                {
+                    "material_ref": "主材料-A",
+                    "text_content": "审核通过后可查看申报记录。",
+                    "image_materials": [{"image_ref": "图片-A", "description": "页面提供导出按钮。"}],
+                }
+            ],
         }
-
-        item, reason = call_evidence_answer_llm(
+        candidate = {"question": "审核通过后该如何处理？", "question_type": "简答题"}
+        edited, status = call_question_editor_llm(
             client=client,
             model="test-model",
-            candidate={"question": "办理需要哪些材料和多长时间？", "question_type": "简答题"},
-            generation_unit={
-                "source_chunk": source_chunks[0],
-                "source_chunks": source_chunks,
-                "source_unit_text": "\n".join(chunk["text"] for chunk in source_chunks),
-                "qa_generation_unit_text": "主材料-1\n总则。\n主材料-2\n提交申请表。\n主材料-3\n五个工作日内办结。",
-                "evidence_chunk_ids": [],
-                "qa_generation_unit_id": "unit-1",
-                "llm_evidence_ref_map": ref_map,
-            },
+            candidate=candidate,
+            source_material="审核通过后可查看申报记录。",
+            scenario_intent="了解审核通过后的界面操作",
+            reader_need="查看审核状态并导出申报记录",
             qa_detail_mode="summary",
             prompt_language="zh",
             request_timeout=10,
-            item_normalizer_with_reason=validate_and_normalize_item_with_reason,
-            source_override_handler=lambda *_args, **_kwargs: None,
+            source_chunk_meta=frozen_meta,
         )
-
-        self.assertEqual("ok", reason)
-        self.assertEqual("c2", item["source_chunk_id"])
-        self.assertEqual(2, item["source_chunk_index"])
-        self.assertEqual("材料", item["source_chunk_title_path"])
-        self.assertEqual(["c2", "c3"], item["source_chunk_ids"])
-        self.assertEqual([2, 3], item["source_chunk_indexes"])
-        self.assertEqual(["材料", "时限"], item["source_chunk_title_paths"])
-
-    def test_summary_answer_requires_primary_coverage_for_each_bound_material(self):
-        client = _StaticChatClient(
-            {
-                "items": [
-                    {
-                        "question": "办理需要哪些材料和多长时间？",
-                        "answer": "需要提交申请表。",
-                        "answer_explanation": "回答只覆盖了材料。",
-                        "source_fact_text": "提交申请表。",
-                        "source": "文本内容",
-                        "evidence_usage": [
-                            {"evidence_ref": "主材料-1", "snippet": "提交申请表", "usage": "材料"},
-                        ],
-                        "question_type": "简答题",
-                        "difficulty_level": "中等",
-                    }
-                ]
-            }
-        )
-        source_chunks = [
-            {"chunk_id": "c1", "chunk_index": 1, "title_path": "材料", "text": "提交申请表。"},
-            {"chunk_id": "c2", "chunk_index": 2, "title_path": "时限", "text": "五日内办结。"},
-        ]
-        item, reason = call_evidence_answer_llm(
-            client=client,
-            model="test-model",
-            candidate={"question": "办理需要哪些材料和多长时间？", "question_type": "简答题"},
-            generation_unit={
-                "source_chunk": source_chunks[0],
-                "source_chunks": source_chunks,
-                "source_unit": {
-                    "material_ids": ["section-1", "section-2"],
-                    "material_source_chunk_indexes": {
-                        "section-1": [1],
-                        "section-2": [2],
-                    },
-                },
-                "source_unit_text": "提交申请表。\n五日内办结。",
-                "qa_generation_unit_text": "主材料-1\n提交申请表。\n主材料-2\n五日内办结。",
-                "evidence_chunk_ids": [],
-                "qa_generation_unit_id": "unit-coverage",
-                "llm_evidence_ref_map": {
-                    "主材料-1": {"chunk_id": "c1", "chunk_index": 1, "role": "primary_source"},
-                    "主材料-2": {"chunk_id": "c2", "chunk_index": 2, "role": "primary_source"},
-                },
-            },
-            qa_detail_mode="summary",
-            prompt_language="zh",
-            request_timeout=10,
-            item_normalizer_with_reason=validate_and_normalize_item_with_reason,
-            source_override_handler=lambda *_args, **_kwargs: None,
-        )
-
-        self.assertIsNone(item)
-        self.assertEqual("incomplete_summary_primary_coverage", reason)
-
-    def test_answer_input_hides_internal_metadata_and_planning_fields(self):
-        class RecordingClient:
-            def __init__(self):
-                self.messages = []
-
-            def create_chat_completion_text(self, **kwargs):
-                self.messages = kwargs["messages"]
-                return json.dumps(
-                    {
-                        "items": [
-                            {
-                                "question": "费用由谁承担？",
-                                "answer": "费用由责任主体承担。",
-                                "answer_explanation": "责任主体承担相关费用。",
-                                "source_fact_text": "费用由责任主体承担。",
-                                "source": "文本内容",
-                                "question_type": "简答题",
-                                "difficulty_level": "简单",
-                                "evidence_usage": [
-                                    {
-                                        "evidence_ref": "主材料-1",
-                                        "snippet": "费用由责任主体承担。",
-                                        "usage": "支持答案",
-                                    }
-                                ],
-                            }
-                        ]
-                    },
-                    ensure_ascii=False,
-                )
-
-        client = RecordingClient()
-        item, reason = call_evidence_answer_llm(
-            client=client,
-            model="test-model",
-            candidate={
-                "question": "费用由谁承担？",
-                "question_type": "简答题",
-                "difficulty_level": "简单",
-            },
-            generation_unit={
-                "source_chunk": {
-                    "chunk_id": "secret-chunk-id",
-                    "chunk_index": 42,
-                    "title_path": "内部标题 > 不应出现",
-                    "text": "费用由责任主体承担。",
-                },
-                "source_unit_text": "费用由责任主体承担。",
-                "qa_generation_unit_text": "【主来源材料】\n主材料-1\n费用由责任主体承担。",
-                "evidence_chunk_ids": ["supplement-id"],
-                "qa_generation_unit_id": "unit-1",
-                "llm_evidence_ref_map": {
-                    "主材料-1": {
-                        "chunk_id": "secret-chunk-id",
-                        "chunk_index": 42,
-                        "role": "primary_source",
-                    }
-                },
-            },
-            qa_detail_mode="point",
-            prompt_language="zh",
-            request_timeout=10,
-            item_normalizer_with_reason=validate_and_normalize_item_with_reason,
-            source_override_handler=lambda *_args, **_kwargs: None,
-        )
-
-        self.assertEqual("ok", reason)
-        self.assertIsNotNone(item)
+        self.assertEqual("edited", status)
+        self.assertEqual("申报通过后，可以在平台上查看或导出哪些信息？", edited["question"])
+        self.assertEqual({"question", "question_type"}, set(edited))
         user_content = client.messages[1]["content"]
-        self.assertIn("主材料-1", user_content)
-        self.assertIn("费用由责任主体承担。", user_content)
-        self.assertNotIn("secret-chunk-id", user_content)
-        self.assertIn("内部标题 > 不应出现", user_content)
-        self.assertNotIn("retrieval_query", user_content)
-        self.assertNotIn("must_have_terms", user_content)
-        self.assertEqual("secret-chunk-id", item["evidence_usage"][0]["chunk_id"])
+        self.assertIn("必须同时涉及的图片事实", user_content)
+        self.assertNotIn("required_image_refs", user_content)
+        self.assertNotIn("evidence_mode", user_content)
 
-    def test_pipeline_settings_includes_retrieval_module(self):
-        from pathlib import Path
-
-        app_js = (Path(__file__).resolve().parents[1] / "static" / "app.js").read_text(
-            encoding="utf-8"
-        )
-        start = app_js.index("function openPipelineSettingsModal()")
-        end = app_js.index("function createModuleCard", start)
-        modal_source = app_js[start:end]
-        self.assertIn("'pipeline.retrieval'", modal_source)
-
-    def test_evidence_rendering_uses_readable_refs_and_preserves_mapping(self):
-        from qa.generation.evidence_units import QADocumentEvidenceIndex
-        from qa.retrieval import EvidenceWindow
-
+    def test_evidence_renderer_separates_text_and_image_blocks(self):
         index = QADocumentEvidenceIndex(
             chunks=[
                 {
@@ -748,8 +221,8 @@ class QAGenerationContractTests(unittest.TestCase):
                     "chunk_index": 1,
                     "title_path": "内部标题 > 第一条",
                     "section_path": "1",
-                    "text": "主材料事实。",
-                    "retrieval_text": "主材料事实。",
+                    "text": "正文事实。\n【图片描述：旧的扁平图片事实。】",
+                    "retrieval_text": "正文事实。",
                 },
                 {
                     "chunk_id": "supplement-id",
@@ -764,8 +237,24 @@ class QAGenerationContractTests(unittest.TestCase):
         )
         generation_unit = index.build_generation_unit(
             source_chunk_index=1,
-            source_unit={"source_chunk_indexes": [1]},
-            question="主材料事实是什么？",
+            source_unit={
+                "source_chunk_indexes": [1],
+                "required_material_ids": ["section-1"],
+                "material_source_chunk_indexes": {"section-1": [1]},
+                "material_ref_map": {"主材料-A": "section-1"},
+                "image_ref_map": {"图片-A": "image-1"},
+                "required_image_ids": ["image-1"],
+                "evidence_mode": "mixed",
+                "prompt_materials": [
+                    {
+                        "material_ref": "主材料-A",
+                        "node_path": "内部标题 > 第一条",
+                        "text_content": "正文事实。",
+                        "image_materials": [{"image_ref": "图片-A", "description": "页面提供导出按钮。"}],
+                    }
+                ],
+            },
+            question="审核通过后可以做什么？",
             retrieval_result={
                 "selected_windows": [
                     EvidenceWindow(
@@ -782,16 +271,170 @@ class QAGenerationContractTests(unittest.TestCase):
             final_evidence_k=5,
             evidence_token_budget=4000,
         )
-
         rendered = generation_unit["qa_generation_unit_text"]
-        self.assertIn("主材料-1", rendered)
-        self.assertIn("检索证据-1", rendered)
+        self.assertIn("正文证据-1", rendered)
+        self.assertIn("图片证据-1", rendered)
+        self.assertIn("补充正文证据-1", rendered)
         self.assertNotIn("primary-id", rendered)
-        self.assertNotIn("supplement-id", rendered)
-        self.assertIn("节点路径：内部标题 > 第一条", rendered)
-        self.assertIn("节点路径：内部标题 > 第二条", rendered)
-        self.assertEqual("primary-id", generation_unit["llm_evidence_ref_map"]["主材料-1"]["chunk_id"])
-        self.assertEqual("supplement-id", generation_unit["llm_evidence_ref_map"]["检索证据-1"]["chunk_id"])
+        self.assertNotIn("旧的扁平图片事实", rendered)
+        image_ref = generation_unit["llm_evidence_ref_map"]["图片证据-1"]
+        self.assertEqual("image-1", image_ref["image_id"])
+        self.assertEqual("primary_visual", image_ref["role"])
+
+    def test_mixed_answer_requires_text_and_visual_citations(self):
+        client = _StaticChatClient(
+            {
+                "items": [
+                    {
+                        "answer": "审核通过后，单位可查看申报记录并使用导出按钮导出信息。",
+                        "answer_explanation": "审核状态和导出操作共同支持后续查询与留档。",
+                        "source_fact_text": "审核通过后可查看申报记录；页面提供导出按钮。",
+                        "evidence_usage": [
+                            {"evidence_ref": "正文证据-1", "role": "primary_source"},
+                            {"evidence_ref": "图片证据-1", "role": "primary_visual"},
+                        ],
+                    }
+                ]
+            }
+        )
+        item, reason = call_evidence_answer_llm(
+            client=client,
+            model="test-model",
+            candidate={"question": "审核通过后可以做什么？", "question_type": "简答题"},
+            generation_unit=_generation_unit(mode="mixed", required_images=["image-1"]),
+            qa_detail_mode="summary",
+            prompt_language="zh",
+            request_timeout=10,
+            item_normalizer_with_reason=validate_and_normalize_item_with_reason,
+            source_override_handler=lambda *_args, **_kwargs: None,
+        )
+        self.assertEqual("ok", reason)
+        self.assertEqual("mixed", item["evidence_mode"])
+        self.assertEqual("image-1", item["evidence_usage"][1]["image_id"])
+        self.assertIn("图片证据-1", client.messages[1]["content"])
+        self.assertNotIn("typed_primary_materials", client.messages[1]["content"])
+
+    def test_mixed_answer_without_visual_citation_is_rejected(self):
+        client = _StaticChatClient(
+            {
+                "items": [
+                    {
+                        "answer": "审核通过后可查看申报记录。",
+                        "answer_explanation": "正文说明了查询方式。",
+                        "source_fact_text": "审核通过后可查看申报记录。",
+                        "evidence_usage": [{"evidence_ref": "正文证据-1", "role": "primary_source"}],
+                    }
+                ]
+            }
+        )
+        item, reason = call_evidence_answer_llm(
+            client=client,
+            model="test-model",
+            candidate={"question": "审核通过后可以做什么？", "question_type": "简答题"},
+            generation_unit=_generation_unit(mode="mixed", required_images=["image-1"]),
+            qa_detail_mode="summary",
+            prompt_language="zh",
+            request_timeout=10,
+            item_normalizer_with_reason=validate_and_normalize_item_with_reason,
+            source_override_handler=lambda *_args, **_kwargs: None,
+        )
+        self.assertIsNone(item)
+        self.assertEqual("missing_required_visual_evidence", reason)
+
+    def test_summary_answer_requires_all_frozen_required_materials(self):
+        client = _StaticChatClient(
+            {
+                "items": [
+                    {
+                        "answer": "需要提交申请表。",
+                        "answer_explanation": "回答只覆盖材料。",
+                        "source_fact_text": "提交申请表。",
+                        "evidence_usage": [{"evidence_ref": "正文证据-1", "role": "primary_source"}],
+                    }
+                ]
+            }
+        )
+        item, reason = call_evidence_answer_llm(
+            client=client,
+            model="test-model",
+            candidate={"question": "办理需要哪些材料和多长时间？", "question_type": "简答题"},
+            generation_unit=_generation_unit(required_materials=["section-1", "section-2"]),
+            qa_detail_mode="summary",
+            prompt_language="zh",
+            request_timeout=10,
+            item_normalizer_with_reason=validate_and_normalize_item_with_reason,
+            source_override_handler=lambda *_args, **_kwargs: None,
+        )
+        self.assertIsNone(item)
+        self.assertEqual("incomplete_primary_material_coverage", reason)
+
+    def test_consolidation_and_debug_have_no_difficulty_fields(self):
+        qa_item = {
+            "id": "qa-1",
+            "question": "谁负责办理？",
+            "answer": "登记机关负责办理。",
+            "source": "c1",
+            "source_fact_text": "登记机关负责办理。",
+            "question_type": "简答题",
+            "evidence_usage": [
+                {
+                    "evidence_ref": "正文证据-1",
+                    "role": "primary_source",
+                    "chunk_id": "c1",
+                    "chunk_index": 1,
+                    "title_path": "办理要求",
+                    "material_id": "section-1",
+                }
+            ],
+        }
+        entry = build_consolidated_entry(
+            task_id="task-contract",
+            original_filename="contract.md",
+            facts=[],
+            categorized_facts=[],
+            qa_data=[qa_item],
+            evaluation_results=None,
+            filtered_qa_data=None,
+            include_evaluation=False,
+            evaluation_method="llm",
+            filter_by_threshold=False,
+            score_threshold=0.7,
+            chunk_size=600,
+            qa_per_chunk=1,
+            qa_detail_mode="point",
+            prompt_language="zh",
+            llm_model="test-model",
+        )
+        consolidated = entry["payload"]["items"][0]
+        self.assertNotIn("difficulty_level", consolidated)
+        self.assertNotIn("difficulty_score", consolidated)
+        self.assertNotIn("question_type_reason", consolidated)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = str(Path(tmp_dir) / "qa-debug.sqlite3")
+            with patch.dict("os.environ", {"QA_DEBUG_DB_PATH": db_path}):
+                upsert_qa_debug_items([consolidated])
+                debug_payload = get_debug_map([consolidated["id"]])[consolidated["id"]]
+        self.assertNotIn("difficulty_level", debug_payload)
+        self.assertNotIn("difficulty_score", debug_payload)
+
+    def test_zero_final_evidence_k_is_preserved(self):
+        runtime = parse_one_step_pipeline_runtime(
+            {"chunk_size": 600, "qa_per_chunk": 1, "final_evidence_k": 0}
+        )
+        self.assertEqual(0, runtime.final_evidence_k)
+
+    def test_generation_latency_percentiles_include_editor_and_answer(self):
+        stats = _unit_latency_percentiles(
+            [
+                {"timing": {"chunk_total_seconds": 10, "question_editor_seconds": 3, "answer_generation_seconds": 4}},
+                {"timing": {"chunk_total_seconds": 20, "question_editor_seconds": 5, "answer_generation_seconds": 8}},
+                {"timing": {"chunk_total_seconds": 40, "question_editor_seconds": 9, "answer_generation_seconds": 16}},
+            ]
+        )
+        self.assertEqual(20.0, stats["chunk_total_seconds"]["p50"])
+        self.assertGreater(stats["chunk_total_seconds"]["p95"], 35.0)
+        self.assertEqual(5.0, stats["question_editor_seconds"]["p50"])
+        self.assertEqual(8.0, stats["answer_generation_seconds"]["p50"])
 
 
 if __name__ == "__main__":

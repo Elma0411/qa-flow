@@ -43,7 +43,7 @@ its configured model cannot load.
 
 The QA question path is fixed:
 
-`content chunks -> SectionMaterial -> PointScenario/SummaryScenario -> typed question draft -> question editor -> evidence retrieval -> answer`
+`content chunks -> SectionMaterial -> frozen ScenarioContract -> question writer -> final wording editor -> evidence retrieval -> answer`
 
 `SectionMaterial` is the atomic generation material for one exact
 `section_path`; it restores that section's physical fragments and keeps
@@ -52,6 +52,14 @@ merging sibling sections. Scenario planning uses
 bounded internal batches, but Point/Summary allocation and final question
 deduplication are document-wide. These are internal planning rules rather than
 request-level tuning parameters.
+
+`ScenarioContract` is the single authority for Point/Summary type, required and
+optional Section Materials, `text|visual|mixed` evidence mode, required images,
+and backend-selected question type. The question writer and wording editor may
+change only the reader-facing question text; neither may reclassify material or
+image evidence. The answer renderer presents required text and image evidence
+as separate readable blocks and maps temporary labels back to audited source
+pointers in the backend.
 
 ## Module Ownership
 

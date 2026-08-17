@@ -54,7 +54,6 @@ async def list_qa_items(
     original_filename: Optional[str] = Query(None),
     knowledge_category: Optional[List[str]] = Query(None),
     question_type: Optional[List[str]] = Query(None),
-    difficulty_level: Optional[List[str]] = Query(None),
     filtered: TriState = Query(TriState.all),
     evaluated: TriState = Query(TriState.all),
     is_active: TriState = Query(TriState.true),
@@ -70,7 +69,6 @@ async def list_qa_items(
             original_filename=original_filename,
             knowledge_categories=knowledge_category,
             question_types=question_type,
-            difficulty_levels=difficulty_level,
             filtered=_tristate_to_optional_bool(filtered),
             evaluated=_tristate_to_optional_bool(evaluated),
             is_active=_tristate_to_optional_bool(is_active),
@@ -257,7 +255,6 @@ class QASearchRequest(BaseModel):
     min_avg_score: Optional[float] = None
     knowledge_category: Optional[List[str]] = None
     question_type: Optional[List[str]] = None
-    difficulty_level: Optional[List[str]] = None
     is_active: TriState = TriState.true
 
 
@@ -275,7 +272,6 @@ async def qa_search(payload: QASearchRequest) -> Dict[str, Any]:
             min_avg_score=payload.min_avg_score,
             categories=payload.knowledge_category,
             question_types=payload.question_type,
-            difficulty_levels=payload.difficulty_level,
         )
         if not result.get("success"):
             raise HTTPException(status_code=503, detail=result.get("message") or "搜索失败")

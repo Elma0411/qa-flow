@@ -2922,6 +2922,9 @@ function deriveGenerationTimingViews(generationExtra, outputTimings) {
   let explicitWallDetail = false;
   let outputChunkDetails = [];
   let outputUnitDetails = [];
+  let latencyPercentiles = hasObjectKeys(generationExtra.latency_percentiles)
+    ? generationExtra.latency_percentiles
+    : {};
   let unitPlanSummary = hasObjectKeys(generationExtra.unit_plan_summary)
     ? generationExtra.unit_plan_summary
     : {};
@@ -2957,6 +2960,9 @@ function deriveGenerationTimingViews(generationExtra, outputTimings) {
     if (!hasObjectKeys(unitPlanSummary) && hasObjectKeys(timing.unit_plan_summary)) {
       unitPlanSummary = timing.unit_plan_summary;
     }
+    if (!hasObjectKeys(latencyPercentiles) && hasObjectKeys(timing.latency_percentiles)) {
+      latencyPercentiles = timing.latency_percentiles;
+    }
     if (!hasObjectKeys(wallDetail) && hasObjectKeys(timing.generation_detail)) {
       wallDetail = timing.generation_detail;
     }
@@ -2983,6 +2989,7 @@ function deriveGenerationTimingViews(generationExtra, outputTimings) {
     unitPlanSummary,
     unitDetails,
     chunkDetails: progressChunkDetails.length ? progressChunkDetails : outputChunkDetails,
+    latencyPercentiles,
   };
 }
 
@@ -3037,6 +3044,7 @@ function derivePipelineTiming(status) {
     unit_plan_summary: generationViews.unitPlanSummary,
     generation_unit_details: generationViews.unitDetails,
     generation_chunk_details: generationViews.chunkDetails,
+    latency_percentiles: generationViews.latencyPercentiles,
   };
 }
 
@@ -3087,6 +3095,9 @@ function translatedDropReason(reason) {
     missing_answer: '缺少答案',
     missing_answer_explanation: '缺少答案解释',
     missing_source_fact_text: '缺少来源事实',
+    incomplete_primary_material_coverage: '未覆盖全部必需正文材料',
+    missing_required_visual_evidence: '未引用必需图片证据',
+    missing_required_text_evidence: '未引用必需正文证据',
     duplicate_question: '重复问题',
     empty_or_duplicate_question: '空问题/重复问题',
     invalid_json: 'JSON 无效',
@@ -3101,6 +3112,7 @@ function translatedDropReason(reason) {
 
 function chunkStatusText(chunk) {
   if (chunk && chunk.error) return '失败';
+  if (asNumber(chunk && chunk.valid_items) === 0) return '未产出';
   if (asNumber(chunk && chunk.valid_items) !== null) return '完成';
   return '等待';
 }
@@ -3779,14 +3791,18 @@ function renderPipelineDebugStatus(status, options = {}) {
   const genGrid = document.createElement('div');
   genGrid.className = 'pipeline-debug-chip-grid';
   const generationBreakdownTotal = sumNumbers(
+    detail.scenario_planning_seconds,
     detail.candidate_question_seconds,
+    detail.question_editor_seconds,
     detail.retrieval_seconds,
     detail.answer_generation_seconds,
     detail.validation_and_bookkeeping_seconds,
     detail.scheduler_gap_seconds,
   );
   appendMetricChip(genGrid, 'QA 生成合计', firstNumber(detail.document_total_seconds, timing.generation_seconds));
+  appendMetricChip(genGrid, '场景规划', firstNumber(detail.scenario_planning_seconds));
   appendMetricChip(genGrid, '候选题生成', firstNumber(detail.candidate_question_seconds));
+  appendMetricChip(genGrid, '问题编辑', firstNumber(detail.question_editor_seconds));
   appendMetricChip(genGrid, '检索', firstNumber(detail.retrieval_seconds));
   appendMetricChip(genGrid, '答案生成', firstNumber(detail.answer_generation_seconds));
   appendMetricChip(genGrid, '校验/丢弃', firstNumber(detail.validation_and_bookkeeping_seconds));
@@ -3824,6 +3840,15 @@ function renderPipelineDebugStatus(status, options = {}) {
     selectedEvidenceWindowStats(timing.generation_unit_details),
   );
   appendTextMetric(genMeta, '证据 token 预算', retrievalConfig.evidence_token_budget ?? '4000');
+  const latency = timing.latency_percentiles || {};
+  const latencyText = (field) => {
+    const stats = latency[field];
+    if (!stats || stats.p50 === undefined || stats.p95 === undefined) return '未记录';
+    return `p50 ${fmtSeconds(stats.p50)} / p95 ${fmtSeconds(stats.p95)}`;
+  };
+  appendTextMetric(genMeta, 'unit 总耗时分位', latencyText('chunk_total_seconds'));
+  appendTextMetric(genMeta, '答案生成分位', latencyText('answer_generation_seconds'));
+  appendTextMetric(genMeta, '问题编辑分位', latencyText('question_editor_seconds'));
   generation.appendChild(genMeta);
   root.appendChild(generation);
 
@@ -3862,6 +3887,7 @@ function renderPipelineDebugStatus(status, options = {}) {
       '有效 QA',
       '总耗时',
       '候选',
+      '编辑',
       '检索',
       '答案',
       '丢弃或错误',
@@ -3894,6 +3920,7 @@ function renderPipelineDebugStatus(status, options = {}) {
       appendChunkTableCell(row, debugCountText(chunk.valid_items, '未返回'));
       appendChunkTableCell(row, debugSecondsText(ct.chunk_total_seconds), 'mono');
       appendChunkTableCell(row, debugSecondsText(ct.candidate_question_seconds), 'mono');
+      appendChunkTableCell(row, debugSecondsText(ct.question_editor_seconds), 'mono');
       appendChunkTableCell(row, debugSecondsText(ct.retrieval_seconds), 'mono');
       appendChunkTableCell(row, debugSecondsText(ct.answer_generation_seconds), 'mono');
       const reasonCell = document.createElement('td');

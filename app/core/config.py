@@ -173,7 +173,7 @@ CONFIG = {
     "milvus": {
         "host": os.environ.get("MILVUS_HOST", "127.0.0.1"),
         "port": int(os.environ.get("MILVUS_PORT", "19530")),
-        "collection_name": "qa_pairs_collection",
+        "collection_name": "qa_pairs_collection_v2",
         "embedding_model": model_path(DEFAULT_COVERAGE_EMBED_MODEL_NAME),
         "vector_dim": 1024,
         "index_type": "HNSW",

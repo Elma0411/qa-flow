@@ -13,10 +13,9 @@ def write_consolidated_csv(items: List[Dict[str, Any]], csv_path: str) -> None:
     G：相似问向
     H：答案
     I：答案解释
-    J：题目难度
-    K：题目来源-相关文件
-    L：题目来源-相关段落
-    M：备注（模型与平均得分）
+    J：题目来源-相关文件
+    K：题目来源-相关段落
+    L：备注（模型与平均得分）
     """
     with open(csv_path, "w", encoding="utf-8", newline="") as csvfile:
         fieldnames = [
@@ -26,7 +25,6 @@ def write_consolidated_csv(items: List[Dict[str, Any]], csv_path: str) -> None:
             "相似问向",
             "答案",
             "答案解释",
-            "题目难度",
             "题目来源-相关文件",
             "题目来源-相关段落",
             "备注",
@@ -46,7 +44,6 @@ def write_consolidated_csv(items: List[Dict[str, Any]], csv_path: str) -> None:
             similar_question = " || ".join(sim_list)
             answer = item.get("answer", "") or ""
             answer_explanation = item.get("answer_explanation", "") or ""
-            difficulty_level = item.get("difficulty_level", "") or ""
             original_filename = item.get("original_filename", "") or ""
             # 段落/条款：使用 source（稳定的定位/摘要标签），不要用 source_fact_text 兜底成“原子事实全文”
             paragraph = item.get("source") or "文本内容"
@@ -104,7 +101,6 @@ def write_consolidated_csv(items: List[Dict[str, Any]], csv_path: str) -> None:
                 "相似问向": similar_question,
                 "答案": answer,
                 "答案解释": answer_explanation,
-                "题目难度": difficulty_level,
                 "题目来源-相关文件": original_filename,
                 "题目来源-相关段落": paragraph,
                 "备注": remark,

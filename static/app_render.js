@@ -287,7 +287,6 @@ function renderDetailPanel(it, includeDetails) {
     );
   }
   if (it.correct_option) addKv(kv, '正确选项', it.correct_option);
-  if (it.difficulty_level) addKv(kv, '难度', it.difficulty_level);
   if (it.answer_explanation) addKv(kv, '答案解析', it.answer_explanation);
   if (it.evaluation_method) addKv(kv, '评估方式', it.evaluation_method);
   if (typeof unsupScores.faithfulness === 'number') {

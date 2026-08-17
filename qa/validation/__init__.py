@@ -7,7 +7,6 @@ from importlib import import_module
 from typing import Any
 
 _EXPORTS = {
-    "normalize_difficulty_level": ".qa_item",
     "normalize_question_type": ".qa_item",
     "validate_and_normalize_item": ".qa_item",
     "validate_and_normalize_item_with_reason": ".qa_item",

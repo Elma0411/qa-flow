@@ -99,6 +99,13 @@ An evidence-bound reader need selected before wording a question.
 several materials that jointly answer one coherent need.
 _Avoid_: A generated question, a fixed section type, forced question quota
 
+**Scenario Contract**:
+The immutable backend form of a Question Scenario after temporary aliases have
+been mapped. It owns scenario type, required/optional materials, evidence mode,
+required images, and question type. Wording models may only rewrite the
+reader-facing question.
+_Avoid_: Letting a wording editor downgrade mixed/visual evidence to text
+
 **Shared Boundary**:
 A module, field set, endpoint, runtime variable, or deployment asset that both
 `dw` and `hao` work depends on.

@@ -18,9 +18,6 @@ class UpdatePayload(BaseModel):
     knowledge_category_reason: Optional[str] = None
     knowledge_category_confidence: Optional[float] = None
     question_type: Optional[str] = None
-    question_type_reason: Optional[str] = None
-    difficulty_level: Optional[str] = None
-    difficulty_score: Optional[float] = None
     filtered: Optional[bool] = None
     average_score: Optional[float] = None
 
@@ -31,7 +28,7 @@ async def milvus_update(payload: UpdatePayload):
     根据 id 更新部分字段。
 
     Milvus 不支持原地 update，这里采用「查询→删除→重新插入」策略，
-    主要用于微调知识类别、题型、难度及过滤/平均分等语义字段。
+    主要用于微调知识类别、题型及过滤/平均分等语义字段。
     """
     try:
         if not milvus_service.MILVUS_AVAILABLE or not milvus_service.milvus_client:
@@ -49,13 +46,10 @@ async def milvus_update(payload: UpdatePayload):
                 "question",
                 "answer",
                 "question_type",
-                "question_type_reason",
                 "answer_explanation",
                 "knowledge_category",
                 "knowledge_category_reason",
                 "knowledge_category_confidence",
-                "difficulty_level",
-                "difficulty_score",
                 "llm_model",
                 "embed_model",
                 "embed_dim",
@@ -83,12 +77,6 @@ async def milvus_update(payload: UpdatePayload):
             updated["knowledge_category_confidence"] = float(payload.knowledge_category_confidence)
         if payload.question_type is not None:
             updated["question_type"] = payload.question_type
-        if payload.question_type_reason is not None:
-            updated["question_type_reason"] = payload.question_type_reason
-        if payload.difficulty_level is not None:
-            updated["difficulty_level"] = payload.difficulty_level
-        if payload.difficulty_score is not None:
-            updated["difficulty_score"] = float(payload.difficulty_score)
         if payload.filtered is not None:
             updated["filtered"] = payload.filtered
         if payload.average_score is not None:

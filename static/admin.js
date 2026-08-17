@@ -433,7 +433,6 @@ function renderQaDetail(data) {
       : null,
     data?.knowledge_category ? { k: 'category', v: data.knowledge_category } : null,
     data?.question_type ? { k: 'q_type', v: data.question_type } : null,
-    data?.difficulty_level ? { k: 'difficulty', v: data.difficulty_level } : null,
     data?.evaluation_method ? { k: 'eval_method', v: data.evaluation_method } : null,
     data?.created_at != null ? { k: 'created_at', v: String(data.created_at) } : null,
     adminIsActive ? { k: 'is_active', v: adminIsActive } : null,
@@ -578,7 +577,6 @@ function buildListQueryParams() {
   const filename = $('#fFilename')?.value.trim();
   const categories = parseCommaList($('#fCategory')?.value);
   const qtypes = parseCommaList($('#fQType')?.value);
-  const diffs = parseCommaList($('#fDiff')?.value);
   const filtered = $('#fFiltered')?.value || 'all';
   const evaluated = $('#fEvaluated')?.value || 'all';
   const isActive = $('#fActive')?.value || 'true';
@@ -592,7 +590,6 @@ function buildListQueryParams() {
   if (filename) params.set('original_filename', filename);
   if (categories) categories.forEach((v) => params.append('knowledge_category', v));
   if (qtypes) qtypes.forEach((v) => params.append('question_type', v));
-  if (diffs) diffs.forEach((v) => params.append('difficulty_level', v));
   if (filtered) params.set('filtered', filtered);
   if (evaluated) params.set('evaluated', evaluated);
   if (isActive) params.set('is_active', isActive);
@@ -676,7 +673,6 @@ async function semanticSearch() {
   const taskId = $('#fTaskId')?.value.trim() || null;
   const categories = parseCommaList($('#fCategory')?.value);
   const qtypes = parseCommaList($('#fQType')?.value);
-  const diffs = parseCommaList($('#fDiff')?.value);
   const filtered = $('#fFiltered')?.value || 'all';
   const isActive = $('#fActive')?.value || 'true';
   const minScore = $('#fMinScore')?.value;
@@ -694,7 +690,6 @@ async function semanticSearch() {
         : null,
     knowledge_category: categories,
     question_type: qtypes,
-    difficulty_level: diffs,
   };
 
   try {
@@ -1269,11 +1264,6 @@ function bindEvents() {
     const v = prompt('设置 question_type：', '') || '';
     if (!v.trim()) return;
     await doBatchUpdate({ question_type: v.trim() });
-  });
-  $('#btnSetDiff')?.addEventListener('click', async () => {
-    const v = prompt('设置 difficulty_level：', '') || '';
-    if (!v.trim()) return;
-    await doBatchUpdate({ difficulty_level: v.trim() });
   });
   $('#btnSetReview')?.addEventListener('click', async () => {
     const status = (prompt('设置 review_status（如 pending/approved/rejected/deleted）：', '') || '').trim();
