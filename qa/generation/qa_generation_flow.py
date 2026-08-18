@@ -299,6 +299,58 @@ def _evidence_usage_covers_contract(
     return True, "ok"
 
 
+def _answer_retry_instruction(
+    reason: str,
+    evidence_ref_map: Dict[str, Dict[str, Any]],
+) -> str:
+    if reason == "missing_items":
+        return "请按既定 JSON 结构返回一条完整答案。"
+    if reason == "missing_required_visual_evidence":
+        labels = [
+            label for label, item in evidence_ref_map.items()
+            if isinstance(item, dict) and item.get("role") == "primary_visual"
+        ]
+        return "必须使用并在 evidence_usage 中引用图片证据：" + "、".join(labels)
+    if reason in {"incomplete_primary_material_coverage", "missing_required_text_evidence"}:
+        labels = [
+            label for label, item in evidence_ref_map.items()
+            if isinstance(item, dict) and item.get("role") in {"primary_source", "primary_visual"}
+        ]
+        return "必须覆盖并在 evidence_usage 中引用所有必需证据：" + "、".join(labels)
+    return ""
+
+
+def _build_qa_evaluation_evidence_text(
+    evidence_usage: Any,
+    evidence_text_by_ref: Any,
+    *,
+    fallback: str,
+) -> str:
+    """Return the exact readable evidence blocks actually cited by an answer.
+
+    The answer model sees a complete unit so it can answer safely, while the
+    evaluator should judge the answer against only the blocks the model says it
+    used.  This keeps long OCR sections and unrelated retrieved windows from
+    overwhelming a visual or mixed-evidence premise.
+    """
+    if not isinstance(evidence_usage, list) or not isinstance(evidence_text_by_ref, dict):
+        return str(fallback or "").strip()
+    blocks: List[str] = []
+    seen_refs: set[str] = set()
+    for entry in evidence_usage:
+        if not isinstance(entry, dict):
+            continue
+        evidence_ref = str(entry.get("evidence_ref") or "").strip()
+        if not evidence_ref or evidence_ref in seen_refs:
+            continue
+        block = evidence_text_by_ref.get(evidence_ref)
+        if not isinstance(block, str) or not block.strip():
+            continue
+        seen_refs.add(evidence_ref)
+        blocks.append(block.strip())
+    return "\n\n".join(blocks).strip() or str(fallback or "").strip()
+
+
 def _resolve_generation_language(prompt_language: str, text: str) -> Tuple[str, str]:
     lang = (prompt_language or "auto").strip().lower()
     if lang == "auto":
@@ -445,13 +497,21 @@ def _build_question_writing_brief(
     lines = []
     if subject:
         lines.append(f"主体：{subject}")
-    lines.append(f"读者需求：{str(reader_need or '').strip()}")
-    lines.append(f"核心目标：{str(scenario_intent or '').strip()}")
+    lines.append(f"提问焦点：{str(scenario_intent or '').strip()}")
+    lines.append(
+        "读者情境（只用于选择口吻，不要逐项写入题干）："
+        f"{str(reader_need or '').strip()}"
+    )
     lines.append("题目粒度：总结" if qa_detail_mode == "summary" else "题目粒度：单点")
     if text_facts:
-        lines.append("必须保留的正文事实：\n" + "\n\n".join(text_facts))
+        lines.append(
+            "回答依据（只用于限定答案范围，不要逐项复述数值、名单、步骤或日期）：\n"
+            + "\n\n".join(text_facts)
+        )
     if image_facts:
-        label = "必须同时涉及的图片事实" if evidence_mode == "mixed" else "必须涉及的图片事实"
+        label = "视觉回答依据（问题应围绕可观察视觉焦点，不要照搬图片数值）"
+        if evidence_mode == "mixed":
+            label = "视觉回答依据（本题必须保留视觉焦点，但不要照搬图片数值）"
         lines.append(label + "：\n" + "\n\n".join(image_facts))
     return "\n\n".join(line for line in lines if line.strip())
 
@@ -1014,6 +1074,9 @@ def call_evidence_answer_llm(
     evidence_ref_map = generation_unit.get("llm_evidence_ref_map")
     if not isinstance(evidence_ref_map, dict):
         evidence_ref_map = {}
+    evidence_text_by_ref = generation_unit.get("llm_evidence_text_by_ref")
+    if not isinstance(evidence_text_by_ref, dict):
+        evidence_text_by_ref = {}
     language_code, language_instruction = _resolve_generation_language(
         prompt_language,
         prompt_unit_text or source_chunk_text,
@@ -1040,7 +1103,42 @@ def call_evidence_answer_llm(
     raw = ""
     parse_error: Optional[str] = None
     dropped_reason = ""
+    initial_raw = ""
+    answer_attempt_count = 0
+    answer_retry_reason = ""
+    answer_retry_error = ""
+
+    def _normalize_answer(raw_items: List[Dict[str, Any]]) -> Tuple[Optional[Dict[str, Any]], str]:
+        if not raw_items:
+            return None, "missing_items"
+        raw_item = raw_items[0]
+        model_item = dict(raw_item)
+        model_item["question"] = candidate_question
+        model_item["question_type"] = question_type
+        normalized, reason = item_normalizer_with_reason(
+            model_item,
+            language_code=language_code,
+            expected_question_type=question_type,
+            fixed_knowledge_category=fixed_knowledge_category,
+            fixed_knowledge_category_confidence=fixed_knowledge_category_confidence,
+            fixed_knowledge_category_reason=fixed_knowledge_category_reason,
+        )
+        if not normalized:
+            return None, reason
+        raw_usage = raw_item.get("evidence_usage")
+        if isinstance(raw_usage, list):
+            normalized["evidence_usage"] = _restore_evidence_usage_ids(
+                raw_usage,
+                evidence_ref_map,
+            )[:12]
+        contract_ok, contract_reason = _evidence_usage_covers_contract(
+            normalized.get("evidence_usage") or [],
+            source_unit=source_unit_payload,
+        )
+        return (normalized, "ok") if contract_ok else (None, contract_reason)
+
     try:
+        answer_attempt_count = 1
         raw = client.create_chat_completion_text(
             model=model,
             messages=[
@@ -1073,42 +1171,40 @@ def call_evidence_answer_llm(
                     "response_type": response_type,
                     "response_dump": response_dump,
                     "raw_response": raw,
+                    "initial_raw_response": initial_raw,
+                    "answer_attempt_count": answer_attempt_count,
+                    "answer_retry_reason": answer_retry_reason or None,
+                    "answer_retry_error": answer_retry_error or None,
                     "parse_error": parse_error,
                 }
             )
         raise
 
-    normalized_item: Optional[Dict[str, Any]] = None
-    raw_item: Optional[Dict[str, Any]] = raw_items[0] if raw_items else None
-    if not raw_items:
-        dropped_reason = "missing_items"
-    else:
-        model_item = dict(raw_items[0])
-        model_item["question"] = candidate_question
-        model_item["question_type"] = question_type
-        normalized_item, dropped_reason = item_normalizer_with_reason(
-            model_item,
-            language_code=language_code,
-            expected_question_type=question_type,
-            fixed_knowledge_category=fixed_knowledge_category,
-            fixed_knowledge_category_confidence=fixed_knowledge_category_confidence,
-            fixed_knowledge_category_reason=fixed_knowledge_category_reason,
-        )
-        if normalized_item and raw_item:
-            evidence_usage = raw_item.get("evidence_usage")
-            if isinstance(evidence_usage, list):
-                normalized_item["evidence_usage"] = _restore_evidence_usage_ids(
-                    evidence_usage,
-                    evidence_ref_map,
-                )[:12]
-            restored_usage = normalized_item.get("evidence_usage") or []
-            contract_ok, contract_reason = _evidence_usage_covers_contract(
-                restored_usage,
-                source_unit=source_unit_payload,
-            )
-            if not contract_ok:
-                normalized_item = None
-                dropped_reason = contract_reason
+    initial_raw = raw
+    normalized_item, dropped_reason = _normalize_answer(raw_items)
+    retry_instruction = _answer_retry_instruction(dropped_reason, evidence_ref_map)
+    if normalized_item is None and retry_instruction:
+        answer_attempt_count = 2
+        answer_retry_reason = dropped_reason
+        retry_content = f"{user_content}\n\n补充要求：{retry_instruction}"
+        try:
+            raw = client.create_chat_completion_text(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": retry_content},
+                ],
+                temperature=0.0,
+                response_format={"type": "json_object"},
+                timeout=float(request_timeout),
+            ).strip()
+            response_type = "str"
+            response_dump = safe_response_dump(raw)
+            raw_items = _parse_json_items(raw)
+            normalized_item, dropped_reason = _normalize_answer(raw_items)
+            user_content = retry_content
+        except Exception as exc:
+            answer_retry_error = str(exc)
     if normalized_item:
         source_override_handler(
             normalized_item,
@@ -1152,6 +1248,11 @@ def call_evidence_answer_llm(
             normalized_item["evidence_chunk_ids"] = generation_unit.get("evidence_chunk_ids") or []
             normalized_item["qa_generation_unit_id"] = generation_unit.get("qa_generation_unit_id")
             normalized_item["qa_generation_unit_text"] = unit_text
+            normalized_item["qa_evaluation_evidence_text"] = _build_qa_evaluation_evidence_text(
+                normalized_item.get("evidence_usage"),
+                evidence_text_by_ref,
+                fallback=unit_text,
+            )
             normalized_item["evidence_mode"] = str(
                 source_unit_payload.get("evidence_mode") or "text"
             )
@@ -1191,6 +1292,10 @@ def call_evidence_answer_llm(
                 "response_type": response_type,
                 "response_dump": response_dump,
                 "raw_response": raw,
+                "initial_raw_response": initial_raw,
+                "answer_attempt_count": answer_attempt_count,
+                "answer_retry_reason": answer_retry_reason or None,
+                "answer_retry_error": answer_retry_error or None,
                 "parse_error": parse_error,
                 "items_raw_count": len(raw_items),
                 "items_validated_count": 1 if normalized_item else 0,

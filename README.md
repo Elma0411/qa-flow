@@ -176,8 +176,9 @@ Milvus 查询结果，而不是继续依赖已过期的 JSON 或 CSV 文件。
 - `POST /upload-evaluate-qa`
 - `POST /evaluate-qa-local`
 
-当前评价逻辑会优先使用问答生成阶段写入的 `qa_generation_unit_text` 作为
-来源文本；如果结果文件中没有该字段，才会退回使用旧字段。
+当前评价逻辑会优先使用答案实际引用的 `qa_evaluation_evidence_text` 作为
+来源文本；它只包含答案引用的正文/图片证据块。旧结果没有该字段时，才会退回
+使用完整 `qa_generation_unit_text` 和更早的来源字段。
 
 ## 文档块查询
 

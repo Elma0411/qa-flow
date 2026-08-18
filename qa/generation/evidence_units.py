@@ -274,6 +274,7 @@ class QADocumentEvidenceIndex:
 
         sections: List[str] = ["【必需正文证据】"]
         ref_map: Dict[str, Dict[str, Any]] = {}
+        evidence_text_by_ref: Dict[str, str] = {}
         rendered_required_ids: List[str] = []
         for position, material_id in enumerate(required_material_ids, start=1):
             material = material_by_id.get(material_id)
@@ -283,7 +284,9 @@ class QADocumentEvidenceIndex:
             path = _safe_text(material.get("node_path")) if material else _prompt_title_path(chunk)
             if not text:
                 text = _render_text_only(chunk.get("text"))
-            sections.append(f"{label}\n节点路径：{path or '未标注章节'}\n正文：{text}")
+            rendered_block = f"{label}\n节点路径：{path or '未标注章节'}\n正文：{text}"
+            sections.append(rendered_block)
+            evidence_text_by_ref[label] = rendered_block
             ref_map[label] = {
                 "chunk_id": chunk.get("chunk_id"),
                 "chunk_index": chunk.get("chunk_index"),
@@ -295,10 +298,12 @@ class QADocumentEvidenceIndex:
         if not rendered_required_ids:
             for position, chunk in enumerate(required_chunks, start=1):
                 label = f"正文证据-{position}"
-                sections.append(
+                rendered_block = (
                     f"{label}\n节点路径：{_prompt_title_path(chunk)}\n"
                     f"正文：{_render_text_only(chunk.get('text'))}"
                 )
+                sections.append(rendered_block)
+                evidence_text_by_ref[label] = rendered_block
                 ref_map[label] = {
                     "chunk_id": chunk.get("chunk_id"),
                     "chunk_index": chunk.get("chunk_index"),
@@ -315,7 +320,9 @@ class QADocumentEvidenceIndex:
             path = _safe_text(material.get("node_path")) if material else _prompt_title_path(chunk)
             if not text:
                 continue
-            sections.append(f"{label}\n节点路径：{path or '未标注章节'}\n正文：{text}")
+            rendered_block = f"{label}\n节点路径：{path or '未标注章节'}\n正文：{text}"
+            sections.append(rendered_block)
+            evidence_text_by_ref[label] = rendered_block
             ref_map[label] = {
                 "chunk_id": chunk.get("chunk_id"),
                 "chunk_index": chunk.get("chunk_index"),
@@ -337,10 +344,12 @@ class QADocumentEvidenceIndex:
         for position, (material_id, image_id, _image_ref, image) in enumerate(required_images, start=1):
             chunk = material_pointer(material_id)
             label = f"图片证据-{position}"
-            sections.append(
+            rendered_block = (
                 f"{label}\n节点路径：{_prompt_title_path(chunk)}\n"
                 f"图片事实：{_safe_text(image.get('description'))}"
             )
+            sections.append(rendered_block)
+            evidence_text_by_ref[label] = rendered_block
             ref_map[label] = {
                 "chunk_id": chunk.get("chunk_id"),
                 "chunk_index": chunk.get("chunk_index"),
@@ -358,7 +367,9 @@ class QADocumentEvidenceIndex:
                 rendered = (
                     f"节点路径：{title_path or '未标注章节'}\n正文：{rendered}"
                 )
-                sections.append(f"{label}\n{rendered}")
+                rendered_block = f"{label}\n{rendered}"
+                sections.append(rendered_block)
+                evidence_text_by_ref[label] = rendered_block
                 ref_map[label] = {
                     "chunk_id": chunk.get("chunk_id"),
                     "chunk_index": chunk.get("chunk_index"),
@@ -396,6 +407,7 @@ class QADocumentEvidenceIndex:
             "evidence_chunk_ids": evidence_ids,
             "qa_generation_unit_text": "\n\n".join(sections).strip(),
             "llm_evidence_ref_map": ref_map,
+            "llm_evidence_text_by_ref": evidence_text_by_ref,
             "retrieval_trace": trace,
         }
 

@@ -417,7 +417,8 @@ def evaluate_metric(client, metric: str, paper_text: str, qa_pair: Dict, config:
     try:
         # 为当前 QA 对选择可用的原文片段（优先使用流水线生成时附带的字段）
         source_text = (
-            qa_pair.get("qa_generation_unit_text")
+            qa_pair.get("qa_evaluation_evidence_text")
+            or qa_pair.get("qa_generation_unit_text")
             or qa_pair.get("source_fact_text")
             or qa_pair.get("source_fact")
             or qa_pair.get("source")
@@ -753,11 +754,12 @@ def evaluate_qa_pairs(
     def get_paper_text(qa_pair: Dict[str, Any]) -> str:
         """
         为单个 QA 对选择用于评估的“文章内容”:
-        - 优先使用流水线生成时附带的 qa_generation_unit_text / source_fact_text / source_fact / source
+        - 优先使用答案实际引用的评分证据，其次使用完整出题单元和旧来源字段
         - 若均不存在，则回退到全局文本（如果配置了 input_text）
         """
         return (
-            qa_pair.get("qa_generation_unit_text")
+            qa_pair.get("qa_evaluation_evidence_text")
+            or qa_pair.get("qa_generation_unit_text")
             or qa_pair.get("source_fact_text")
             or qa_pair.get("source_fact")
             or qa_pair.get("source")

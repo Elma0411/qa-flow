@@ -115,6 +115,7 @@ def _build_debug_payload(item: Dict[str, Any]) -> Dict[str, Any]:
         "evidence_chunk_ids": item.get("evidence_chunk_ids") or [],
         "qa_generation_unit_id": item.get("qa_generation_unit_id"),
         "qa_generation_unit_text": item.get("qa_generation_unit_text"),
+        "qa_evaluation_evidence_text": item.get("qa_evaluation_evidence_text"),
         "qa_generation_unit_index": item.get("qa_generation_unit_index"),
         "qa_generation_unit_type": item.get("qa_generation_unit_type"),
         "qa_generation_unit_mode": item.get("qa_generation_unit_mode"),

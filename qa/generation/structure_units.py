@@ -1332,6 +1332,24 @@ def _fallback_point_units(
     return fallback
 
 
+def _required_visual_text(unit: GenerationUnit) -> str:
+    required_ids = set(unit.required_image_ids)
+    if not required_ids:
+        return ""
+    descriptions: List[str] = []
+    for material in unit.prompt_materials:
+        if not isinstance(material, dict):
+            continue
+        for image in material.get("image_materials") or []:
+            if not isinstance(image, dict):
+                continue
+            image_ref = _safe_text(image.get("image_ref"))
+            image_id = _safe_text(unit.image_ref_map.get(image_ref))
+            if image_id in required_ids:
+                descriptions.append(_safe_text(image.get("description")))
+    return _collapse_text(" ".join(value for value in descriptions if value)).casefold()
+
+
 def _select_scenarios(
     candidates: Sequence[GenerationUnit],
     *,
@@ -1353,9 +1371,23 @@ def _select_scenarios(
             f"{unit.scenario_intent} {unit.reader_need}"
         ).casefold()
         unit_tokens = _token_set(unit_text)
+        unit_visual_text = _required_visual_text(unit)
         semantically_duplicated = False
         for existing in deduped:
-            if not set(unit.material_ids).intersection(existing.material_ids):
+            existing_visual_text = _required_visual_text(existing)
+            visual_duplicate = False
+            if unit_visual_text and existing_visual_text:
+                visual_containment = (
+                    min(len(unit_visual_text), len(existing_visual_text)) >= 24
+                    and (
+                        unit_visual_text in existing_visual_text
+                        or existing_visual_text in unit_visual_text
+                    )
+                )
+                visual_duplicate = visual_containment or (
+                    _jaccard(_token_set(unit_visual_text), _token_set(existing_visual_text)) >= 0.74
+                )
+            if not set(unit.material_ids).intersection(existing.material_ids) and not visual_duplicate:
                 continue
             existing_text = _collapse_text(
                 f"{existing.scenario_intent} {existing.reader_need}"
@@ -1364,7 +1396,7 @@ def _select_scenarios(
                 min(len(unit_text), len(existing_text)) >= 10
                 and (unit_text in existing_text or existing_text in unit_text)
             )
-            if containment or _jaccard(unit_tokens, _token_set(existing_text)) >= 0.78:
+            if visual_duplicate or containment or _jaccard(unit_tokens, _token_set(existing_text)) >= 0.78:
                 semantically_duplicated = True
                 break
         if semantically_duplicated:

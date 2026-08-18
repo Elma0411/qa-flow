@@ -341,7 +341,8 @@ def _augment_single(
                     "question_type": question_type,
                 },
                 source_material=str(
-                    qa.get("qa_generation_unit_text")
+                    qa.get("qa_evaluation_evidence_text")
+                    or qa.get("qa_generation_unit_text")
                     or qa.get("source_fact_text")
                     or answer
                     or ""

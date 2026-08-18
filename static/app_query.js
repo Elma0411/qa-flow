@@ -703,6 +703,9 @@ function buildQaDetailCard(item, options = {}) {
   if (item.qa_generation_unit_text) {
     card.appendChild(createCodeSection('出题单元', item.qa_generation_unit_text));
   }
+  if (item.qa_evaluation_evidence_text) {
+    card.appendChild(createCodeSection('评分依据', item.qa_evaluation_evidence_text));
+  }
   const retrievalTrace = item.retrieval_trace && typeof item.retrieval_trace === 'object'
     ? item.retrieval_trace
     : {};

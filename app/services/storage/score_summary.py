@@ -22,7 +22,8 @@ def _compute_unsupervised_scores_from_items(items: List[Dict[str, Any]]) -> Dict
     - coverage_score
     - f1: group-wise F1 macro mean (2PR/(P+R))
 
-    Grouping is based on normalized context (`source_fact_text` -> `context` -> `source` fallback).
+    Grouping is based on the actual cited evaluation evidence when available,
+    then normalized legacy context (`source_fact_text` -> `context` -> `source`).
     Missing metrics contribute 0.0.
     """
     groups: Dict[str, List[Dict[str, Any]]] = {}
@@ -30,7 +31,8 @@ def _compute_unsupervised_scores_from_items(items: List[Dict[str, Any]]) -> Dict
         if not isinstance(it, dict):
             continue
         context = (
-            it.get("qa_generation_unit_text")
+            it.get("qa_evaluation_evidence_text")
+            or it.get("qa_generation_unit_text")
             or it.get("source_fact_text")
             or it.get("context")
             or it.get("source")

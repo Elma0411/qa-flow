@@ -639,6 +639,9 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                             wall_detail, cumulative_detail = _extract_generation_timing_views(
                                 generation_timing_summary
                             )
+                            latency_percentiles = dict(
+                                generation_timing_summary.get("latency_percentiles") or {}
+                            )
                             raw_chunk_details = (info or {}).get("chunk_details")
                             if isinstance(raw_chunk_details, list):
                                 generation_chunk_details[:] = [
@@ -670,6 +673,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                                         "generation_timing": generation_timing_summary,
                                         "generation_wall_detail": wall_detail,
                                         "generation_cumulative_detail": cumulative_detail,
+                                        "latency_percentiles": latency_percentiles,
                                         "generation_unit_details": generation_unit_details,
                                         "generation_chunk_details": generation_chunk_details,
                                     },
@@ -991,6 +995,9 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                 generation_wall_detail, generation_cumulative_detail = _extract_generation_timing_views(
                     generation_timing_summary
                 )
+                latency_percentiles = dict(
+                    generation_timing_summary.get("latency_percentiles") or {}
+                )
                 qa_generation_skipped_by_budget = (
                     file_qa_total_limit is not None and int(file_qa_total_limit) <= 0
                 )
@@ -1139,6 +1146,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                         "generation_timing": generation_timing_summary,
                         "generation_wall_detail": generation_wall_detail,
                         "generation_cumulative_detail": generation_cumulative_detail,
+                        "latency_percentiles": latency_percentiles,
                         "generation_unit_details": generation_unit_details,
                         "generation_chunk_details": generation_chunk_details,
                         "unit_plan_summary": unit_plan_summary,
@@ -1436,6 +1444,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                         "generation_detail": generation_wall_detail,
                         "generation_wall_detail": generation_wall_detail,
                         "generation_cumulative_detail": generation_cumulative_detail,
+                        "latency_percentiles": latency_percentiles,
                         "generation_unit_details": generation_unit_details,
                         "generation_chunk_details": generation_chunk_details,
                         "unit_plan_summary": unit_plan_summary,
@@ -1562,6 +1571,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                             "generation_detail",
                             "generation_wall_detail",
                             "generation_cumulative_detail",
+                            "latency_percentiles",
                             "generation_unit_details",
                             "generation_chunk_details",
                             "unit_plan_summary",

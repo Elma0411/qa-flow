@@ -392,6 +392,7 @@ def build_consolidated_entry(
             "evidence_chunk_ids": merged.get("evidence_chunk_ids"),
             "qa_generation_unit_id": merged.get("qa_generation_unit_id"),
             "qa_generation_unit_text": merged.get("qa_generation_unit_text"),
+            "qa_evaluation_evidence_text": merged.get("qa_evaluation_evidence_text"),
             "qa_generation_unit_index": merged.get("qa_generation_unit_index"),
             "qa_generation_unit_type": merged.get("qa_generation_unit_type"),
             "qa_generation_unit_mode": merged.get("qa_generation_unit_mode"),

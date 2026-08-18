@@ -162,7 +162,13 @@ def _sentence_bleu_100(pred: str, ref: str) -> float:
 
 
 def _resolve_reference_text(qa: Dict[str, Any]) -> str:
-    for key in ("qa_generation_unit_text", "source_fact_text", "source_fact", "source"):
+    for key in (
+        "qa_evaluation_evidence_text",
+        "qa_generation_unit_text",
+        "source_fact_text",
+        "source_fact",
+        "source",
+    ):
         value = qa.get(key)
         if value:
             return str(value)

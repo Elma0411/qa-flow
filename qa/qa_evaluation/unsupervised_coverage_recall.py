@@ -505,7 +505,13 @@ def attach_coverage_recall(
     for item in qa_items:
         if only_primary and bool(item.get("is_augmented", False)):
             continue
-        context = item.get("qa_generation_unit_text") or item.get("source_fact_text") or item.get("context") or ""
+        context = (
+            item.get("qa_evaluation_evidence_text")
+            or item.get("qa_generation_unit_text")
+            or item.get("source_fact_text")
+            or item.get("context")
+            or ""
+        )
         context = str(context or "").strip()
         if not context:
             continue

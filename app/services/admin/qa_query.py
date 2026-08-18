@@ -375,6 +375,7 @@ def get_qa_item(qa_id: str) -> Dict[str, Any]:
         "evidence_chunk_ids": debug_payload.get("evidence_chunk_ids") or [],
         "qa_generation_unit_id": debug_payload.get("qa_generation_unit_id"),
         "qa_generation_unit_text": debug_payload.get("qa_generation_unit_text"),
+        "qa_evaluation_evidence_text": debug_payload.get("qa_evaluation_evidence_text"),
         "qa_generation_unit_index": debug_payload.get("qa_generation_unit_index"),
         "qa_generation_unit_type": debug_payload.get("qa_generation_unit_type"),
         "qa_generation_unit_mode": debug_payload.get("qa_generation_unit_mode"),

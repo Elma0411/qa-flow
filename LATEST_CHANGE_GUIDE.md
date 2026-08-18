@@ -4,40 +4,47 @@
 
 ## Objective
 
-将 QA 生成改为“planner 决定证据语义，后续模型只负责语言表达”的稳定链路：
+针对 `integrated_document_task_1786989603` 暴露的问答质量问题，完成第二轮
+QA 生成治理：在不改变 planner 证据契约的前提下，提高问题自然度、抑制重复图片题，
+并使文本/图片题的无参考评估只依据答案实际引用的证据。
 
-`SectionMaterial -> frozen ScenarioContract -> question writer -> wording editor -> retrieval -> evidence answer`
+链路保持为：
 
-本轮同时删除难度字段和题型理由，清理模型提示词中的内部字段污染，并让图片成为可引用、可评估的独立证据。
+`SectionMaterial -> frozen ScenarioContract -> question writer -> wording editor -> retrieval -> evidence answer -> cited-evidence evaluation`
 
 ## Effective Changes
 
-- planner 是唯一能决定 Point/Summary、required/optional materials、
-  `text|visual|mixed`、required images 和题型的阶段。映射为真实 ID 后的
-  `ScenarioContract` 不可被候选题、编辑器或答案调用改写。
-- Summary 最多绑定三份紧密相关的必需材料，避免“概括整份手册”式场景。
-- 分类模板改为 planner 专用的简短读者画像；候选题和答案不再注入完整分类模板。
-  few-shot 只作为可选、已审核、按 Point/Summary 匹配的一条风格示例；空配置不会
-  再向模型发送 `null`。
-- 候选题生成器输入为可读 writing brief，输出只有 `{"question":"..."}`。
-  不再让模型输出题型理由、难度、材料 refs、图片 refs 或证据模式。
-- 问题编辑器输入为原问题加 writing brief，输出也只有最终 `question`。它不再
-  返回 keep/rewrite/drop，也不再改材料、图片或证据模式。
-- 答案输入改为 `正文证据-N`、`图片证据-N` 和可选补充正文证据块。内部
-  `typed_primary_materials`、真实 chunk/image ID、原始 evidence_mode 字段不再
-  出现在模型输入。答案通过临时证据标签引用实际使用的正文/图片；后端恢复审计 ID。
-- `visual` 答案必须引用所有 required 图片证据；`mixed` 必须同时引用正文和图片
-  证据。评估可复用同一套已渲染证据，避免图片答案被误判为无依据。
-- 已从生成、验证、JSON/CSV、调试、API、搜索、管理页和 QA Milvus schema 删除
-  `difficulty_level`、`difficulty_score`、`question_type_reason`。
-  QA 向量集合升级为固定 `qa_pairs_collection_v2`，旧集合不再被应用读取或写入。
-- generation timing 新增每个阶段的 p50/p95；调试 unit 表展示“问题编辑”耗时，
-  且 valid QA 为 0 的 unit 显示“未产出”。
+- 借鉴 EasyDataset 的“选定信息焦点 → 静默检查 → 自然表达”思路，但没有复制其
+  多题全量提示词或推理策略。planner 只输出场景语义；候选题生成器和编辑器只输出
+  `{"question":"..."}`，不会重新判定材料、图片、Point/Summary 或证据模式。
+- writer/editor 提示词现在明确要求：问题只保留最少身份上下文，不提前复述数值、
+  日期、步骤或截图内容；规则、条件、期限和流程必须直接提问，不能生成“是否/能否/
+  是这样吗”式确认题；视觉题自然询问可观察界面事实，不写“图中/截图中”。
+- planner 的 `intent` 被约束为单一信息缺口。独立金额、条件、阶段和流程会拆成
+  Point；Summary 只保留一个读者结果，最多绑定三份紧密相关的必需材料。扫码、点击
+  或离开图片后才可能得到的外部结果不能规划为纯视觉题。
+- 必需图片描述高度相同的跨章节场景会在选择阶段去重，避免同一操作流程图片生成多道
+  近义题；不同材料但真正不同的图片事实仍可保留。
+- 答案首次因缺少必需正文/图片引用、遗漏 Summary 必需材料或空项而失败时，最多进行
+  一次定向重试。重试只补充缺失的可读证据标签，不改变冻结的场景契约；调试日志记录
+  首次响应、尝试次数、重试原因和错误。
+- 证据渲染器为每个 `正文证据-N`、`图片证据-N` 和补充证据保存对应可读文本。
+  答案通过引用校验后，后端生成并持久化 `qa_evaluation_evidence_text`：只包含该答案
+  实际引用的证据块。faithfulness、answerability、coverage、自动指标、LLM 评估、
+  汇总分组和问答增广都优先使用该字段；旧产物缺失时仍回退到完整出题单元。
+- 查询详情新增“评分依据”查看区，便于核对图片题是否真的使用了图片事实。真实
+  chunk/image ID 仍只留在后端审计字段，未写进 writer/editor 的提示词。
+- generation unit 的 `latency_percentiles`（包含候选题、编辑、检索、答案和总耗时
+  的 p50/p95）现在同时写入任务进度和最终 consolidated 产物。
 
-## Operational Note
+## Contract Notes
 
-当前运行时已创建 `qa_pairs_collection_v2` 并删除旧 `qa_pairs_collection`；现有
-QA Milvus 仅保留新版集合和独立的 `doc_content_chunks_v2` 文档集合。
+- 新 primary QA item 的 `qa_evaluation_evidence_text` 是评估首选上下文，不是新的
+  LLM 输入字段，也不替代完整的 `qa_generation_unit_text` 调试材料。
+- QA 向量集合仍固定为 `qa_pairs_collection_v2`；不会读取或写入旧
+  `qa_pairs_collection`，本轮没有新增 Milvus schema。
+- `difficulty_level`、`difficulty_score`、`question_type_reason` 仍不在生成、存储、
+  调试、搜索或向量 schema 中。
 
 ## Validation
 
@@ -45,9 +52,11 @@ QA Milvus 仅保留新版集合和独立的 `doc_content_chunks_v2` 文档集合
 docker exec qa-flow-runtime bash -lc 'cd /app && python -m compileall -q app qa scripts tests'
 docker exec qa-flow-runtime bash -lc 'cd /app && python -m unittest discover -s tests -v'
 docker exec qa-flow-runtime bash -lc 'cd /app && python -c "import app.main, qa.generation, qa.augmentation"'
+bash -ic 'node --check static/app.js && node --check static/admin.js && node --check static/app_render.js && node --check static/app_query.js'
 curl -fsS http://localhost:12000/health
 curl -fsS http://localhost:12000/test-connection
 curl -fsS http://localhost:12000/milvus-status
+curl -fsS http://localhost:11169/health
 ```
 
-修改文件必须保持 UTF-8 无 BOM。`AGENTS.md` 的既有本地修改仍属于用户，不纳入本轮提交。
+修改文件必须为 UTF-8 无 BOM。`AGENTS.md` 的既有本地修改属于用户，不纳入提交。

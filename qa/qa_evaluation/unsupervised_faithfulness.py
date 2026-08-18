@@ -867,7 +867,13 @@ def attach_faithfulness(
     def _extract_premise(item: Dict[str, Any]) -> str:
         if not isinstance(item, dict):
             return ""
-        for key in ("qa_generation_unit_text", "source_fact_text", "context", "source"):
+        for key in (
+            "qa_evaluation_evidence_text",
+            "qa_generation_unit_text",
+            "source_fact_text",
+            "context",
+            "source",
+        ):
             val = item.get(key)
             if isinstance(val, str) and val.strip():
                 return val.strip()

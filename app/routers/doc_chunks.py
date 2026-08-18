@@ -629,6 +629,7 @@ async def chunk_debug(
                 "evidence_chunk_ids": debug_detail.get("evidence_chunk_ids") or [],
                 "qa_generation_unit_id": debug_detail.get("qa_generation_unit_id"),
                 "qa_generation_unit_text": debug_detail.get("qa_generation_unit_text"),
+                "qa_evaluation_evidence_text": debug_detail.get("qa_evaluation_evidence_text"),
                 "qa_generation_unit_index": debug_detail.get("qa_generation_unit_index"),
                 "qa_generation_unit_type": debug_detail.get("qa_generation_unit_type"),
                 "qa_generation_unit_mode": debug_detail.get("qa_generation_unit_mode"),

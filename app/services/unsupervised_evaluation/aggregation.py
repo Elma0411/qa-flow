@@ -61,7 +61,13 @@ def _attach_suite_aggregates(
     for item in qa_items:
         if only_primary and bool(item.get("is_augmented", False)):
             continue
-        context = item.get("qa_generation_unit_text") or item.get("source_fact_text") or item.get("context") or ""
+        context = (
+            item.get("qa_evaluation_evidence_text")
+            or item.get("qa_generation_unit_text")
+            or item.get("source_fact_text")
+            or item.get("context")
+            or ""
+        )
         gid = _context_group_id(str(context or ""))
         groups.setdefault(gid, []).append(item)
 
@@ -174,7 +180,13 @@ def _attach_suite_aggregates(
                 "r_group": float(r_soft),
                 "f1_group": float(f1_group),
                 "context_id": _context_group_id(
-                    str(it.get("qa_generation_unit_text") or it.get("source_fact_text") or it.get("context") or "")
+                    str(
+                        it.get("qa_evaluation_evidence_text")
+                        or it.get("qa_generation_unit_text")
+                        or it.get("source_fact_text")
+                        or it.get("context")
+                        or ""
+                    )
                 ),
             }
 
@@ -214,7 +226,13 @@ def _compute_suite_four_scores(
     for item in qa_items:
         if only_primary and bool(item.get("is_augmented", False)):
             continue
-        context = item.get("qa_generation_unit_text") or item.get("source_fact_text") or item.get("context") or ""
+        context = (
+            item.get("qa_evaluation_evidence_text")
+            or item.get("qa_generation_unit_text")
+            or item.get("source_fact_text")
+            or item.get("context")
+            or ""
+        )
         gid = _context_group_id(str(context))
         groups.setdefault(gid, []).append(item)
 

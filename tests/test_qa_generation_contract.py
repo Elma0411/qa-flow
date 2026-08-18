@@ -35,6 +35,16 @@ class _StaticChatClient:
         return json.dumps(self.payload, ensure_ascii=False)
 
 
+class _SequentialChatClient:
+    def __init__(self, payloads):
+        self.payloads = list(payloads)
+        self.messages = []
+
+    def create_chat_completion_text(self, **kwargs):
+        self.messages.append(kwargs["messages"])
+        return json.dumps(self.payloads.pop(0), ensure_ascii=False)
+
+
 def _generation_unit(*, mode="text", required_images=None, required_materials=None):
     required_images = list(required_images or [])
     required_materials = list(required_materials or ["section-1"])
@@ -59,6 +69,10 @@ def _generation_unit(*, mode="text", required_images=None, required_materials=No
         },
     }
     rendered = "【必需正文证据】\n\n正文证据-1\n正文：正文事实。"
+    evidence_text_by_ref = {
+        "正文证据-1": "正文证据-1\n正文：正文事实。",
+        "正文证据-2": "正文证据-2\n正文：时限事实。",
+    }
     if mode in {"visual", "mixed"}:
         ref_map["图片证据-1"] = {
             "chunk_id": "chunk-1",
@@ -69,6 +83,7 @@ def _generation_unit(*, mode="text", required_images=None, required_materials=No
             "role": "primary_visual",
         }
         rendered += "\n\n【必需图片证据】\n\n图片证据-1\n图片事实：页面显示导出按钮。"
+        evidence_text_by_ref["图片证据-1"] = "图片证据-1\n图片事实：页面显示导出按钮。"
     return {
         "source_chunk": chunks[0],
         "source_chunks": chunks,
@@ -83,6 +98,7 @@ def _generation_unit(*, mode="text", required_images=None, required_materials=No
             "evidence_mode": mode,
         },
         "llm_evidence_ref_map": ref_map,
+        "llm_evidence_text_by_ref": evidence_text_by_ref,
     }
 
 
@@ -129,6 +145,8 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertIn('{"question":"..."}', candidate_prompt)
         self.assertIn('{"question":"..."}', editor_prompt)
         self.assertIn("图片证据", answer_prompt)
+        self.assertIn("确认式", candidate_prompt)
+        self.assertIn("不要逐项复述", candidate_prompt)
 
     def test_category_profile_stays_in_planning_and_few_shot_is_style_only(self):
         profile = build_planner_category_profile(
@@ -168,7 +186,8 @@ class QAGenerationContractTests(unittest.TestCase):
         )
         self.assertEqual([{"question": "婚前医学检查费用由谁承担？", "question_type": "简答题"}], items)
         user_content = client.messages[1]["content"]
-        self.assertIn("读者需求", user_content)
+        self.assertIn("提问焦点", user_content)
+        self.assertIn("回答依据", user_content)
         self.assertNotIn("private-chunk-id", user_content)
         self.assertNotIn("material_ref", user_content)
         self.assertNotIn("evidence_mode", user_content)
@@ -209,7 +228,7 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertEqual("申报通过后，可以在平台上查看或导出哪些信息？", edited["question"])
         self.assertEqual({"question", "question_type"}, set(edited))
         user_content = client.messages[1]["content"]
-        self.assertIn("必须同时涉及的图片事实", user_content)
+        self.assertIn("视觉回答依据", user_content)
         self.assertNotIn("required_image_refs", user_content)
         self.assertNotIn("evidence_mode", user_content)
 
@@ -280,6 +299,10 @@ class QAGenerationContractTests(unittest.TestCase):
         image_ref = generation_unit["llm_evidence_ref_map"]["图片证据-1"]
         self.assertEqual("image-1", image_ref["image_id"])
         self.assertEqual("primary_visual", image_ref["role"])
+        self.assertIn(
+            "页面提供导出按钮。",
+            generation_unit["llm_evidence_text_by_ref"]["图片证据-1"],
+        )
 
     def test_mixed_answer_requires_text_and_visual_citations(self):
         client = _StaticChatClient(
@@ -311,6 +334,9 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertEqual("ok", reason)
         self.assertEqual("mixed", item["evidence_mode"])
         self.assertEqual("image-1", item["evidence_usage"][1]["image_id"])
+        self.assertIn("正文证据-1", item["qa_evaluation_evidence_text"])
+        self.assertIn("图片证据-1", item["qa_evaluation_evidence_text"])
+        self.assertNotIn("正文证据-2", item["qa_evaluation_evidence_text"])
         self.assertIn("图片证据-1", client.messages[1]["content"])
         self.assertNotIn("typed_primary_materials", client.messages[1]["content"])
 
@@ -340,6 +366,50 @@ class QAGenerationContractTests(unittest.TestCase):
         )
         self.assertIsNone(item)
         self.assertEqual("missing_required_visual_evidence", reason)
+
+    def test_visual_contract_gets_one_targeted_answer_retry(self):
+        client = _SequentialChatClient(
+            [
+                {
+                    "items": [
+                        {
+                            "answer": "审核通过后可查看申报记录。",
+                            "answer_explanation": "正文说明了查询方式。",
+                            "source_fact_text": "审核通过后可查看申报记录。",
+                            "evidence_usage": [{"evidence_ref": "正文证据-1", "role": "primary_source"}],
+                        }
+                    ]
+                },
+                {
+                    "items": [
+                        {
+                            "answer": "审核通过后可查看申报记录，并通过页面导出按钮导出信息。",
+                            "answer_explanation": "正文和图片按钮共同支持查询与导出。",
+                            "source_fact_text": "审核通过后可查看申报记录；页面提供导出按钮。",
+                            "evidence_usage": [
+                                {"evidence_ref": "正文证据-1", "role": "primary_source"},
+                                {"evidence_ref": "图片证据-1", "role": "primary_visual"},
+                            ],
+                        }
+                    ]
+                },
+            ]
+        )
+        item, reason = call_evidence_answer_llm(
+            client=client,
+            model="test-model",
+            candidate={"question": "审核通过后可以做什么？", "question_type": "简答题"},
+            generation_unit=_generation_unit(mode="mixed", required_images=["image-1"]),
+            qa_detail_mode="summary",
+            prompt_language="zh",
+            request_timeout=10,
+            item_normalizer_with_reason=validate_and_normalize_item_with_reason,
+            source_override_handler=lambda *_args, **_kwargs: None,
+        )
+        self.assertEqual("ok", reason)
+        self.assertIsNotNone(item)
+        self.assertEqual(2, len(client.messages))
+        self.assertIn("必须使用并在 evidence_usage 中引用图片证据", client.messages[1][1]["content"])
 
     def test_summary_answer_requires_all_frozen_required_materials(self):
         client = _StaticChatClient(
@@ -375,6 +445,7 @@ class QAGenerationContractTests(unittest.TestCase):
             "answer": "登记机关负责办理。",
             "source": "c1",
             "source_fact_text": "登记机关负责办理。",
+            "qa_evaluation_evidence_text": "正文证据-1\n正文：登记机关负责办理。",
             "question_type": "简答题",
             "evidence_usage": [
                 {
@@ -409,6 +480,10 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertNotIn("difficulty_level", consolidated)
         self.assertNotIn("difficulty_score", consolidated)
         self.assertNotIn("question_type_reason", consolidated)
+        self.assertEqual(
+            "正文证据-1\n正文：登记机关负责办理。",
+            consolidated["qa_evaluation_evidence_text"],
+        )
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = str(Path(tmp_dir) / "qa-debug.sqlite3")
             with patch.dict("os.environ", {"QA_DEBUG_DB_PATH": db_path}):
@@ -416,6 +491,10 @@ class QAGenerationContractTests(unittest.TestCase):
                 debug_payload = get_debug_map([consolidated["id"]])[consolidated["id"]]
         self.assertNotIn("difficulty_level", debug_payload)
         self.assertNotIn("difficulty_score", debug_payload)
+        self.assertEqual(
+            "正文证据-1\n正文：登记机关负责办理。",
+            debug_payload["qa_evaluation_evidence_text"],
+        )
 
     def test_zero_final_evidence_k_is_preserved(self):
         runtime = parse_one_step_pipeline_runtime(

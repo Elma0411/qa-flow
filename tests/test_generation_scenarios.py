@@ -237,6 +237,49 @@ class GenerationScenarioTests(unittest.TestCase):
         self.assertEqual(["section-1", "section-2"], plan.units[0].required_material_ids)
         self.assertEqual([], plan.units[0].optional_material_ids)
 
+    def test_same_visual_flow_is_deduplicated_across_sections(self):
+        flow_description = "流程从人员申报开始，经单位诚信申报和经办机构审核，审核通过后进入缴费，审核不通过后返回重新申报。"
+        chunks = [
+            _chunk(
+                1,
+                "1.1",
+                "文档>经办机构流程",
+                "流程说明。",
+                image_materials=[{"image_id": "image-1", "description": flow_description, "context_before": "", "context_after": ""}],
+            ),
+            _chunk(
+                2,
+                "1.2",
+                "文档>参保单位流程",
+                "流程说明。",
+                image_materials=[{"image_id": "image-2", "description": flow_description, "context_before": "", "context_after": ""}],
+            ),
+        ]
+
+        def planner(materials, _count, _mode, **_kwargs):
+            return [
+                {
+                    "scenario_type": "point",
+                    "intent": f"了解{material.title_path}的完整流程",
+                    "reader_need": "了解申报流程",
+                    "required_material_ids": [material.material_id],
+                    "optional_material_ids": [],
+                    "evidence_mode": "visual",
+                    "required_image_ids": [material.image_materials[0].image_id],
+                }
+                for material in materials
+            ]
+
+        plan = plan_generation_units(
+            chunks,
+            qa_total_limit=2,
+            qa_per_chunk=1,
+            qa_detail_mode="point",
+            chunk_size=600,
+            scenario_planner=planner,
+        )
+        self.assertEqual(1, len(plan.units))
+
     def test_editor_returns_one_final_question_without_contract_fields(self):
         client = _JsonClient({"question": "材料齐全后，审核需要多久？"})
         edited, status = call_question_editor_llm(

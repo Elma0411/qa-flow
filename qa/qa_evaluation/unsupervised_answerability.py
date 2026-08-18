@@ -532,7 +532,8 @@ def attach_answerability(
         if only_primary and bool(item.get("is_augmented", False)):
             continue
         context = (
-            item.get("qa_generation_unit_text")
+            item.get("qa_evaluation_evidence_text")
+            or item.get("qa_generation_unit_text")
             or item.get("source_fact_text")
             or item.get("context")
             or item.get("source_text")
