@@ -40,6 +40,16 @@ class _JsonClient:
         return json.dumps(self.payload, ensure_ascii=False)
 
 
+class _SequentialJsonClient:
+    def __init__(self, payloads):
+        self.payloads = list(payloads)
+        self.messages = []
+
+    def create_chat_completion_text(self, **kwargs):
+        self.messages.append(kwargs["messages"])
+        return json.dumps(self.payloads.pop(0), ensure_ascii=False)
+
+
 class GenerationScenarioTests(unittest.TestCase):
     def test_planner_uses_aliases_and_rejects_internal_material_ids(self):
         chunks = [_chunk(1, "1.1", "文档>材料", "应提交身份证明。")]
@@ -144,6 +154,130 @@ class GenerationScenarioTests(unittest.TestCase):
             scenario_planner=planner,
         )
         self.assertEqual([], plan.units)
+
+    def test_summary_type_mismatch_gets_one_targeted_planner_retry(self):
+        chunks = [
+            _chunk(1, "1.1", "文档>申请材料", "应提交身份证明。"),
+            _chunk(2, "1.2", "文档>办理时限", "五个工作日内办结。"),
+        ]
+        client = _SequentialJsonClient(
+            [
+                {
+                    "items": [
+                        {
+                            "scenario_type": "point",
+                            "intent": "了解办理要求",
+                            "reader_need": "知道办理条件",
+                            "required_material_refs": ["主材料-A", "主材料-B"],
+                            "optional_material_refs": [],
+                            "evidence_mode": "text",
+                            "required_image_refs": [],
+                        }
+                    ]
+                },
+                {
+                    "items": [
+                        {
+                            "scenario_type": "summary",
+                            "intent": "完成办理前需要整体了解哪些要求？",
+                            "reader_need": "统筹准备办理事项",
+                            "required_material_refs": ["主材料-A", "主材料-B"],
+                            "optional_material_refs": [],
+                            "evidence_mode": "text",
+                            "required_image_refs": [],
+                        }
+                    ]
+                },
+            ]
+        )
+        captured = []
+
+        def planner(materials, count, mode, **kwargs):
+            return call_scenario_planner_llm(
+                client=client,
+                model="test",
+                section_materials=list(materials),
+                requested_count=count,
+                qa_detail_mode=mode,
+                prompt_language="zh",
+                request_timeout=10,
+                debug_writer=captured.append,
+                planning_batch_index=kwargs.get("planning_batch_index"),
+                planning_batch_count=kwargs.get("planning_batch_count"),
+            )
+
+        plan = plan_generation_units(
+            chunks,
+            qa_total_limit=1,
+            qa_per_chunk=1,
+            qa_detail_mode="summary",
+            chunk_size=600,
+            scenario_planner=planner,
+        )
+        self.assertEqual(1, len(plan.units))
+        self.assertEqual("summary", plan.units[0].qa_mode)
+        self.assertEqual(2, len(client.messages))
+        self.assertIn("本批次只接受 `summary`", client.messages[1][-1]["content"])
+        self.assertEqual(2, captured[0]["planning_attempt_count"])
+        self.assertEqual("scenario_type_mismatch", captured[0]["planner_retry_reason"])
+        planner_detail = plan.summary()["scenario_planner_batch_details"]["summary"][0]
+        self.assertEqual(2, planner_detail["planning_attempt_count"])
+        self.assertGreaterEqual(float(planner_detail["planner_seconds"]), 0.0)
+
+    def test_visual_alternative_is_promoted_over_same_material_text_candidate(self):
+        chunks = [
+            _chunk(
+                1,
+                "1.1",
+                "文档>网上申报操作",
+                "可通过平台办理申报。",
+                image_materials=[
+                    {
+                        "image_id": "image-1",
+                        "description": "上传前必须勾选同意协议，提交按钮才可使用。",
+                        "context_before": "",
+                        "context_after": "",
+                    }
+                ],
+            )
+        ]
+
+        def planner(materials, _count, _mode, **_kwargs):
+            material = materials[0]
+            return [
+                {
+                    "scenario_type": "point",
+                    "intent": "了解网上申报入口",
+                    "reader_need": "找到办理渠道",
+                    "required_material_ids": [material.material_id],
+                    "optional_material_ids": [],
+                    "evidence_mode": "text",
+                    "required_image_ids": [],
+                },
+                {
+                    "scenario_type": "point",
+                    "intent": "上传前需要完成什么确认操作？",
+                    "reader_need": "避免提交按钮不可用",
+                    "required_material_ids": [material.material_id],
+                    "optional_material_ids": [],
+                    "evidence_mode": "visual",
+                    "required_image_ids": ["image-1"],
+                },
+            ]
+
+        plan = plan_generation_units(
+            chunks,
+            qa_total_limit=1,
+            qa_per_chunk=1,
+            qa_detail_mode="point",
+            chunk_size=600,
+            scenario_planner=planner,
+        )
+        self.assertEqual(["image-1"], plan.units[0].required_image_ids)
+        self.assertEqual(
+            "promoted_visual_alternative_same_material",
+            plan.units[0].debug["selection_adjustment"],
+        )
 
     def test_same_section_fragments_and_images_stay_one_material(self):
         chunks = [
@@ -340,6 +474,26 @@ class GenerationScenarioTests(unittest.TestCase):
         deduped, dropped = _deduplicate_document_questions(items)
         self.assertEqual(2, len(deduped))
         self.assertEqual(1, dropped)
+
+    def test_document_dedup_uses_grounded_fact_overlap_across_materials(self):
+        items = [
+            {
+                "question": "本操作说明适用于哪些参保单位？",
+                "source_fact_text": "该操作文档适用于参加城镇职工养老保险的参保单位。",
+                "qa_generation_material_ids": ["section-1"],
+                "qa_generation_unit_mode": "point",
+            },
+            {
+                "question": "哪些用人单位需要办理缴费基数诚信申报？",
+                "source_fact_text": "该操作文档适用于参加城镇职工养老保险的参保单位。适用范围为全省参加城镇职工养老保险的用人单位（含个体工商户），不包含自由职业者单位。",
+                "qa_generation_material_ids": ["section-2"],
+                "qa_generation_unit_mode": "summary",
+            },
+        ]
+        deduped, dropped = _deduplicate_document_questions(items)
+        self.assertEqual(1, len(deduped))
+        self.assertEqual(1, dropped)
+        self.assertEqual("summary", deduped[0]["qa_generation_unit_mode"])
 
 
 if __name__ == "__main__":

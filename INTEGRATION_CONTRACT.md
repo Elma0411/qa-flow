@@ -494,7 +494,8 @@ Rules:
     `generation_wall_detail`.
   `generation_unit_details` is the compact per-generation-unit diagnostic list.
   Each entry includes the unit index, unit type, selected QA mode, anchor chunk,
-  source chunk indexes, target budget, generated item count, drop reasons, and
+  source chunk indexes, target budget, generated item count, drop reasons,
+  `answer_attempt_count`, `answer_retry_count`, `answer_retry_reasons`, and
   per-worker timing. `generation_chunk_details` is retained as a compatibility
   alias for older frontend/status consumers and does not carry raw timing
   intervals.
@@ -528,7 +529,11 @@ Rules:
   A required image promotes its owning Section Material to required before the
   contract is frozen.
   Image-bearing sections are considered for visual scenarios but no final
-  image-question quota is forced.
+  image-question quota is forced. If a text-only and a distinct visual
+  scenario compete for the same material at the selection boundary, the visual
+  scenario may replace the text alternative only when it adds an uncovered
+  image and asks an observable operation/state/feedback fact; static-number
+  screenshots are not promoted merely for diversity.
   In `qa_detail_mode=auto`, the planner builds both pools and the allocator
   targets 35% summary scenarios; missing summary capacity flows to point
   scenarios rather than being fabricated. Explicit `point` or `summary` mode
@@ -536,16 +541,23 @@ Rules:
   question. Large documents are planned in internal character-bounded batches:
   point batches may contain independent sections, while summary batches retain
   structural parent neighborhoods so related sibling sections remain visible.
-  Pool selection and conservative semantic final-question de-duplication are
-  document-wide and apply across Point/Summary pools. If a planner call
+  Pool selection and conservative grounded final-question de-duplication are
+  document-wide and apply across Point/Summary pools. After answers are
+  grounded, direct `source_fact_text` containment or strong fact overlap can
+  identify a repeated rule copied into different materials; a clearer Summary
+  representative is preferred over its duplicate Point item, then reserve
+  units fill any resulting shortfall. If a planner call
   underfills the point pool, deterministic
   one-material point scenarios fill only the missing capacity; summary
   scenarios are never synthesized as fallback. Planner calls use internal
   character-bounded batches and the shared `text_model_concurrency` pool passed
   from the pipeline runtime; no separate planner concurrency control is
   exposed. A
-  planner response is accepted only into the matching Point/Summary pool; a
-  mismatched `scenario_type` is discarded. One section material may still
+  planner response is accepted only into the matching Point/Summary pool. In
+  explicit Point-only or Summary-only mode, the output schema itself names the
+  only allowed type. If a nonempty batch is entirely rejected solely for a
+  type mismatch, one targeted same-batch correction retry is allowed; it never
+  changes materials, evidence mode, or the requested pool. One section material may still
   contribute several Point scenarios when their intents cover distinct facts.
   The plan may retain a small reserve of otherwise valid candidates. Reserve
   units run only when editor, answer, coverage, or document-level de-duplication
@@ -558,14 +570,19 @@ Rules:
 - Point and summary scenarios use distinct writing briefs. The candidate writer
   returns only `question`; backend code attaches the frozen question type. The
   final wording editor also returns only `question`. Both calls see a readable
-  brief containing subject, reader need, goal, required text facts, and any
-  required visual fact, but never material IDs, image IDs, retrieval metadata,
-  or scenario-contract field names. The editor may naturalize wording only; it
+  brief containing subject, a concise question object when available, reader
+  need, goal, required text facts, and any required visual fact, but never
+  material IDs, image IDs, retrieval metadata, or scenario-contract field
+  names. The writer/editor replace document deictics such as “本说明” with that
+  readable object. A permission, prohibition, or eligibility question may
+  remain in a yes/no form; the editor must not turn it into a how-to question
+  or broaden it into a policy overview. The backend protects this narrow
+  binary-to-procedural semantic regression if a model still makes it. The editor
   cannot return `keep`, `rewrite`, `drop`, evidence mode, or source mappings.
 - After the candidate-question and answer LLM calls, generation performs only
   structural normalization: required JSON fields, supported question types,
   valid multiple-choice options/correct option, valid judgment answers, and
-  conservative same-source semantic question de-duplication. It does not
+  conservative grounded semantic question de-duplication. It does not
   discard an otherwise structured QA
   item through ambiguous-reference, question-shape, source-fact segment,
   grounding, or source-anchor heuristics. Quality acceptance belongs to the
@@ -612,9 +629,11 @@ Rules:
 - `unit_plan_summary.scenario_planner_batch_details` is the planner audit
   surface. Each detail records the batch index/count, scenario type, material
   paths, requested/returned/validated counts, required/optional paths for each
-  scenario, `scenario_intent`, `reader_need`, dropped reasons, and any batch
-  error. The complete model prompt and `raw_response` remain in the registered
-  task debug JSONL and are available through the task-scoped debug endpoint.
+  scenario, `scenario_intent`, `reader_need`, dropped reasons, per-batch
+  `planner_seconds`, correction retry count/reason, and any batch error. The
+  complete model prompt, initial response when retried, and final `raw_response`
+  remain in the registered task debug JSONL and are available through the
+  task-scoped debug endpoint.
 - `doc_handoff` means document preprocessing has produced `file_contents` /
   `pre_split_chunks` for QA; it is not the terminal state of the full pipeline.
 

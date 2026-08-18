@@ -4,47 +4,41 @@
 
 ## Objective
 
-针对 `integrated_document_task_1786989603` 暴露的问答质量问题，完成第二轮
-QA 生成治理：在不改变 planner 证据契约的前提下，提高问题自然度、抑制重复图片题，
-并使文本/图片题的无参考评估只依据答案实际引用的证据。
+针对 `integrated_document_task_1787055720` 中暴露的生成链路问题，修复
+Summary 规划跑偏、问句语义被编辑器改坏、跨材料重复题、图片题覆盖不足，以及
+规划/答案重试的审计盲点。
 
-链路保持为：
-
-`SectionMaterial -> frozen ScenarioContract -> question writer -> wording editor -> retrieval -> evidence answer -> cited-evidence evaluation`
+本轮**不修改** faithfulness、answerability、coverage、平均分或任何过滤逻辑。
 
 ## Effective Changes
 
-- 借鉴 EasyDataset 的“选定信息焦点 → 静默检查 → 自然表达”思路，但没有复制其
-  多题全量提示词或推理策略。planner 只输出场景语义；候选题生成器和编辑器只输出
-  `{"question":"..."}`，不会重新判定材料、图片、Point/Summary 或证据模式。
-- writer/editor 提示词现在明确要求：问题只保留最少身份上下文，不提前复述数值、
-  日期、步骤或截图内容；规则、条件、期限和流程必须直接提问，不能生成“是否/能否/
-  是这样吗”式确认题；视觉题自然询问可观察界面事实，不写“图中/截图中”。
-- planner 的 `intent` 被约束为单一信息缺口。独立金额、条件、阶段和流程会拆成
-  Point；Summary 只保留一个读者结果，最多绑定三份紧密相关的必需材料。扫码、点击
-  或离开图片后才可能得到的外部结果不能规划为纯视觉题。
-- 必需图片描述高度相同的跨章节场景会在选择阶段去重，避免同一操作流程图片生成多道
-  近义题；不同材料但真正不同的图片事实仍可保留。
-- 答案首次因缺少必需正文/图片引用、遗漏 Summary 必需材料或空项而失败时，最多进行
-  一次定向重试。重试只补充缺失的可读证据标签，不改变冻结的场景契约；调试日志记录
-  首次响应、尝试次数、重试原因和错误。
-- 证据渲染器为每个 `正文证据-N`、`图片证据-N` 和补充证据保存对应可读文本。
-  答案通过引用校验后，后端生成并持久化 `qa_evaluation_evidence_text`：只包含该答案
-  实际引用的证据块。faithfulness、answerability、coverage、自动指标、LLM 评估、
-  汇总分组和问答增广都优先使用该字段；旧产物缺失时仍回退到完整出题单元。
-- 查询详情新增“评分依据”查看区，便于核对图片题是否真的使用了图片事实。真实
-  chunk/image ID 仍只留在后端审计字段，未写进 writer/editor 的提示词。
-- generation unit 的 `latency_percentiles`（包含候选题、编辑、检索、答案和总耗时
-  的 p50/p95）现在同时写入任务进度和最终 consolidated 产物。
+- Summary-only / Point-only planner 的 JSON 示例现在只允许当前批次类型；不再在
+  Summary 请求中展示 `point|summary`。如果一个非空批次因类型不匹配而全部失败，
+  后端仅做一次定向纠正重试。调试记录首次响应、重试原因、尝试次数和最终响应。
+- planner 的 `intent` 必须带上区分相近规则所需的主体、动作、条件或办理渠道，不能
+  使用“本说明”“该文件”“上述”等文档指代。不同阶段的“向经办机构提供资料”和
+  “线上上传文件”必须规划成不同场景。
+- writer/editor 保留合法的“是否/能否/还能……吗”许可、禁止和资格限制问句，不能
+  擅自改成“如何”或“有什么政策”。若模型仍把肯否题改成 how-to，后端保留原始
+  肯否关系。题干中的“本/该/这份说明、通知或文件”会用节点路径提取出的简短业务
+  对象替换，避免脱离文档后指代不明。
+- 图片仍是 `text|visual|mixed` 证据模式，而不是新的题型。没有固定图片配额；当
+  同一材料中一个未选视觉场景与一个已选文本场景竞争时，只有可观察的操作、状态、
+  分支、反馈或确认动作才会提升为视觉场景。纯数值截图不因多样性而替换文本题。
+- 文档级去重在答案落地后还会比较已引用的 `source_fact_text`。同一规则被不同章节
+  复述时，直接事实包含或强重叠会判为重复；Point/Summary 冲突时优先保留更完整的
+  Summary，随后按原有 reserve unit 机制补足目标数量。
+- generation unit 调试新增 `answer_attempt_count`、`answer_retry_count` 和
+  `answer_retry_reasons`。场景规划批次新增 `planner_seconds`、重试次数和原因；
+  页面可显示这些信息，并可查看重试前的规划原始响应。
 
 ## Contract Notes
 
-- 新 primary QA item 的 `qa_evaluation_evidence_text` 是评估首选上下文，不是新的
-  LLM 输入字段，也不替代完整的 `qa_generation_unit_text` 调试材料。
-- QA 向量集合仍固定为 `qa_pairs_collection_v2`；不会读取或写入旧
-  `qa_pairs_collection`，本轮没有新增 Milvus schema。
-- `difficulty_level`、`difficulty_score`、`question_type_reason` 仍不在生成、存储、
-  调试、搜索或向量 schema 中。
+- planner 继续是唯一决定 Point/Summary、required/optional materials、图片和
+  `evidence_mode` 的阶段；writer/editor/answer 不会重分类这些语义字段。
+- 新增的去重和编辑保护不会改变冻结的 `ScenarioContract`，也不向模型暴露真实
+  chunk/image ID 或其他内部字段。
+- 本轮未改动 QA Milvus schema、`qa_pairs_collection_v2`、评分字段或分数阈值。
 
 ## Validation
 

@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import random
+import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from qa.common import (
@@ -441,6 +442,74 @@ def _select_style_example(
     return ""
 
 
+_DOCUMENT_DEICTIC_RE = re.compile(
+    r"(?:本|这份|该)(?:操作说明|说明|通知|文件|手册|指南|材料|文档)"
+)
+_GENERIC_SECTION_LABEL_RE = re.compile(
+    r"^(?:[（(]?[一二三四五六七八九十0-9]+[）).、．\s]*)?"
+    r"(?:适用范围|功能说明|政策依据|注意事项|操作步骤|业务操作要点说明|"
+    r"业务办理流程说明|业务办理渠道说明|更多详情.*)$"
+)
+_BINARY_CONSTRAINT_RE = re.compile(
+    r"(?:是否|能否|可否|可不可以|能不能|还(?:能|可以)|"
+    r"(?:可以|能够|能|会|不得|不能).{0,18}(?:吗|？|\?))",
+    re.IGNORECASE,
+)
+_PROCEDURAL_QUESTION_RE = re.compile(
+    r"(?:如何|怎么(?:样)?|怎样|怎么办|应当如何|该如何)",
+    re.IGNORECASE,
+)
+
+
+def _clean_question_subject_part(value: Any) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"^#{1,6}\s*", "", text)
+    text = re.sub(r"^(?:[（(]?[一二三四五六七八九十0-9]+[）).、．\s]*)+", "", text)
+    return text.strip(" -_：:")
+
+
+def _question_object_label(meta: Optional[Dict[str, Any]]) -> str:
+    """Choose a short business/object name for repairing document deictics."""
+    candidates: List[str] = []
+    for path in _prompt_paths_from_meta(meta):
+        parts = [
+            _clean_question_subject_part(part)
+            for part in path.replace("＞", ">").split(">")
+        ]
+        for part in reversed(parts):
+            if not part or _GENERIC_SECTION_LABEL_RE.fullmatch(part):
+                continue
+            if 4 <= len(part) <= 72:
+                candidates.append(part)
+                if re.search(r"(操作说明|使用说明|指南|手册|申报|办理|服务)", part):
+                    return part
+    for value in candidates:
+        if not _GENERIC_SECTION_LABEL_RE.fullmatch(value):
+            return value
+    source_meta = meta if isinstance(meta, dict) else {}
+    subject = _clean_question_subject_part(source_meta.get("qa_generation_unit_subject_label"))
+    return subject if 4 <= len(subject) <= 72 else ""
+
+
+def _repair_document_deictic(question: str, *, question_object: str) -> str:
+    text = str(question or "").strip()
+    if not text or not question_object:
+        return text
+    return _DOCUMENT_DEICTIC_RE.sub(question_object, text).strip()
+
+
+def _preserve_binary_question_form(original_question: str, edited_question: str) -> bool:
+    """Keep a valid permission/prohibition question from becoming a how-to question."""
+    original = str(original_question or "").strip()
+    edited = str(edited_question or "").strip()
+    return bool(
+        original
+        and edited
+        and _BINARY_CONSTRAINT_RE.search(original)
+        and _PROCEDURAL_QUESTION_RE.search(edited)
+    )
+
+
 def _build_question_writing_brief(
     *,
     source_material: str,
@@ -468,6 +537,7 @@ def _build_question_writing_brief(
     }
     evidence_mode = str(meta.get("qa_generation_unit_evidence_mode") or "text").strip().lower()
     subject = str(meta.get("qa_generation_unit_subject_label") or "").strip()
+    question_object = _question_object_label(meta)
     text_facts: List[str] = []
     image_facts: List[str] = []
     if isinstance(prompt_materials, list) and prompt_materials:
@@ -497,6 +567,11 @@ def _build_question_writing_brief(
     lines = []
     if subject:
         lines.append(f"主体：{subject}")
+    if question_object and question_object != subject:
+        lines.append(
+            "问题对象（题干出现“本/该/这份说明、通知或文件”时，用此名称替换）："
+            f"{question_object}"
+        )
     lines.append(f"提问焦点：{str(scenario_intent or '').strip()}")
     lines.append(
         "读者情境（只用于选择口吻，不要逐项写入题干）："
@@ -562,6 +637,8 @@ def call_scenario_planner_llm(
     debug_writer: Optional[Callable[[Dict[str, Any]], None]] = None,
     planning_batch_index: Optional[int] = None,
     planning_batch_count: Optional[int] = None,
+    _allow_scenario_type_retry: bool = True,
+    _planner_retry_context: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Plan typed scenarios using opaque aliases mapped back by the backend."""
     if requested_count <= 0 or not section_materials:
@@ -612,13 +689,30 @@ def call_scenario_planner_llm(
         ),
     )
     user_content = json.dumps({"materials": readable_materials}, ensure_ascii=False)
+    retry_context = dict(_planner_retry_context or {})
+    expected_scenario_type = str(qa_detail_mode or "").strip().lower()
+    retry_instruction = ""
+    if retry_context and expected_scenario_type in {"point", "summary"}:
+        if language_code == "en":
+            retry_instruction = (
+                f"Correction: this batch accepts only `{expected_scenario_type}` items. "
+                f"Set every `scenario_type` to `{expected_scenario_type}` and return the JSON again."
+            )
+        else:
+            retry_instruction = (
+                f"纠正：本批次只接受 `{expected_scenario_type}` 场景。"
+                f"每一条 `scenario_type` 都必须填写 `{expected_scenario_type}`，请重新返回 JSON。"
+            )
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
+    ]
+    if retry_instruction:
+        messages.append({"role": "user", "content": retry_instruction})
     try:
         raw = client.create_chat_completion_text(
             model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ],
+            messages=messages,
             temperature=0.0,
             response_format={"type": "json_object"},
             timeout=float(request_timeout),
@@ -644,12 +738,14 @@ def call_scenario_planner_llm(
                     ],
                     "system_prompt": system_prompt,
                     "user_content": user_content,
+                    "planner_retry_instruction": retry_instruction or None,
+                    "planning_attempt_count": 2 if retry_context else 1,
+                    "initial_raw_response": retry_context.get("initial_raw_response"),
                     "parse_error": str(exc),
                 }
             )
         raise
     raw_items = _parse_json_items(raw)
-    expected_scenario_type = str(qa_detail_mode or "").strip().lower()
     normalized: List[Dict[str, Any]] = []
     dropped: Dict[str, int] = {}
     for item in raw_items:
@@ -796,6 +892,33 @@ def call_scenario_planner_llm(
                 ],
             }
         )
+    only_scenario_type_mismatch = (
+        _allow_scenario_type_retry
+        and expected_scenario_type in {"point", "summary"}
+        and bool(raw_items)
+        and not normalized
+        and set(dropped) == {"scenario_type_mismatch"}
+    )
+    if only_scenario_type_mismatch:
+        return call_scenario_planner_llm(
+            client=client,
+            model=model,
+            section_materials=section_materials,
+            requested_count=requested_count,
+            qa_detail_mode=qa_detail_mode,
+            prompt_language=prompt_language,
+            request_timeout=request_timeout,
+            knowledge_category=knowledge_category,
+            debug_writer=debug_writer,
+            planning_batch_index=planning_batch_index,
+            planning_batch_count=planning_batch_count,
+            _allow_scenario_type_retry=False,
+            _planner_retry_context={
+                "initial_raw_response": raw,
+                "initial_items_raw_count": len(raw_items),
+                "initial_dropped_validation_reasons": dict(dropped),
+            },
+        )
     if debug_writer:
         debug_writer(
             {
@@ -816,6 +939,14 @@ def call_scenario_planner_llm(
                 ],
                 "system_prompt": system_prompt,
                 "user_content": user_content,
+                "planner_retry_reason": "scenario_type_mismatch" if retry_context else None,
+                "planner_retry_instruction": retry_instruction or None,
+                "planning_attempt_count": 2 if retry_context else 1,
+                "initial_raw_response": retry_context.get("initial_raw_response"),
+                "initial_items_raw_count": retry_context.get("initial_items_raw_count"),
+                "initial_dropped_validation_reasons": retry_context.get(
+                    "initial_dropped_validation_reasons"
+                ),
                 "raw_response": raw,
                 "items_raw_count": len(raw_items),
                 "items_validated_count": len(normalized),
@@ -829,6 +960,13 @@ def call_scenario_planner_llm(
             "items_raw_count": len(raw_items),
             "items_validated_count": len(normalized),
             "dropped_validation_reasons": dropped,
+            "planning_attempt_count": 2 if retry_context else 1,
+            "planner_retry_reason": "scenario_type_mismatch" if retry_context else "",
+            "initial_raw_response": retry_context.get("initial_raw_response"),
+            "initial_items_raw_count": retry_context.get("initial_items_raw_count"),
+            "initial_dropped_validation_reasons": retry_context.get(
+                "initial_dropped_validation_reasons"
+            ),
         },
     )
 
@@ -909,6 +1047,21 @@ def call_question_editor_llm(
     except Exception:
         parsed = {}
     edited_question = str(parsed.get("question") or "").strip() if isinstance(parsed, dict) else ""
+    question_object = _question_object_label(editor_meta)
+    semantic_guard = ""
+    if edited_question:
+        edited_question = _repair_document_deictic(
+            edited_question,
+            question_object=question_object,
+        )
+        if _preserve_binary_question_form(original_question, edited_question):
+            edited_question = _repair_document_deictic(
+                original_question,
+                question_object=question_object,
+            )
+            semantic_guard = "preserved_binary_question_form"
+        elif edited_question != str(parsed.get("question") or "").strip():
+            semantic_guard = "repaired_document_reference"
     result = dict(candidate) if edited_question else None
     if result is not None:
         result["question"] = edited_question
@@ -923,8 +1076,9 @@ def call_question_editor_llm(
                 "scenario_intent": scenario_intent,
                 "reader_need": reader_need,
                 "original_question": original_question,
-                "editor_decision": "edited" if result is not None else "invalid",
+                "editor_decision": semantic_guard or ("edited" if result is not None else "invalid"),
                 "edited_question": edited_question,
+                "question_object": question_object or None,
                 "system_prompt": system_prompt,
                 "user_content": user_content,
                 "raw_response": raw,
@@ -1065,6 +1219,7 @@ def call_evidence_answer_llm(
     fixed_knowledge_category_reason: str = "",
     chunk_index: Optional[int] = None,
     debug_writer: Optional[Callable[[Dict[str, Any]], None]] = None,
+    answer_audit: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[Dict[str, Any]], str]:
     source_chunk = generation_unit.get("source_chunk") or {}
     source_chunk_text = str(source_chunk.get("text") or "").strip()
@@ -1107,6 +1262,18 @@ def call_evidence_answer_llm(
     answer_attempt_count = 0
     answer_retry_reason = ""
     answer_retry_error = ""
+
+    def _write_answer_audit(final_reason: str) -> None:
+        if not isinstance(answer_audit, dict):
+            return
+        answer_audit.update(
+            {
+                "answer_attempt_count": answer_attempt_count,
+                "answer_retry_reason": answer_retry_reason or None,
+                "answer_retry_error": answer_retry_error or None,
+                "final_reason": final_reason,
+            }
+        )
 
     def _normalize_answer(raw_items: List[Dict[str, Any]]) -> Tuple[Optional[Dict[str, Any]], str]:
         if not raw_items:
@@ -1178,6 +1345,7 @@ def call_evidence_answer_llm(
                     "parse_error": parse_error,
                 }
             )
+        _write_answer_audit("answer_generation_error")
         raise
 
     initial_raw = raw
@@ -1302,7 +1470,9 @@ def call_evidence_answer_llm(
                 "dropped_reason": "" if normalized_item else dropped_reason,
             }
         )
-    return normalized_item, "ok" if normalized_item else dropped_reason
+    final_reason = "ok" if normalized_item else dropped_reason
+    _write_answer_audit(final_reason)
+    return normalized_item, final_reason
 
 
 

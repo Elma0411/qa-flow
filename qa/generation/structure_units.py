@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
@@ -21,6 +22,9 @@ SCENARIO_TYPE_POINT = "point"
 SCENARIO_TYPE_SUMMARY = "summary"
 DEFAULT_AUTO_SUMMARY_RATIO = 0.35
 DEFAULT_SCENARIO_PLANNING_BATCH_CHARS = 24000
+_STATIC_VISUAL_VALUE_INTENT_RE = re.compile(
+    r"(?:多少|几(?:个|次|天|元|条|项)?|上限|下限|比例|金额|数值|编号|日期|年度)"
+)
 
 
 def _safe_text(value: Any) -> str:
@@ -767,6 +771,7 @@ def _plan_scenario_pool(
         batch: Sequence[SectionMaterial],
         count: int,
     ) -> Tuple[int, List[Dict[str, Any]], Dict[str, Any]]:
+        started_at = time.perf_counter()
         raw_items = _invoke_scenario_planner(
             scenario_planner,
             batch,
@@ -776,10 +781,12 @@ def _plan_scenario_pool(
             batch_count=len(batches),
         )
         metadata = getattr(raw_items, "debug_metadata", {})
+        detail = dict(metadata) if isinstance(metadata, dict) else {}
+        detail["planner_seconds"] = time.perf_counter() - started_at
         return (
             batch_index,
             [item for item in raw_items if isinstance(item, dict)],
-            dict(metadata) if isinstance(metadata, dict) else {},
+            detail,
         )
 
     results_by_batch: Dict[int, List[Dict[str, Any]]] = {}
@@ -873,6 +880,16 @@ def _plan_scenario_pool(
                 "raw_response_available": bool(
                     metadata_by_batch.get(batch_index, {}).get("raw_response")
                 ),
+                "planner_seconds": metadata_by_batch.get(batch_index, {}).get(
+                    "planner_seconds"
+                ),
+                "planning_attempt_count": metadata_by_batch.get(batch_index, {}).get(
+                    "planning_attempt_count", 1
+                ),
+                "planner_retry_reason": metadata_by_batch.get(batch_index, {}).get(
+                    "planner_retry_reason"
+                )
+                or None,
                 "error": errors_by_batch.get(batch_index),
                 "material_count": len(batch),
                 "material_paths": [material.title_path for material in batch if material.title_path],
@@ -1350,6 +1367,65 @@ def _required_visual_text(unit: GenerationUnit) -> str:
     return _collapse_text(" ".join(value for value in descriptions if value)).casefold()
 
 
+def _promote_visual_alternatives(
+    selected: List[GenerationUnit],
+    *,
+    candidates: Sequence[GenerationUnit],
+) -> List[GenerationUnit]:
+    """Keep one useful visual alternative when the same material already won text-only.
+
+    This is deliberately not an image quota.  A visual unit is promoted only
+    when it preserves the Point/Summary mix and replaces a selected text-only
+    alternative over the same required material.  The displaced unit becomes a
+    reserve candidate, so a later document-level duplicate drop can still fill
+    the requested QA count.
+    """
+    promoted = list(selected)
+    for candidate in sorted(
+        candidates,
+        key=lambda unit: (unit.anchor_chunk_index, unit.qa_mode, unit.unit_id),
+    ):
+        if not candidate.required_image_ids:
+            continue
+        if _STATIC_VISUAL_VALUE_INTENT_RE.search(candidate.scenario_intent):
+            # Numeric screenshots are still allowed when the planner selected
+            # them directly, but they do not displace a text scenario merely
+            # for evidence-mode diversity.
+            continue
+        if any(unit.unit_id == candidate.unit_id for unit in promoted):
+            continue
+        covered_images = {
+            image_id
+            for unit in promoted
+            for image_id in unit.required_image_ids
+        }
+        if set(candidate.required_image_ids).issubset(covered_images):
+            continue
+        candidate_materials = set(candidate.required_material_ids or candidate.material_ids)
+        replacement_indexes = [
+            index
+            for index, existing in enumerate(promoted)
+            if existing.qa_mode == candidate.qa_mode
+            and not existing.required_image_ids
+            and candidate_materials.intersection(
+                existing.required_material_ids or existing.material_ids
+            )
+        ]
+        if not replacement_indexes:
+            continue
+        replacement_index = replacement_indexes[-1]
+        displaced = promoted[replacement_index]
+        promoted[replacement_index] = replace(
+            candidate,
+            debug={
+                **dict(candidate.debug or {}),
+                "selection_adjustment": "promoted_visual_alternative_same_material",
+                "replaced_unit_id": displaced.unit_id,
+            },
+        )
+    return promoted
+
+
 def _select_scenarios(
     candidates: Sequence[GenerationUnit],
     *,
@@ -1428,6 +1504,7 @@ def _select_scenarios(
                 pools[SCENARIO_TYPE_SUMMARY][len(selected_summary) : len(selected_summary) + remaining]
             )
         selected = selected_point + selected_summary
+    selected = _promote_visual_alternatives(selected, candidates=deduped)
     selected.sort(key=lambda unit: (unit.anchor_chunk_index, unit.qa_mode, unit.unit_id))
     selected = [unit.with_index_and_budget(index, 1) for index, unit in enumerate(selected, 1)]
     selected_ids = {unit.unit_id for unit in selected}

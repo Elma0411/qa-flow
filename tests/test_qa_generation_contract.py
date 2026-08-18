@@ -19,6 +19,7 @@ from qa.prompts.qa_generation_prompts import (
     build_evidence_answer_system_prompt,
     build_planner_category_profile,
     build_question_editor_system_prompt,
+    build_scenario_planner_system_prompt,
 )
 from qa.retrieval import EvidenceWindow
 from qa.text_to_qa_pipeline import _unit_latency_percentiles
@@ -145,8 +146,19 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertIn('{"question":"..."}', candidate_prompt)
         self.assertIn('{"question":"..."}', editor_prompt)
         self.assertIn("图片证据", answer_prompt)
-        self.assertIn("确认式", candidate_prompt)
+        self.assertIn("肯否关系", candidate_prompt)
         self.assertIn("不要逐项复述", candidate_prompt)
+
+    def test_summary_planner_prompt_only_allows_summary_schema(self):
+        prompt = build_scenario_planner_system_prompt(
+            language_code="zh",
+            language_instruction="请使用简体中文。",
+            requested_count=2,
+            qa_detail_mode="summary",
+        )
+        self.assertIn('"scenario_type":"summary"', prompt)
+        self.assertNotIn('"scenario_type":"point|summary"', prompt)
+        self.assertIn("本批次只规划总结场景", prompt)
 
     def test_category_profile_stays_in_planning_and_few_shot_is_style_only(self):
         profile = build_planner_category_profile(
@@ -231,6 +243,48 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertIn("视觉回答依据", user_content)
         self.assertNotIn("required_image_refs", user_content)
         self.assertNotIn("evidence_mode", user_content)
+
+    def test_editor_preserves_binary_permission_question_form(self):
+        records = []
+        client = _StaticChatClient({"question": "申报成功后，人员缴费基数应当如何修改？"})
+        candidate = {"question": "申报成功后，还能修改人员缴费基数吗？", "question_type": "简答题"}
+        edited, status = call_question_editor_llm(
+            client=client,
+            model="test-model",
+            candidate=candidate,
+            source_material="一旦申报成功，将不能再修改人员缴费基数。",
+            scenario_intent="确认申报成功后能否修改人员缴费基数",
+            reader_need="确认申报成功后的修改限制",
+            qa_detail_mode="point",
+            prompt_language="zh",
+            request_timeout=10,
+            debug_writer=records.append,
+        )
+        self.assertEqual("edited", status)
+        self.assertEqual(candidate["question"], edited["question"])
+        self.assertEqual("preserved_binary_question_form", records[0]["editor_decision"])
+
+    def test_editor_replaces_document_deictic_with_business_object(self):
+        client = _StaticChatClient({"question": "这份操作说明适用于哪些参保单位？"})
+        edited, status = call_question_editor_llm(
+            client=client,
+            model="test-model",
+            candidate={"question": "本操作说明适用于哪些参保单位？", "question_type": "简答题"},
+            source_material="该操作文档适用于参加城镇职工养老保险的参保单位。",
+            scenario_intent="明确适用单位",
+            reader_need="判断是否属于适用范围",
+            qa_detail_mode="point",
+            prompt_language="zh",
+            request_timeout=10,
+            source_chunk_meta={
+                "qa_generation_unit_material_paths": [
+                    "陕西省通知>单位缴费基数诚信申报操作使用说明（参保单位版）>一.适用范围"
+                ],
+            },
+        )
+        self.assertEqual("edited", status)
+        self.assertNotIn("这份操作说明", edited["question"])
+        self.assertIn("单位缴费基数诚信申报操作使用说明", edited["question"])
 
     def test_evidence_renderer_separates_text_and_image_blocks(self):
         index = QADocumentEvidenceIndex(
@@ -395,6 +449,7 @@ class QAGenerationContractTests(unittest.TestCase):
                 },
             ]
         )
+        answer_audit = {}
         item, reason = call_evidence_answer_llm(
             client=client,
             model="test-model",
@@ -405,11 +460,14 @@ class QAGenerationContractTests(unittest.TestCase):
             request_timeout=10,
             item_normalizer_with_reason=validate_and_normalize_item_with_reason,
             source_override_handler=lambda *_args, **_kwargs: None,
+            answer_audit=answer_audit,
         )
         self.assertEqual("ok", reason)
         self.assertIsNotNone(item)
         self.assertEqual(2, len(client.messages))
         self.assertIn("必须使用并在 evidence_usage 中引用图片证据", client.messages[1][1]["content"])
+        self.assertEqual(2, answer_audit["answer_attempt_count"])
+        self.assertEqual("missing_required_visual_evidence", answer_audit["answer_retry_reason"])
 
     def test_summary_answer_requires_all_frozen_required_materials(self):
         client = _StaticChatClient(

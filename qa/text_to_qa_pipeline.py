@@ -179,12 +179,75 @@ def _question_semantic_tokens(value: Any) -> set[str]:
     return ascii_tokens | cjk_tokens
 
 
+def _token_dice(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    return (2.0 * len(left & right)) / (len(left) + len(right))
+
+
+def _source_fact_overlap(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+    """Recognize repeated grounded facts, including copied policy text.
+
+    The normal question-text duplicate guard must not collapse unrelated
+    sections merely because they share a topic. This narrower check applies
+    only after the answer is grounded and requires direct source-fact overlap.
+    """
+    left_fact = _question_identity(left.get("source_fact_text"))
+    right_fact = _question_identity(right.get("source_fact_text"))
+    if not left_fact or not right_fact:
+        return False
+    if min(len(left_fact), len(right_fact)) >= 16 and (
+        left_fact in right_fact or right_fact in left_fact
+    ):
+        return True
+    left_fact_tokens = _question_semantic_tokens(left_fact)
+    right_fact_tokens = _question_semantic_tokens(right_fact)
+    fact_dice = _token_dice(left_fact_tokens, right_fact_tokens)
+    if fact_dice < 0.62:
+        return False
+    question_dice = _token_dice(
+        _question_semantic_tokens(left.get("question")),
+        _question_semantic_tokens(right.get("question")),
+    )
+    return question_dice >= 0.24
+
+
+def _is_summary_item(item: Dict[str, Any]) -> bool:
+    return str(item.get("qa_generation_unit_mode") or "").strip().lower() == "summary"
+
+
+def _has_document_deictic(question: Any) -> bool:
+    return bool(
+        re.search(
+            r"(?:本|这份|该)(?:操作说明|说明|通知|文件|手册|指南|材料|文档)",
+            str(question or ""),
+        )
+    )
+
+
+def _prefer_duplicate_item(current: Dict[str, Any], candidate: Dict[str, Any]) -> bool:
+    """Select the more complete and standalone representative of one fact."""
+    current_summary = _is_summary_item(current)
+    candidate_summary = _is_summary_item(candidate)
+    if current_summary != candidate_summary:
+        return candidate_summary
+    current_deictic = _has_document_deictic(current.get("question"))
+    candidate_deictic = _has_document_deictic(candidate.get("question"))
+    if current_deictic != candidate_deictic:
+        return not candidate_deictic
+    current_length = len(_question_identity(current.get("question")))
+    candidate_length = len(_question_identity(candidate.get("question")))
+    return candidate_length < current_length
+
+
 def _questions_semantically_overlap(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
     left_text = _question_identity(left.get("question"))
     right_text = _question_identity(right.get("question"))
     if not left_text or not right_text:
         return False
     if left_text == right_text:
+        return True
+    if _source_fact_overlap(left, right):
         return True
     left_sources = set(left.get("qa_generation_material_ids") or [])
     right_sources = set(right.get("qa_generation_material_ids") or [])
@@ -198,25 +261,32 @@ def _questions_semantically_overlap(left: Dict[str, Any], right: Dict[str, Any])
     right_tokens = _question_semantic_tokens(right_text)
     if not left_tokens or not right_tokens:
         return False
-    overlap = len(left_tokens & right_tokens)
-    dice = (2.0 * overlap) / (len(left_tokens) + len(right_tokens))
-    return dice >= 0.68
+    return _token_dice(left_tokens, right_tokens) >= 0.68
 
 
 def _deduplicate_document_questions(items: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int]:
     deduped: List[Dict[str, Any]] = []
-    seen: set[str] = set()
     dropped = 0
     for item in items:
         key = _question_identity(item.get("question"))
-        if not key or key in seen or any(
-            _questions_semantically_overlap(item, existing)
-            for existing in deduped
-        ):
+        if not key:
             dropped += 1
             continue
-        seen.add(key)
-        deduped.append(item)
+        duplicate_index = next(
+            (
+                index
+                for index, existing in enumerate(deduped)
+                if key == _question_identity(existing.get("question"))
+                or _questions_semantically_overlap(item, existing)
+            ),
+            None,
+        )
+        if duplicate_index is None:
+            deduped.append(item)
+            continue
+        dropped += 1
+        if _prefer_duplicate_item(deduped[duplicate_index], item):
+            deduped[duplicate_index] = item
     return deduped, dropped
 
 
@@ -648,6 +718,9 @@ def process_text_to_qa_one_step(
                     "section_path": payload.get("section_path"),
                     "quality_child_coverage": payload.get("quality_child_coverage"),
                     "attempt_used": payload.get("attempt_used"),
+                    "answer_attempt_count": payload.get("answer_attempt_count", 0),
+                    "answer_retry_count": payload.get("answer_retry_count", 0),
+                    "answer_retry_reasons": payload.get("answer_retry_reasons") or {},
                     "candidate_questions": payload.get("candidate_questions", 0),
                     "candidates_considered": payload.get("candidates_considered", 0),
                     "valid_items": len(items_list),
@@ -696,6 +769,9 @@ def process_text_to_qa_one_step(
                                 "selected_evidence_chunk_count"
                             ),
                             "attempt_used": payload.get("attempt_used"),
+                            "answer_attempt_count": payload.get("answer_attempt_count", 0),
+                            "answer_retry_count": payload.get("answer_retry_count", 0),
+                            "answer_retry_reasons": payload.get("answer_retry_reasons") or {},
                             "error": payload.get("error"),
                             "skip_reason": payload.get("skip_reason"),
                             "dropped_answer_reasons": payload.get("dropped_answer_reasons"),

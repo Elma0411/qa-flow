@@ -306,6 +306,9 @@ def run_one_step_chunk_worker(
     retrieval_ranking_seconds = 0.0
     retrieval_unit_seconds = 0.0
     answer_generation_seconds = 0.0
+    answer_attempt_count = 0
+    answer_retry_count = 0
+    answer_retry_reasons: Dict[str, int] = {}
     candidate_questions_total = 0
     candidates_considered = 0
     skipped_empty_or_duplicate = 0
@@ -517,6 +520,7 @@ def run_one_step_chunk_worker(
                 unit_ended_at,
             )
             answer_started_at = time.perf_counter()
+            answer_audit: Dict[str, Any] = {}
             try:
                 item, reason = call_evidence_answer_llm(
                     client=client,
@@ -533,6 +537,7 @@ def run_one_step_chunk_worker(
                     fixed_knowledge_category_reason=runtime.fixed_knowledge_category_reason,
                     chunk_index=chunk_index,
                     debug_writer=debug_writer,
+                    answer_audit=answer_audit,
                 )
             except Exception as exc:
                 item, reason = None, "answer_generation_error"
@@ -546,6 +551,14 @@ def run_one_step_chunk_worker(
                             "error": str(exc),
                         }
                     )
+            attempts = int(answer_audit.get("answer_attempt_count") or 0)
+            answer_attempt_count += attempts
+            if attempts > 1:
+                answer_retry_count += 1
+                retry_reason = str(answer_audit.get("answer_retry_reason") or "unknown")
+                answer_retry_reasons[retry_reason] = (
+                    answer_retry_reasons.get(retry_reason, 0) + 1
+                )
             answer_ended_at = time.perf_counter()
             answer_generation_seconds += answer_ended_at - answer_started_at
             _append_wall_interval(
@@ -625,6 +638,9 @@ def run_one_step_chunk_worker(
     return {
         "chunk_index": chunk_index,
         "attempt_used": attempt_used_total,
+        "answer_attempt_count": answer_attempt_count,
+        "answer_retry_count": answer_retry_count,
+        "answer_retry_reasons": answer_retry_reasons,
         "items": items_final,
         "dropped_answer_reasons": dropped_answer_reasons,
         "candidate_questions": candidate_questions_total,

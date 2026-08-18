@@ -3098,6 +3098,7 @@ function translatedDropReason(reason) {
     incomplete_primary_material_coverage: '未覆盖全部必需正文材料',
     missing_required_visual_evidence: '未引用必需图片证据',
     missing_required_text_evidence: '未引用必需正文证据',
+    scenario_type_mismatch: '场景类型不符合当前批次',
     duplicate_question: '重复问题',
     empty_or_duplicate_question: '空问题/重复问题',
     invalid_json: 'JSON 无效',
@@ -3125,6 +3126,15 @@ function chunkReasonParts(chunk) {
   Object.keys(stats).forEach((key) => {
     parts.push(`${translatedDropReason(key)}：${stats[key]}`);
   });
+  const answerRetryCount = asNumber(chunk && chunk.answer_retry_count);
+  if (answerRetryCount && answerRetryCount > 0) {
+    const retryReasons = chunk.answer_retry_reasons && typeof chunk.answer_retry_reasons === 'object'
+      ? Object.entries(chunk.answer_retry_reasons)
+        .map(([key, value]) => `${translatedDropReason(key)}：${value}`)
+        .join('；')
+      : '';
+    parts.push(`答案定向重试 ${answerRetryCount} 次${retryReasons ? `（${retryReasons}）` : ''}`);
+  }
   const skipReason = String(chunk && chunk.skip_reason || '').trim();
   if (skipReason && !parts.some((part) => part.includes(skipReason))) {
     parts.push(`跳过：${translatedDropReason(skipReason)}`);
@@ -3417,6 +3427,9 @@ function renderRawResponseRecords(container, data, scopeLabel) {
       record.prompt_template_key ? `模板 ${record.prompt_template_key}` : '',
       rawCount,
       validCount,
+      Number(record.planning_attempt_count || 1) > 1
+        ? `规划重试 ${record.planning_attempt_count} 次`
+        : '',
       record.dropped_reason ? `丢弃：${translatedDropReason(record.dropped_reason)}` : '',
       record.parse_error ? `解析错误：${record.parse_error}` : '',
     ].filter(Boolean).join(' | ');
@@ -3443,6 +3456,8 @@ function renderRawResponseRecords(container, data, scopeLabel) {
 
     appendRawRecordDetail(card, 'system_prompt', record.system_prompt);
     appendRawRecordDetail(card, 'user_content', record.user_content);
+    appendRawRecordDetail(card, 'planner_retry_instruction', record.planner_retry_instruction);
+    appendRawRecordDetail(card, 'initial_raw_response', record.initial_raw_response);
     appendRawRecordDetail(card, 'raw_response', record.raw_response);
     appendRawRecordDetail(card, 'retrieval_trace', record.generation_unit?.retrieval_trace);
     appendRawRecordDetail(card, 'candidate', record.candidate);
@@ -3675,6 +3690,14 @@ function renderPlannerBatchDetails(unitPlanSummary) {
     appendTextMetric(metrics, '校验通过', batch.validated_count ?? batch.returned_count);
     appendTextMetric(metrics, '材料数量', batch.material_count);
     appendTextMetric(metrics, '批次总数', batch.batch_count);
+    appendTextMetric(metrics, '批次耗时', fmtSeconds(batch.planner_seconds));
+    if (Number(batch.planning_attempt_count || 1) > 1) {
+      appendTextMetric(
+        metrics,
+        '规划重试',
+        `${batch.planning_attempt_count} 次${batch.planner_retry_reason ? `（${translatedDropReason(batch.planner_retry_reason)}）` : ''}`,
+      );
+    }
     body.appendChild(metrics);
 
     const paths = document.createElement('div');
