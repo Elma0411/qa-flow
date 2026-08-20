@@ -128,6 +128,7 @@ def _build_debug_payload(item: Dict[str, Any]) -> Dict[str, Any]:
         "qa_generation_optional_material_ids": item.get(
             "qa_generation_optional_material_ids"
         ) or [],
+        "qa_generation_summary_hops": item.get("qa_generation_summary_hops") or [],
         "qa_generation_subject_label": item.get("qa_generation_subject_label"),
         "evidence_mode": item.get("evidence_mode") or "text",
         "required_image_refs": item.get("required_image_refs") or [],

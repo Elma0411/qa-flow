@@ -360,6 +360,10 @@ def _augment_single(
                 ),
                 source_chunk_meta={
                     "qa_generation_unit_subject_label": qa.get("qa_generation_subject_label"),
+                    "qa_generation_unit_summary_hops": qa.get(
+                        "qa_generation_summary_hops"
+                    )
+                    or [],
                 },
             )
             if not edited:

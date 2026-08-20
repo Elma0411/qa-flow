@@ -515,26 +515,28 @@ Rules:
   explicit.
 - A scenario-planning LLM then returns evidence-bound `PointScenario` and
   `SummaryScenario` candidates. Point scenarios bind exactly one section
-  material and one fact need. Summary scenarios bind one material with a real
-  multi-fact enumeration or multiple materials that jointly serve one reader
-  need. Every material reference is validated against the supplied material
-  catalog. A Point has exactly one `required_material`; a Summary has one to
-  three tightly related `required_materials` and may have
-  `optional_materials`. Summary coverage checks inspect only required
-  materials; an optional material that is not cited is not a failure. For a
-  Summary, every required material must contribute a distinct answer fact that
-  cannot be omitted. Background, corroborating, repeated-policy, or merely
-  scope-setting materials belong in `optional_materials`. If no real
-  enumeration or at least two distinct answer contributions exist, the planner
-  must return fewer Summary scenarios instead of relabeling one atomic fact.
-  Each scenario also carries `evidence_mode=text|visual|mixed` and
-  `required_image_refs`. An image is required only when removing its
-  description would make the planned question impossible to answer completely;
-  `mixed` requires both a text fact and an image fact. After backend alias
-  resolution these fields form an immutable `ScenarioContract`; no later LLM
-  may reclassify materials, images, mode, scenario type, or question type.
-  A required image promotes its owning Section Material to required before the
-  contract is frozen.
+  material and one fact need. Every material reference is validated against the
+  supplied material catalog. A Point has exactly one `required_material`, no
+  optional material, one `evidence_mode=text|visual|mixed`, and any required
+  image aliases.
+  A Summary instead owns exactly two or three `summary_hops`. Each hop contains
+  one atomic `sub_question`, one request-local `material_ref`, one
+  `evidence_mode=text|visual|mixed`, and zero or more request-local `image_refs`.
+  Hop sub-questions must be distinct. A hop may name only an image that belongs
+  to its bound material; a visual or mixed hop must name at least one such
+  image. Several hops may reuse one Section Material only for genuinely
+  different contributions within a real enumeration. The backend maps aliases
+  to real IDs and assigns stable `hop_id=hop-1..hop-3` values.
+  A Summary's `required_material_ids` are the ordered union of hop material IDs;
+  `required_image_ids` are the ordered union of hop image IDs; its overall
+  evidence mode is derived from the hop modes. The planner does not separately
+  decide these three derived values. `optional_materials` may contain only
+  background or corroboration that carries no hop, and an uncited optional
+  material is never a coverage failure. If fewer than two real atomic
+  contributions exist, the planner must return fewer Summary scenarios instead
+  of relabeling one atomic fact. After backend alias resolution these fields
+  form an immutable `ScenarioContract`; no later LLM may reclassify materials,
+  images, hop modes, scenario type, or question type.
   Image-bearing sections are considered for visual scenarios but no final
   image-question quota is forced. If a text-only and a distinct visual
   scenario compete for the same material at the selection boundary, the visual
@@ -583,13 +585,16 @@ Rules:
   brief containing subject, a concise question object when available, reader
   need, goal, required text facts, and any required visual fact, but never
   material IDs, image IDs, retrieval metadata, or scenario-contract field
-  names. The writer/editor replace document deictics such as “本说明” with that
-  readable object. A permission, prohibition, or eligibility question may
-  remain in a yes/no form; the editor must not turn it into a how-to question
-  or broaden it into a policy overview. The backend protects this narrow
-  binary-to-procedural semantic regression if a model still makes it. Leading
-  source wrappers such as “根据《…》” or “在《…》中” are removed when the
-  remaining question is already standalone. A visual question asks an
+  names. For Summary, the brief additionally renders only the two or three
+  readable atomic sub-questions and asks the writer/editor to combine them into
+  one natural umbrella question. It does not expose hop IDs or the
+  `summary_hops` field name. The writer/editor replace document deictics such as
+  “本说明” with that readable object. A permission, prohibition, or eligibility
+  question may remain in a yes/no form; the editor must not turn it into a
+  how-to question or broaden it into a policy overview. The backend protects
+  this narrow binary-to-procedural semantic regression if a model still makes
+  it. Leading source wrappers such as “根据《…》” or “在《…》中” are removed
+  when the remaining question is already standalone. A visual question asks an
   observable action/state/branch/feedback and must not restate a complete
   visible sequence merely to request yes/no confirmation. The editor cannot
   return `keep`, `rewrite`, `drop`, evidence mode, or source mappings.
@@ -613,18 +618,30 @@ Rules:
   and image blocks. Persistence removes legacy/free-form `snippet` and `usage`
   fields while retaining backend-resolved `image_id` and `material_id` when
   applicable.
+  For Summary, answer input also renders each atomic sub-question under a
+  temporary `HOP-1..HOP-3` label and lists its readable bound evidence labels.
+  Every `evidence_usage` entry returned for a Summary includes `hop_refs`; the
+  backend keeps only supplied HOP labels, maps evidence labels to real pointers,
+  and verifies each hop against its own material and text/visual/mixed evidence
+  requirement. Failure uses `incomplete_summary_hop_coverage` and permits the
+  existing single targeted answer retry. The old blind check that every bound
+  Summary material was cited is not the primary validation for new Summary
+  contracts. Optional materials have no HOP and do not participate in this
+  validation. Supplemental evidence may support an answer but must not expand
+  it to a neighboring fact the question did not ask.
   `source_chunk_id`, `source_chunk_index`, and
   `source_chunk_title_path` identify the first directly cited primary chunk;
   `source_chunk_ids`, `source_chunk_indexes`, and
   `source_chunk_title_paths` retain the complete ordered primary-evidence set
-  for multi-material answers. A summary bound to multiple Section Materials is
-  retained only when `evidence_usage` cites at least one primary chunk from
-  every bound material; otherwise it enters the existing generation retry path.
-  Retrieved-only evidence never becomes the scalar primary source.
+  for multi-material answers. Retrieved-only evidence never becomes the scalar
+  primary source.
   Persisted QA/debug items include `evidence_mode`, stable source image IDs in
   `required_image_refs`, `qa_generation_subject_label`, and the reviewed
   `qa_generation_required_material_ids`/
-  `qa_generation_optional_material_ids`.
+  `qa_generation_optional_material_ids`. New Summary items additionally persist
+  `qa_generation_summary_hops`; their sanitized `evidence_usage` entries retain
+  `hop_refs`. This JSON/debug addition does not change the fixed Milvus v2
+  collection schemas.
 - When `include_evaluation=true` and `evaluation_method` is `llm` or `local`,
   generation may publish validated QA items to a bounded evaluation queue before
   the file finishes. LLM evaluation uses `text_model_concurrency`; local
@@ -643,7 +660,8 @@ Rules:
 - `unit_plan_summary.scenario_planner_batch_details` is the planner audit
   surface. Each detail records the batch index/count, scenario type, material
   paths, requested/returned/validated counts, required/optional paths for each
-  scenario, `scenario_intent`, `reader_need`, dropped reasons, per-batch
+  scenario, Summary hop sub-questions and their mapped material paths,
+  `scenario_intent`, `reader_need`, dropped reasons, per-batch
   `planner_seconds`, correction retry count/reason, and any batch error. The
   complete model prompt, initial response when retried, and final `raw_response`
   remain in the registered task debug JSONL and are available through the
@@ -755,6 +773,7 @@ Stable fields for primary QA items:
 - `qa_generation_scenario_intent`
 - `qa_generation_reader_need`
 - `qa_generation_material_ids`
+- `qa_generation_summary_hops`
 - `source_chunk_id`
 - `source_chunk_index`
 - `source_chunk_title_path`
@@ -765,6 +784,12 @@ Stable fields for primary QA items:
 - `evidence_chunk_ids`
 - `evidence_usage`
 - `retrieval_trace`
+
+For a Summary item, every `qa_generation_summary_hops` entry contains
+`hop_id`, `sub_question`, `material_id`, `evidence_mode`, and
+`required_image_ids`. Its `evidence_usage[].hop_refs` values use the temporary
+`HOP-N` labels corresponding to this ordered list. Point items persist an empty
+hop list and do not require `hop_refs`.
 
 QA pair vector storage uses the fixed `qa_pairs_collection_v2` schema. It does
 not contain `difficulty_level`, `difficulty_score`, or `question_type_reason`;
@@ -798,6 +823,10 @@ Rules:
   handoff. After a valid answer's labels are restored, the generation layer
   uses it to construct `qa_evaluation_evidence_text`; it is neither persisted
   itself nor sent to the LLM.
+- `llm_summary_hops` is the ephemeral mapping from backend Summary hops to
+  `HOP-N` plus readable evidence labels. Only those readable labels and atomic
+  sub-questions are sent to the answer model; real material/image IDs stay in
+  the backend contract.
 - `retrieval_trace` is optional on old items. New primary QA items should carry
   it when generated by the same-document evidence flow. Stable diagnostic keys
   include `pipeline`, `query`, `dense_hits`, `bm25_hits`, `rrf_hits`,

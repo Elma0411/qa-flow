@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import time
 from collections import defaultdict
@@ -381,6 +382,7 @@ class GenerationUnit:
     optional_material_ids: List[str]
     evidence_mode: str
     required_image_ids: List[str]
+    summary_hops: List[Dict[str, Any]]
     subject_label: str
     prompt_materials: List[Dict[str, Any]]
     material_ref_map: Dict[str, str]
@@ -414,6 +416,7 @@ class GenerationUnit:
             "optional_material_ids": list(self.optional_material_ids),
             "evidence_mode": self.evidence_mode,
             "required_image_ids": list(self.required_image_ids),
+            "summary_hops": [dict(hop) for hop in self.summary_hops],
             "subject_label": self.subject_label,
             "prompt_materials": [dict(value) for value in self.prompt_materials],
             "material_ref_map": dict(self.material_ref_map),
@@ -855,6 +858,24 @@ def _plan_scenario_pool(
                         for material_id in optional_ids
                         if material_id in materials_by_id and materials_by_id[material_id].title_path
                     ],
+                    "summary_hops": [
+                        {
+                            "hop_id": hop.get("hop_id"),
+                            "sub_question": hop.get("sub_question"),
+                            "material_path": (
+                                materials_by_id[material_id].title_path
+                                if (material_id := _safe_text(hop.get("material_id")))
+                                in materials_by_id
+                                else ""
+                            ),
+                            "evidence_mode": hop.get("evidence_mode"),
+                            "required_image_ids": list(
+                                hop.get("required_image_ids") or []
+                            ),
+                        }
+                        for hop in item.get("summary_hops") or []
+                        if isinstance(hop, dict)
+                    ],
                     "material_paths": paths,
                 }
             )
@@ -959,9 +980,27 @@ def _merge_cross_batch_summary_candidates(
             )
             if not (left_parents & right_parents or max(intent_overlap, need_overlap) >= 0.42):
                 continue
+            combined_hops: List[Dict[str, Any]] = []
+            seen_hop_questions: set[str] = set()
+            for hop in [*(left.get("summary_hops") or []), *(right.get("summary_hops") or [])]:
+                if not isinstance(hop, dict):
+                    continue
+                question_key = _collapse_text(hop.get("sub_question")).casefold()
+                if not question_key or question_key in seen_hop_questions:
+                    continue
+                seen_hop_questions.add(question_key)
+                combined_hops.append(dict(hop))
+            if not 2 <= len(combined_hops) <= 3:
+                continue
+            combined_hops = [
+                {**hop, "hop_id": f"hop-{index}"}
+                for index, hop in enumerate(combined_hops, start=1)
+            ]
             required_ids: List[str] = []
             optional_ids: List[str] = []
-            for material_id in [*left_required, *right_required]:
+            for material_id in [
+                _safe_text(hop.get("material_id")) for hop in combined_hops
+            ]:
                 if material_id not in required_ids:
                     required_ids.append(material_id)
             for material_id in [*left_optional, *right_optional]:
@@ -969,10 +1008,18 @@ def _merge_cross_batch_summary_candidates(
                     optional_ids.append(material_id)
             if len(required_ids) < 2:
                 continue
-            required_image_ids = list(dict.fromkeys([
-                *[str(value) for value in left.get("required_image_ids") or [] if str(value)],
-                *[str(value) for value in right.get("required_image_ids") or [] if str(value)],
-            ]))
+            required_image_ids = list(
+                dict.fromkeys(
+                    image_id
+                    for hop in combined_hops
+                    for image_id in hop.get("required_image_ids") or []
+                    if image_id
+                )
+            )
+            hop_modes = {
+                _safe_text(hop.get("evidence_mode")) or "text"
+                for hop in combined_hops
+            }
             merged.append(
                 {
                     "scenario_type": SCENARIO_TYPE_SUMMARY,
@@ -981,8 +1028,15 @@ def _merge_cross_batch_summary_candidates(
                     or _safe_text(right.get("reader_need")),
                     "required_material_ids": required_ids,
                     "optional_material_ids": optional_ids,
-                    "evidence_mode": "mixed" if required_image_ids else "text",
+                    "evidence_mode": (
+                        "text"
+                        if hop_modes == {"text"}
+                        else "visual"
+                        if hop_modes == {"visual"}
+                        else "mixed"
+                    ),
                     "required_image_ids": required_image_ids,
+                    "summary_hops": combined_hops,
                     "cross_batch_merge": True,
                     "cross_batch_merge_from": [left_batch, right.get("_planning_batch_index")],
                 }
@@ -1087,6 +1141,54 @@ def _normalize_material_id_list(raw: Any, materials_by_id: Dict[str, SectionMate
     return result
 
 
+def _normalize_summary_hops(
+    raw: Any,
+    materials_by_id: Dict[str, SectionMaterial],
+) -> List[Dict[str, Any]]:
+    values = raw if isinstance(raw, list) else []
+    if not 2 <= len(values) <= 3:
+        return []
+    normalized: List[Dict[str, Any]] = []
+    seen_questions: set[str] = set()
+    for index, value in enumerate(values, start=1):
+        if not isinstance(value, dict):
+            return []
+        sub_question = _collapse_text(value.get("sub_question"))
+        question_key = sub_question.casefold()
+        material_id = _safe_text(value.get("material_id"))
+        material = materials_by_id.get(material_id)
+        if not sub_question or not material or question_key in seen_questions:
+            return []
+        seen_questions.add(question_key)
+        available_images = {image.image_id for image in material.image_materials}
+        image_ids: List[str] = []
+        for image_id in value.get("required_image_ids") or []:
+            normalized_image_id = _safe_text(image_id)
+            if normalized_image_id not in available_images:
+                return []
+            if normalized_image_id not in image_ids:
+                image_ids.append(normalized_image_id)
+        requested_hop_mode = _safe_text(value.get("evidence_mode")).lower()
+        if requested_hop_mode in {"visual", "mixed"} and not image_ids:
+            return []
+        hop_mode = _normalize_evidence_mode(
+            value.get("evidence_mode"),
+            has_required_images=bool(image_ids),
+        )
+        if hop_mode in {"visual", "mixed"} and not image_ids:
+            return []
+        normalized.append(
+            {
+                "hop_id": f"hop-{index}",
+                "sub_question": sub_question,
+                "material_id": material_id,
+                "evidence_mode": hop_mode,
+                "required_image_ids": image_ids,
+            }
+        )
+    return normalized
+
+
 def _build_generation_unit(
     raw: Dict[str, Any],
     *,
@@ -1096,9 +1198,23 @@ def _build_generation_unit(
     scenario_type = _normalize_scenario_type(raw.get("scenario_type") or raw.get("type"))
     intent = _safe_text(raw.get("intent"))
     reader_need = _safe_text(raw.get("reader_need")) or intent
-    required_material_ids = _normalize_material_id_list(
-        raw.get("required_material_ids"), materials_by_id
+    summary_hops = (
+        _normalize_summary_hops(raw.get("summary_hops"), materials_by_id)
+        if scenario_type == SCENARIO_TYPE_SUMMARY
+        else []
     )
+    if scenario_type == SCENARIO_TYPE_SUMMARY:
+        if not summary_hops:
+            return None
+        required_material_ids = []
+        for hop in summary_hops:
+            material_id = _safe_text(hop.get("material_id"))
+            if material_id and material_id not in required_material_ids:
+                required_material_ids.append(material_id)
+    else:
+        required_material_ids = _normalize_material_id_list(
+            raw.get("required_material_ids"), materials_by_id
+        )
     optional_material_ids = _normalize_material_id_list(
         raw.get("optional_material_ids"), materials_by_id
     )
@@ -1122,10 +1238,16 @@ def _build_generation_unit(
         for image in material.image_materials
     }
     required_image_ids: List[str] = []
-    for value in raw.get("required_image_ids") or []:
-        image_id = _safe_text(value)
-        if image_id in available_image_ids and image_id not in required_image_ids:
-            required_image_ids.append(image_id)
+    if scenario_type == SCENARIO_TYPE_SUMMARY:
+        for hop in summary_hops:
+            for image_id in hop.get("required_image_ids") or []:
+                if image_id in available_image_ids and image_id not in required_image_ids:
+                    required_image_ids.append(image_id)
+    else:
+        for value in raw.get("required_image_ids") or []:
+            image_id = _safe_text(value)
+            if image_id in available_image_ids and image_id not in required_image_ids:
+                required_image_ids.append(image_id)
     for material in materials:
         if not any(image.image_id in required_image_ids for image in material.image_materials):
             continue
@@ -1146,26 +1268,20 @@ def _build_generation_unit(
     if scenario_type == SCENARIO_TYPE_SUMMARY and len(required_material_ids) > 3:
         return None
     required_materials = [materials_by_id[material_id] for material_id in required_material_ids]
-    evidence_mode = _normalize_evidence_mode(
-        raw.get("evidence_mode"),
-        has_required_images=bool(required_image_ids),
-    )
-    if scenario_type == SCENARIO_TYPE_SUMMARY and len(required_materials) == 1:
-        material = required_materials[0]
-        image_supports_summary = len(material.image_materials) >= 2 or any(
-            _has_list_signal(image.description)
-            or (
-                _structure_signal(image.description)
-                and len(re.findall(r"[。！？!?；;]", image.description)) >= 2
-            )
-            for image in material.image_materials
+    if scenario_type == SCENARIO_TYPE_SUMMARY:
+        hop_modes = {str(hop.get("evidence_mode") or "text") for hop in summary_hops}
+        evidence_mode = (
+            "text"
+            if hop_modes == {"text"}
+            else "visual"
+            if hop_modes == {"visual"}
+            else "mixed"
         )
-        if (
-            len(material.source_chunk_indexes) < 2
-            and not _has_list_signal(material.material_text)
-            and not image_supports_summary
-        ):
-            return None
+    else:
+        evidence_mode = _normalize_evidence_mode(
+            raw.get("evidence_mode"),
+            has_required_images=bool(required_image_ids),
+        )
     source_indexes: List[int] = []
     for material in materials:
         for index in material.source_chunk_indexes:
@@ -1182,7 +1298,8 @@ def _build_generation_unit(
     )
     raw_id = (
         f"{scenario_type}|||{intent}|||{'|'.join(material_ids)}|||"
-        f"{evidence_mode}|||{'|'.join(required_image_ids)}"
+        f"{evidence_mode}|||{'|'.join(required_image_ids)}|||"
+        f"{json.dumps(summary_hops, ensure_ascii=False, sort_keys=True)}"
     )
     unit_id = hashlib.sha1(raw_id.encode("utf-8")).hexdigest()
     material_ref_map = {
@@ -1229,6 +1346,7 @@ def _build_generation_unit(
             "qa_generation_unit_optional_material_ids": optional_material_ids,
             "qa_generation_unit_evidence_mode": evidence_mode,
             "qa_generation_unit_required_image_ids": required_image_ids,
+            "qa_generation_unit_summary_hops": [dict(hop) for hop in summary_hops],
             "qa_generation_unit_subject_label": materials[0].subject_label,
             "qa_generation_unit_prompt_materials": prompt_materials,
             "qa_generation_unit_material_ref_map": material_ref_map,
@@ -1268,6 +1386,7 @@ def _build_generation_unit(
         optional_material_ids=optional_material_ids,
         evidence_mode=evidence_mode,
         required_image_ids=required_image_ids,
+        summary_hops=[dict(hop) for hop in summary_hops],
         subject_label=materials[0].subject_label,
         prompt_materials=prompt_materials,
         material_ref_map=material_ref_map,
@@ -1301,6 +1420,7 @@ def _build_generation_unit(
             ],
             "evidence_mode": evidence_mode,
             "required_image_ids": list(required_image_ids),
+            "summary_hops": [dict(hop) for hop in summary_hops],
             "subject_label": materials[0].subject_label,
         },
         source_chunk_meta=source_meta,
@@ -1664,6 +1784,24 @@ def plan_generation_units(
                             if material_id in materials_by_id and materials_by_id[material_id].title_path
                         ],
                         "optional_material_paths": [],
+                        "summary_hops": [
+                            {
+                                "hop_id": hop.get("hop_id"),
+                                "sub_question": hop.get("sub_question"),
+                                "material_path": (
+                                    materials_by_id[material_id].title_path
+                                    if (material_id := _safe_text(hop.get("material_id")))
+                                    in materials_by_id
+                                    else ""
+                                ),
+                                "evidence_mode": hop.get("evidence_mode"),
+                                "required_image_ids": list(
+                                    hop.get("required_image_ids") or []
+                                ),
+                            }
+                            for hop in item.get("summary_hops") or []
+                            if isinstance(hop, dict)
+                        ],
                         "material_paths": [
                             materials_by_id[material_id].title_path
                             for material_id in item.get("required_material_ids") or []

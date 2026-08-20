@@ -27,7 +27,7 @@ def _sanitize_evidence_usage(raw_value: Any) -> List[Dict[str, Any]]:
     if not isinstance(raw_value, list):
         return []
     cleaned: List[Dict[str, Any]] = []
-    seen: set[Tuple[str, str, str, str]] = set()
+    seen: set[Tuple[str, str, str, str, Tuple[str, ...]]] = set()
     for raw_entry in raw_value:
         if not isinstance(raw_entry, dict):
             continue
@@ -37,7 +37,14 @@ def _sanitize_evidence_usage(raw_value: Any) -> List[Dict[str, Any]]:
         if not evidence_ref and not chunk_id and not image_id:
             continue
         role = str(raw_entry.get("role") or "evidence").strip() or "evidence"
-        key = (evidence_ref, chunk_id, image_id, role)
+        raw_hop_refs = raw_entry.get("hop_refs")
+        raw_hop_refs = raw_hop_refs if isinstance(raw_hop_refs, list) else []
+        hop_refs = tuple(
+            dict.fromkeys(
+                str(value).strip() for value in raw_hop_refs if str(value).strip()
+            )
+        )
+        key = (evidence_ref, chunk_id, image_id, role, hop_refs)
         if key in seen:
             continue
         seen.add(key)
@@ -45,6 +52,8 @@ def _sanitize_evidence_usage(raw_value: Any) -> List[Dict[str, Any]]:
             "evidence_ref": evidence_ref,
             "role": role,
         }
+        if hop_refs:
+            entry["hop_refs"] = list(hop_refs)
         if chunk_id:
             entry["chunk_id"] = chunk_id
         material_id = str(raw_entry.get("material_id") or "").strip()
@@ -404,6 +413,9 @@ def build_consolidated_entry(
             ) or [],
             "qa_generation_optional_material_ids": merged.get(
                 "qa_generation_optional_material_ids"
+            ) or [],
+            "qa_generation_summary_hops": merged.get(
+                "qa_generation_summary_hops"
             ) or [],
             "qa_generation_subject_label": merged.get("qa_generation_subject_label"),
             "evidence_mode": merged.get("evidence_mode") or "text",

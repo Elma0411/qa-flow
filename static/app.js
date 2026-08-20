@@ -3735,6 +3735,20 @@ function renderPlannerBatchDetails(unitPlanSummary) {
         appendTextMetric(scenarioMeta, 'reader_need', scenario.reader_need);
         appendTextMetric(scenarioMeta, 'required 路径', plannerPathText(scenario.required_material_paths));
         appendTextMetric(scenarioMeta, 'optional 路径', plannerPathText(scenario.optional_material_paths));
+        if (Array.isArray(scenario.summary_hops) && scenario.summary_hops.length) {
+          appendTextMetric(
+            scenarioMeta,
+            'Summary 原子子问题',
+            scenario.summary_hops
+              .map((hop, hopIndex) => [
+                hop.hop_id || `hop-${hopIndex + 1}`,
+                hop.sub_question || '',
+                hop.evidence_mode || 'text',
+                hop.material_path || '',
+              ].filter(Boolean).join(' ｜ '))
+              .join('；'),
+          );
+        }
         scenarioCard.appendChild(scenarioMeta);
         scenarioList.appendChild(scenarioCard);
       });

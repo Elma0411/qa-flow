@@ -700,6 +700,19 @@ function buildQaDetailCard(item, options = {}) {
   if (item.source_fact_text) {
     card.appendChild(createCodeSection('来源事实片段', item.source_fact_text));
   }
+  if (Array.isArray(item.qa_generation_summary_hops) && item.qa_generation_summary_hops.length) {
+    card.appendChild(
+      createCodeSection(
+        'Summary 原子子问题',
+        JSON.stringify(item.qa_generation_summary_hops, null, 2),
+      ),
+    );
+  }
+  if (Array.isArray(item.evidence_usage) && item.evidence_usage.some((entry) => Array.isArray(entry?.hop_refs))) {
+    card.appendChild(
+      createCodeSection('证据与子问题映射', JSON.stringify(item.evidence_usage, null, 2)),
+    );
+  }
   if (item.qa_generation_unit_text) {
     card.appendChild(createCodeSection('出题单元', item.qa_generation_unit_text));
   }

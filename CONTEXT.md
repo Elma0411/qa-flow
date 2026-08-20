@@ -95,15 +95,23 @@ _Avoid_: Parent-chapter aggregate, arbitrary chunk group
 **Question Scenario**:
 An evidence-bound reader need selected before wording a question.
 `PointScenario` requires one atomic fact from one Section Material;
-`SummaryScenario` requires multiple related facts from one real enumeration or
-several materials that jointly answer one coherent need.
+`SummaryScenario` requires exactly two or three related atomic sub-questions
+that jointly answer one coherent need.
 _Avoid_: A generated question, a fixed section type, forced question quota
+
+**Summary Hop**:
+One auditable atomic sub-question inside a `SummaryScenario`. It binds one
+Section Material and declares whether that contribution needs text, visual, or
+mixed evidence plus any required image IDs. Several hops may reuse one material
+only when they represent genuinely different parts of a real enumeration.
+_Avoid_: Treating every selected material as a hop, a free-form reasoning trace
 
 **Scenario Contract**:
 The immutable backend form of a Question Scenario after temporary aliases have
-been mapped. It owns scenario type, required/optional materials, evidence mode,
-required images, and question type. Wording models may only rewrite the
-reader-facing question.
+been mapped. It owns scenario type, Summary Hops when applicable, optional
+materials, and question type. Point evidence fields are frozen directly;
+Summary required materials, images, and overall mode are derived from its hops.
+Wording models may only rewrite the reader-facing question.
 _Avoid_: Letting a wording editor downgrade mixed/visual evidence to text
 
 **Shared Boundary**:

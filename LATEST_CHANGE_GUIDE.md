@@ -4,44 +4,37 @@
 
 ## Objective
 
-针对 `integrated_document_task_1787210901` 的非评估问题，修复 Summary 容易被
-单点题覆盖、Summary required material 绑定过重、自然问题仍有来源包装和答案泄露、
-视觉题把完整步骤写进题干后只回答“是/否”，以及最终去重数量没有进入产物的问题。
+将 Summary 正式升级为“2–3 个原子子问题/证据跳”契约，解决
+`integrated_document_task_1787210901` 中 Summary required material 绑定过重、
+4/5 Summary 触发无意义全材料引用重试，以及单点事实被伪装成 Summary 的问题。
 
-本轮不修改任何评估指标、平均分、过滤阈值或 Milvus schema。
-
-## Evidence and References
-
-- 该任务规划了 5 个 Summary，全部生成有效答案，但 4 个因
-  `incomplete_primary_material_coverage` 触发答案重试，最终又有 1 个在文档级
-  去重中消失。
-- 参考 Ragas 的多跳场景/节点关系、EasyDataset 的自然与视觉问题约束、PREMIR 的
-  text/visual/multimodal pre-question 分池，以及 ACL 2023 HQDT 的原子问题分解思想。
-- 完整论文检索报告保存在 `ResearchStudio/allinone.md`。检索源错误和 28 篇结果均在
-  报告内保留。
+本轮不修改评估指标、平均分、过滤阈值或 Milvus schema。
 
 ## Effective Changes
 
-- 文档级去重不再因为 Summary 的完整证据包含一个 Point 子事实，就把 Summary 判为
-  重复。Point/Summary 之间只有在完整事实、问题语义和事实长度都高度等价时才合并；
-  同类型问题仍可使用直接事实包含关系去重。
-- Summary planner 被明确要求：每份 required material 必须提供答案不可缺少的独立
-  事实；背景、佐证、重复政策和仅用于理解范围的材料必须放到 optional。没有真实枚举
-  或至少两个独立答案贡献时，应少返回 Summary，而不能把单点事实伪装成 Summary。
-- planner/writer/editor 都明确禁止把答案中的数值、日期、名单项和完整步骤提前写进
-  题干。视觉问题聚焦可观察的操作、状态、分支或反馈，不再通过罗列完整步骤后询问
-  “是/否”来利用图片。
-- 编辑器会移除不必要的“请问在《…》中”“根据《…》”来源前缀，同时继续保留真正
-  的业务主体和合法的许可/禁止类肯否问题。
-- `duplicate_questions_dropped` 现在从生成结果传到任务进度、文件 timing、最终
-  consolidated timing 和调试页面，便于区分预算丢弃、答案失败和文档级去重。
+- Summary planner 每条场景必须给出 2–3 个 `summary_hops`。每个 hop 绑定一个
+  原子子问题、一份 SectionMaterial，以及 text/visual/mixed 证据和所需图片。
+- Summary 的 required materials、required images 和整体 evidence mode 全部由
+  hops 派生；optional 材料不承担 hop，也不参与答案覆盖失败。
+- 问题生成器和编辑器只看到可读的原子信息缺口，把它们写成一句自然总括问题；
+  不暴露 hop/material/image 内部 ID，也不新增 LLM 调用。
+- 答案模型使用 `HOP-1..HOP-3` 标记证据关系。后端按每个 hop 的材料和模态要求
+  校验 `evidence_usage.hop_refs`，失败原因为
+  `incomplete_summary_hop_coverage`，不再盲目要求引用所有 Summary 材料。
+- 补充证据只能支撑当前题目，不能顺带回答相邻但未被询问的知识点。
+- consolidated JSON、SQLite 调试记录、QA 查询接口和调试页面保留
+  `qa_generation_summary_hops` 与 `hop_refs`；Milvus v2 集合保持不变。
+- planner 批次详情展示每个 hop 的原子子问题、证据模态和映射后的材料路径。
 
-## Deliberately Not Changed
+## Expected Behavior
 
-- 尚未把 Summary 升级为显式“原子子问题/证据跳”字段。该方案最稳健，但会改变
-  planner 与答案验证契约，需要产品确认后单独实施。
-- 现有 required-material 全覆盖校验仍保留；本轮先通过更准确的 required/optional
-  规划减少无意义重试，不直接放松完整性约束。
+- 只有能拆成 2–3 个真实原子需求的场景才能成为 Summary；单一事实自动让位给
+  Point，不强行凑 Summary 数量。
+- 一份材料可以支持多个不同 hop；多份材料也只有承担 hop 时才成为 required。
+- 对外仍生成一条自然问题和一条整合答案，不把子问题拆成多条最终 QA。
+- mixed/visual hop 必须实际引用对应图片证据，文本 hop 必须引用对应正文证据。
+- 新契约预计减少上轮 4 次 `incomplete_primary_material_coverage` 类无意义重试；
+  最终耗时仍需用下一次真实任务验证。
 
 ## Validation
 

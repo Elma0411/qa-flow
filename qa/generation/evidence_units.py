@@ -377,6 +377,44 @@ class QADocumentEvidenceIndex:
                     "role": "retrieved_evidence",
                 }
 
+        source_summary_hops = source_unit_payload.get("summary_hops")
+        source_summary_hops = (
+            source_summary_hops if isinstance(source_summary_hops, list) else []
+        )
+        llm_summary_hops: List[Dict[str, Any]] = []
+        for position, raw_hop in enumerate(source_summary_hops, start=1):
+            if not isinstance(raw_hop, dict):
+                continue
+            material_id = _safe_text(raw_hop.get("material_id"))
+            hop_mode = _safe_text(raw_hop.get("evidence_mode")) or "text"
+            hop_image_ids = {
+                _safe_text(value)
+                for value in raw_hop.get("required_image_ids") or []
+                if _safe_text(value)
+            }
+            evidence_refs: List[str] = []
+            for label, mapped in ref_map.items():
+                if not isinstance(mapped, dict) or _safe_text(mapped.get("material_id")) != material_id:
+                    continue
+                role = _safe_text(mapped.get("role"))
+                if role == "primary_source" and hop_mode in {"text", "mixed"}:
+                    evidence_refs.append(label)
+                elif (
+                    role == "primary_visual"
+                    and hop_mode in {"visual", "mixed"}
+                    and _safe_text(mapped.get("image_id")) in hop_image_ids
+                ):
+                    evidence_refs.append(label)
+            llm_summary_hops.append(
+                {
+                    "hop_id": _safe_text(raw_hop.get("hop_id")) or f"hop-{position}",
+                    "hop_ref": f"HOP-{position}",
+                    "sub_question": _safe_text(raw_hop.get("sub_question")),
+                    "evidence_mode": hop_mode,
+                    "evidence_refs": evidence_refs,
+                }
+            )
+
         evidence_ids = [_safe_text(chunk.get("chunk_id")) for chunk in evidence_chunks]
         unit_id = hashlib.sha1(
             ("|||".join(source_ids + [_safe_text(question)] + evidence_ids)).encode("utf-8")
@@ -408,6 +446,7 @@ class QADocumentEvidenceIndex:
             "qa_generation_unit_text": "\n\n".join(sections).strip(),
             "llm_evidence_ref_map": ref_map,
             "llm_evidence_text_by_ref": evidence_text_by_ref,
+            "llm_summary_hops": llm_summary_hops,
             "retrieval_trace": trace,
         }
 

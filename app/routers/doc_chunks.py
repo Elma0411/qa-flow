@@ -649,6 +649,10 @@ async def chunk_debug(
                     "qa_generation_optional_material_ids"
                 )
                 or [],
+                "qa_generation_summary_hops": debug_detail.get(
+                    "qa_generation_summary_hops"
+                )
+                or [],
                 "qa_generation_subject_label": debug_detail.get(
                     "qa_generation_subject_label"
                 ),

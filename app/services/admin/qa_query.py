@@ -388,6 +388,9 @@ def get_qa_item(qa_id: str) -> Dict[str, Any]:
         "qa_generation_optional_material_ids": debug_payload.get(
             "qa_generation_optional_material_ids"
         ) or [],
+        "qa_generation_summary_hops": debug_payload.get(
+            "qa_generation_summary_hops"
+        ) or [],
         "qa_generation_subject_label": debug_payload.get("qa_generation_subject_label"),
         "evidence_mode": debug_payload.get("evidence_mode") or "text",
         "required_image_refs": debug_payload.get("required_image_refs") or [],

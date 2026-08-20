@@ -741,6 +741,10 @@ def run_one_step_unit_worker(
                 "qa_generation_optional_material_ids",
                 list(unit.optional_material_ids),
             )
+            item.setdefault(
+                "qa_generation_summary_hops",
+                [dict(hop) for hop in unit.summary_hops],
+            )
             item.setdefault("evidence_mode", unit.evidence_mode)
             item.setdefault("required_image_refs", list(unit.required_image_ids))
             item["qa_generation_unit_source_chunk_indexes"] = list(unit.source_chunk_indexes)

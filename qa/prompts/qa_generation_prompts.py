@@ -43,15 +43,31 @@ def build_scenario_planner_system_prompt(
     requested_count: int,
     qa_detail_mode: str,
     category_profile: str = "",
+    material_count: Optional[int] = None,
 ) -> str:
     """Plan immutable, evidence-bound scenarios before wording any question."""
     mode = str(qa_detail_mode or "auto").strip().lower()
     if mode not in {"point", "summary", "auto"}:
         mode = "auto"
     allowed = "point" if mode == "point" else "summary" if mode == "summary" else "point or summary"
-    schema_type = "point" if mode == "point" else "summary" if mode == "summary" else "point|summary"
     maximum = max(0, int(requested_count))
+    second_summary_material_ref = (
+        "主材料-A" if material_count is not None and int(material_count) <= 1 else "主材料-B"
+    )
     profile = str(category_profile or "").strip()
+    point_item_schema = (
+        '{"scenario_type":"point","intent":"...","reader_need":"...",'
+        '"required_material_refs":["主材料-A"],"optional_material_refs":[],'
+        '"evidence_mode":"text|visual|mixed","required_image_refs":[]}'
+    )
+    summary_item_schema = (
+        '{"scenario_type":"summary","intent":"...","reader_need":"...",'
+        '"summary_hops":[{"sub_question":"...","material_ref":"主材料-A",'
+        '"evidence_mode":"text|visual|mixed","image_refs":[]},'
+        f'{{"sub_question":"...","material_ref":"{second_summary_material_ref}",'
+        '"evidence_mode":"text|visual|mixed","image_refs":[]}],'
+        '"optional_material_refs":[]}'
+    )
     material_rule_en = (
         "A required material must contribute a distinct fact that the final answer cannot omit. "
         "Use optional materials for background, corroboration, repeated policy text, or useful context."
@@ -66,16 +82,32 @@ def build_scenario_planner_system_prompt(
         shape_rule_zh = "单点场景：恰好绑定一份必需材料，围绕一个原子提问焦点。金额、条件、阶段或流程彼此独立时应拆成不同 Point。"
         material_rule_en = "Point has exactly one required material and no optional material."
         material_rule_zh = "Point 恰好绑定一份 required material，optional material 必须为空。"
+        output_rule_en = f'Return only JSON: {{"items":[{point_item_schema}]}}.'
+        output_rule_zh = f'只输出 JSON：{{"items":[{point_item_schema}]}}。'
     elif mode == "summary":
         mode_rule_en = "This is a Summary-only request. Every `scenario_type` must be `summary`; do not return a Point item."
         mode_rule_zh = "本批次只规划总结场景。每一条 `scenario_type` 必须填写 `summary`，不得返回单点场景。"
-        shape_rule_en = "Summary: create one umbrella need that genuinely requires at least two distinct answer contributions, either from one real enumeration or from at most three tightly related materials. If only one atomic fact is needed, return fewer items instead of disguising it as Summary. Do not summarize a whole manual or join merely adjacent sections."
-        shape_rule_zh = "总结场景：一个总括需求必须真正综合至少两个独立答案贡献，来源可以是一份材料中的真实枚举，也可以是最多三份紧密相关材料。若只需要一个原子事实，应少返回一条而不能伪装成 Summary。不得概括整份手册，也不得只因位置相邻就合并。"
+        shape_rule_en = "Summary: create one umbrella need with exactly 2 or 3 distinct atomic sub-questions (summary_hops). Each hop binds one material and states the text/visual/mixed evidence it uniquely contributes. The hops may reuse one material for a real enumeration, but their sub-questions must remain distinct. If only one atomic fact is needed, return fewer items instead of disguising it as Summary."
+        shape_rule_zh = "总结场景：一个总括需求必须包含恰好 2 或 3 个互不重复的原子子问题（summary_hops）。每个 hop 绑定一份材料，并说明它独立贡献的 text/visual/mixed 证据；同一材料可支持真实枚举中的多个 hop，但子问题必须不同。若只需要一个原子事实，应少返回一条而不能伪装成 Summary。"
+        material_rule_en = "The backend derives required materials, required images, and the overall evidence mode from summary_hops. Put only non-hop background or corroboration in optional_material_refs."
+        material_rule_zh = "后端会从 summary_hops 派生 required materials、required images 和整体 evidence mode；只有不承担 hop 的背景或佐证材料才能放入 optional_material_refs。"
+        output_rule_en = f'Return only JSON: {{"items":[{summary_item_schema}]}}.'
+        output_rule_zh = f'只输出 JSON：{{"items":[{summary_item_schema}]}}。'
     else:
         mode_rule_en = "Choose Point or Summary only when it matches the semantic scope of the reader need."
         mode_rule_zh = "只在确实符合读者需求的语义范围时选择 Point 或 Summary。"
         shape_rule_en = "Point: bind exactly one required material and one atomic focus. Split independent amounts, conditions, stages, or procedures into separate Point scenarios.\nSummary: create one umbrella need that genuinely requires at least two distinct answer contributions, either from one real enumeration or from at most three tightly related materials. If only one atomic fact is needed, do not label it Summary."
         shape_rule_zh = "单点场景：恰好绑定一份必需材料，围绕一个原子提问焦点。金额、条件、阶段或流程彼此独立时应拆成不同 Point。\n总结场景：一个总括需求必须真正综合至少两个独立答案贡献，来源可以是一份材料中的真实枚举，也可以是最多三份紧密相关材料。只需要一个原子事实时不得标成 Summary。"
+        output_rule_en = (
+            'Return only JSON with an "items" array. Each item must match exactly '
+            f'one shape and omit the other shape\'s fields. Point: {point_item_schema}. '
+            f'Summary: {summary_item_schema}.'
+        )
+        output_rule_zh = (
+            '只输出包含 "items" 数组的 JSON。每一项只能采用其中一种结构，并省略'
+            f'另一结构的字段。Point：{point_item_schema}。'
+            f'Summary：{summary_item_schema}。'
+        )
     if language_code == "en":
         return f"""# QA scenario planner
 
@@ -98,7 +130,7 @@ For visual or mixed scenarios, prefer a visible action, state, branch, or feedba
 Text: the future answer needs text facts only.
 
 Allowed scenario type: {allowed}.
-Return only JSON: {{"items":[{{"scenario_type":"{schema_type}","intent":"...","reader_need":"...","required_material_refs":[],"optional_material_refs":[],"evidence_mode":"text|visual|mixed","required_image_refs":[]}}]}}.
+{output_rule_en}
 """
     return f"""# 问答场景规划器
 
@@ -121,7 +153,7 @@ Return only JSON: {{"items":[{{"scenario_type":"{schema_type}","intent":"...","r
 文本场景：完整答案只需要正文事实。
 
 允许的场景类型：{allowed}。
-只输出 JSON：{{"items":[{{"scenario_type":"{schema_type}","intent":"...","reader_need":"...","required_material_refs":[],"optional_material_refs":[],"evidence_mode":"text|visual|mixed","required_image_refs":[]}}]}}。
+{output_rule_zh}
 """
 
 
@@ -213,6 +245,17 @@ def build_evidence_answer_system_prompt(
     choice_section_zh = ""
     output_choice_fields_en = ""
     output_choice_fields_zh = ""
+    output_hop_field = ',"hop_refs":["HOP-1"]' if mode == "summary" else ""
+    hop_instruction_en = (
+        "For Summary mode, every evidence_usage entry must include hop_refs, and every supplied atomic sub-question must be covered by evidence bound to that hop."
+        if mode == "summary"
+        else ""
+    )
+    hop_instruction_zh = (
+        "总结题中，每条 evidence_usage 必须填写 hop_refs；每个给出的原子子问题都必须被其绑定证据覆盖。"
+        if mode == "summary"
+        else ""
+    )
     if qtype == "单选题":
         choice_section_en = "Include exactly four options and one correct_option."
         choice_section_zh = "提供恰好四个 options 和一个 correct_option。"
@@ -224,12 +267,14 @@ def build_evidence_answer_system_prompt(
     output_schema_en = (
         '{"items":[{"answer":"...","answer_explanation":"...",'
         '"source_fact_text":"...","evidence_usage":[{"evidence_ref":"...",'
-        f'"role":"primary_source|primary_visual"}}]{output_choice_fields_en}}}]}}'
+        f'"role":"primary_source|primary_visual"{output_hop_field}}}]'
+        f'{output_choice_fields_en}}}]}}'
     )
     output_schema_zh = (
         '{"items":[{"answer":"...","answer_explanation":"...",'
         '"source_fact_text":"...","evidence_usage":[{"evidence_ref":"...",'
-        f'"role":"primary_source|primary_visual"}}]{output_choice_fields_zh}}}]}}'
+        f'"role":"primary_source|primary_visual"{output_hop_field}}}]'
+        f'{output_choice_fields_zh}}}]}}'
     )
     if language_code == "en":
         return f"""# Evidence-grounded answer writer
@@ -238,7 +283,8 @@ Answer the supplied question using the readable evidence blocks.
 
 {language_instruction.strip()}
 
-Keep the answer focused on the question. For point mode, answer one core fact. For summary mode, organize only the related facts needed by the question. Make subjects and conditions clear. Do not answer only "yes", "no", "can", or "cannot" when the question contains a rule, condition, amount, timing, or next step: state the conclusion and the key supporting rule. `source_fact_text` is the direct supporting fact or facts from the evidence blocks. In `evidence_usage`, cite every required evidence block actually used. When a required image block is present, use and cite it.
+Keep the answer focused on the question. For point mode, answer one core fact. For summary mode, organize only the related facts needed by the question. Do not add a nearby fact that answers a different question merely because it appears in supplemental evidence. Make subjects and conditions clear. Do not answer only "yes", "no", "can", or "cannot" when the question contains a rule, condition, amount, timing, or next step: state the conclusion and the key supporting rule. `source_fact_text` is the direct supporting fact or facts from the evidence blocks. In `evidence_usage`, cite every required evidence block actually used. When a required image block is present, use and cite it.
+{hop_instruction_en}
 {choice_section_en}
 
 Return only JSON: {output_schema_en}.
@@ -249,7 +295,8 @@ Return only JSON: {output_schema_en}.
 
 {language_instruction.strip()}
 
-答案只回答当前问题。单点题只回答一个核心事实；总结题只组织回答该问题所需的相关事实。主体和条件要清楚。题目涉及规则、条件、金额、期限或后续动作时，不能只答“是/否/可以/不可以”，要给出结论和关键依据。`source_fact_text` 写出证据块中的直接支撑事实；`evidence_usage` 列出实际使用的必需证据块。出现必需图片证据块时，必须使用并引用它。
+答案只回答当前问题。单点题只回答一个核心事实；总结题只组织回答该问题所需的相关事实。补充证据即使包含相邻知识，也不能附带回答题目没有询问的另一事项。主体和条件要清楚。题目涉及规则、条件、金额、期限或后续动作时，不能只答“是/否/可以/不可以”，要给出结论和关键依据。`source_fact_text` 写出证据块中的直接支撑事实；`evidence_usage` 列出实际使用的必需证据块。出现必需图片证据块时，必须使用并引用它。
+{hop_instruction_zh}
 {choice_section_zh}
 
 只输出 JSON：{output_schema_zh}。

@@ -46,9 +46,16 @@ class _SequentialChatClient:
         return json.dumps(self.payloads.pop(0), ensure_ascii=False)
 
 
-def _generation_unit(*, mode="text", required_images=None, required_materials=None):
+def _generation_unit(
+    *,
+    mode="text",
+    required_images=None,
+    required_materials=None,
+    summary_hops=None,
+):
     required_images = list(required_images or [])
     required_materials = list(required_materials or ["section-1"])
+    summary_hops = [dict(hop) for hop in summary_hops or []]
     chunks = [
         {"chunk_id": "chunk-1", "chunk_index": 1, "title_path": "办理 > 正文", "text": "正文事实。"},
         {"chunk_id": "chunk-2", "chunk_index": 2, "title_path": "办理 > 时限", "text": "时限事实。"},
@@ -69,11 +76,15 @@ def _generation_unit(*, mode="text", required_images=None, required_materials=No
             "role": "primary_source",
         },
     }
-    rendered = "【必需正文证据】\n\n正文证据-1\n正文：正文事实。"
     evidence_text_by_ref = {
         "正文证据-1": "正文证据-1\n正文：正文事实。",
         "正文证据-2": "正文证据-2\n正文：时限事实。",
     }
+    rendered_blocks = ["【必需正文证据】"]
+    for material_id in required_materials:
+        label = "正文证据-1" if material_id == "section-1" else "正文证据-2"
+        rendered_blocks.append(evidence_text_by_ref[label])
+    rendered = "\n\n".join(rendered_blocks)
     if mode in {"visual", "mixed"}:
         ref_map["图片证据-1"] = {
             "chunk_id": "chunk-1",
@@ -85,6 +96,26 @@ def _generation_unit(*, mode="text", required_images=None, required_materials=No
         }
         rendered += "\n\n【必需图片证据】\n\n图片证据-1\n图片事实：页面显示导出按钮。"
         evidence_text_by_ref["图片证据-1"] = "图片证据-1\n图片事实：页面显示导出按钮。"
+    llm_summary_hops = []
+    for index, hop in enumerate(summary_hops, start=1):
+        evidence_refs = []
+        material_id = hop.get("material_id")
+        hop_mode = hop.get("evidence_mode") or "text"
+        if hop_mode in {"text", "mixed"}:
+            evidence_refs.append(
+                "正文证据-1" if material_id == "section-1" else "正文证据-2"
+            )
+        if hop_mode in {"visual", "mixed"}:
+            evidence_refs.append("图片证据-1")
+        llm_summary_hops.append(
+            {
+                "hop_id": hop.get("hop_id") or f"hop-{index}",
+                "hop_ref": f"HOP-{index}",
+                "sub_question": hop.get("sub_question"),
+                "evidence_mode": hop_mode,
+                "evidence_refs": evidence_refs,
+            }
+        )
     return {
         "source_chunk": chunks[0],
         "source_chunks": chunks,
@@ -97,9 +128,11 @@ def _generation_unit(*, mode="text", required_images=None, required_materials=No
             "material_ids": required_materials,
             "required_image_ids": required_images,
             "evidence_mode": mode,
+            "summary_hops": summary_hops,
         },
         "llm_evidence_ref_map": ref_map,
         "llm_evidence_text_by_ref": evidence_text_by_ref,
+        "llm_summary_hops": llm_summary_hops,
     }
 
 
@@ -146,6 +179,7 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertIn('{"question":"..."}', candidate_prompt)
         self.assertIn('{"question":"..."}', editor_prompt)
         self.assertIn("图片证据", answer_prompt)
+        self.assertIn("不能附带回答题目没有询问的另一事项", answer_prompt)
         self.assertIn("信息缺口", candidate_prompt)
         self.assertIn("必须从题干删除", candidate_prompt)
         self.assertIn("完整步骤", candidate_prompt)
@@ -160,8 +194,20 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertIn('"scenario_type":"summary"', prompt)
         self.assertNotIn('"scenario_type":"point|summary"', prompt)
         self.assertIn("本批次只规划总结场景", prompt)
-        self.assertIn("独立事实", prompt)
-        self.assertIn("optional material", prompt)
+        self.assertIn("原子子问题", prompt)
+        self.assertIn('"summary_hops"', prompt)
+        self.assertIn('"material_ref"', prompt)
+        self.assertIn('"material_ref":"主材料-B"', prompt)
+
+        one_material_prompt = build_scenario_planner_system_prompt(
+            language_code="zh",
+            language_instruction="请使用简体中文。",
+            requested_count=1,
+            qa_detail_mode="summary",
+            material_count=1,
+        )
+        self.assertNotIn('"material_ref":"主材料-B"', one_material_prompt)
+        self.assertEqual(2, one_material_prompt.count('"material_ref":"主材料-A"'))
 
     def test_category_profile_stays_in_planning_and_few_shot_is_style_only(self):
         profile = build_planner_category_profile(
@@ -206,6 +252,54 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertNotIn("private-chunk-id", user_content)
         self.assertNotIn("material_ref", user_content)
         self.assertNotIn("evidence_mode", user_content)
+
+    def test_summary_writer_receives_atomic_needs_without_contract_ids(self):
+        client = _StaticChatClient(
+            {"question": "办理申请时需要提交什么材料，通常多久可以办结？"}
+        )
+        items = call_candidate_question_llm(
+            client=client,
+            model="test-model",
+            source_chunk_text="申请时应提交身份证明，五个工作日内办结。",
+            source_chunk_meta={
+                "qa_generation_unit_subject_label": "业务申请",
+                "qa_generation_unit_scenario_intent": "了解申请材料和办理时限",
+                "qa_generation_unit_reader_need": "一次准备好申请",
+                "qa_generation_unit_required_material_ids": ["section-1", "section-2"],
+                "qa_generation_unit_summary_hops": [
+                    {
+                        "hop_id": "hop-1",
+                        "sub_question": "需要提交什么申请材料？",
+                        "material_id": "section-1",
+                        "evidence_mode": "text",
+                        "required_image_ids": [],
+                    },
+                    {
+                        "hop_id": "hop-2",
+                        "sub_question": "办理时限是多久？",
+                        "material_id": "section-2",
+                        "evidence_mode": "text",
+                        "required_image_ids": [],
+                    },
+                ],
+            },
+            candidate_count=1,
+            prompt_language="zh",
+            question_type_plan=["简答题"],
+            few_shot_examples=None,
+            request_timeout=10,
+            qa_detail_mode="summary",
+        )
+        self.assertEqual(
+            "办理申请时需要提交什么材料，通常多久可以办结？",
+            items[0]["question"],
+        )
+        user_content = client.messages[1]["content"]
+        self.assertIn("需要提交什么申请材料", user_content)
+        self.assertIn("办理时限是多久", user_content)
+        self.assertNotIn("summary_hops", user_content)
+        self.assertNotIn("hop-1", user_content)
+        self.assertNotIn("section-1", user_content)
 
     def test_editor_changes_only_wording_and_preserves_frozen_contract(self):
         client = _StaticChatClient({"question": "申报通过后，可以在平台上查看或导出哪些信息？"})
@@ -344,6 +438,22 @@ class QAGenerationContractTests(unittest.TestCase):
                 "image_ref_map": {"图片-A": "image-1"},
                 "required_image_ids": ["image-1"],
                 "evidence_mode": "mixed",
+                "summary_hops": [
+                    {
+                        "hop_id": "hop-1",
+                        "sub_question": "审核通过后可以查看什么？",
+                        "material_id": "section-1",
+                        "evidence_mode": "text",
+                        "required_image_ids": [],
+                    },
+                    {
+                        "hop_id": "hop-2",
+                        "sub_question": "页面提供什么导出控件？",
+                        "material_id": "section-1",
+                        "evidence_mode": "visual",
+                        "required_image_ids": ["image-1"],
+                    },
+                ],
                 "prompt_materials": [
                     {
                         "material_ref": "主材料-A",
@@ -382,6 +492,14 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertIn(
             "页面提供导出按钮。",
             generation_unit["llm_evidence_text_by_ref"]["图片证据-1"],
+        )
+        self.assertEqual(
+            ["正文证据-1"],
+            generation_unit["llm_summary_hops"][0]["evidence_refs"],
+        )
+        self.assertEqual(
+            ["图片证据-1"],
+            generation_unit["llm_summary_hops"][1]["evidence_refs"],
         )
 
     def test_mixed_answer_requires_text_and_visual_citations(self):
@@ -495,15 +613,186 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertEqual(2, answer_audit["answer_attempt_count"])
         self.assertEqual("missing_required_visual_evidence", answer_audit["answer_retry_reason"])
 
-    def test_summary_answer_requires_all_frozen_required_materials(self):
+    def test_summary_answer_requires_every_atomic_hop(self):
+        summary_hops = [
+            {
+                "hop_id": "hop-1",
+                "sub_question": "需要提交什么材料？",
+                "material_id": "section-1",
+                "evidence_mode": "text",
+                "required_image_ids": [],
+            },
+            {
+                "hop_id": "hop-2",
+                "sub_question": "办理时限是多久？",
+                "material_id": "section-2",
+                "evidence_mode": "text",
+                "required_image_ids": [],
+            },
+        ]
+        client = _SequentialChatClient(
+            [
+                {
+                    "items": [
+                        {
+                            "answer": "需要提交申请表。",
+                            "answer_explanation": "回答只覆盖材料。",
+                            "source_fact_text": "提交申请表。",
+                            "evidence_usage": [
+                                {
+                                    "evidence_ref": "正文证据-1",
+                                    "role": "primary_source",
+                                    "hop_refs": ["HOP-1"],
+                                }
+                            ],
+                        }
+                    ]
+                },
+                {
+                    "items": [
+                        {
+                            "answer": "需要提交申请表，办理时限为五个工作日。",
+                            "answer_explanation": "材料和时限两个子问题均已回答。",
+                            "source_fact_text": "提交申请表；五个工作日内办结。",
+                            "evidence_usage": [
+                                {
+                                    "evidence_ref": "正文证据-1",
+                                    "role": "primary_source",
+                                    "hop_refs": ["HOP-1"],
+                                },
+                                {
+                                    "evidence_ref": "正文证据-2",
+                                    "role": "primary_source",
+                                    "hop_refs": ["HOP-2"],
+                                },
+                            ],
+                        }
+                    ]
+                },
+            ]
+        )
+        answer_audit = {}
+        item, reason = call_evidence_answer_llm(
+            client=client,
+            model="test-model",
+            candidate={"question": "办理需要哪些材料和多长时间？", "question_type": "简答题"},
+            generation_unit=_generation_unit(
+                required_materials=["section-1", "section-2"],
+                summary_hops=summary_hops,
+            ),
+            qa_detail_mode="summary",
+            prompt_language="zh",
+            request_timeout=10,
+            item_normalizer_with_reason=validate_and_normalize_item_with_reason,
+            source_override_handler=lambda *_args, **_kwargs: None,
+            answer_audit=answer_audit,
+        )
+        self.assertEqual("ok", reason)
+        self.assertIsNotNone(item)
+        self.assertEqual(2, answer_audit["answer_attempt_count"])
+        self.assertEqual(
+            "incomplete_summary_hop_coverage",
+            answer_audit["answer_retry_reason"],
+        )
+        self.assertEqual(["HOP-1"], item["evidence_usage"][0]["hop_refs"])
+        self.assertEqual(summary_hops, item["qa_generation_summary_hops"])
+
+    def test_summary_optional_material_is_not_part_of_hop_coverage(self):
+        summary_hops = [
+            {
+                "hop_id": "hop-1",
+                "sub_question": "需要提交什么材料？",
+                "material_id": "section-1",
+                "evidence_mode": "text",
+                "required_image_ids": [],
+            },
+            {
+                "hop_id": "hop-2",
+                "sub_question": "办理时限是多久？",
+                "material_id": "section-2",
+                "evidence_mode": "text",
+                "required_image_ids": [],
+            },
+        ]
         client = _StaticChatClient(
             {
                 "items": [
                     {
-                        "answer": "需要提交申请表。",
-                        "answer_explanation": "回答只覆盖材料。",
-                        "source_fact_text": "提交申请表。",
-                        "evidence_usage": [{"evidence_ref": "正文证据-1", "role": "primary_source"}],
+                        "answer": "需要提交申请表，办理时限为五个工作日。",
+                        "answer_explanation": "两个原子需求均有必需证据支持。",
+                        "source_fact_text": "提交申请表；五个工作日内办结。",
+                        "evidence_usage": [
+                            {
+                                "evidence_ref": "正文证据-1",
+                                "role": "primary_source",
+                                "hop_refs": ["HOP-1"],
+                            },
+                            {
+                                "evidence_ref": "正文证据-2",
+                                "role": "primary_source",
+                                "hop_refs": ["HOP-2"],
+                            },
+                        ],
+                    }
+                ]
+            }
+        )
+        generation_unit = _generation_unit(
+            required_materials=["section-1", "section-2"],
+            summary_hops=summary_hops,
+        )
+        generation_unit["source_unit"]["optional_material_ids"] = ["section-3"]
+        item, reason = call_evidence_answer_llm(
+            client=client,
+            model="test-model",
+            candidate={"question": "办理需要哪些材料和多长时间？", "question_type": "简答题"},
+            generation_unit=generation_unit,
+            qa_detail_mode="summary",
+            prompt_language="zh",
+            request_timeout=10,
+            item_normalizer_with_reason=validate_and_normalize_item_with_reason,
+            source_override_handler=lambda *_args, **_kwargs: None,
+        )
+        self.assertEqual("ok", reason)
+        self.assertIsNotNone(item)
+        self.assertEqual(2, len(item["evidence_usage"]))
+
+    def test_summary_visual_hop_keeps_image_dependency(self):
+        summary_hops = [
+            {
+                "hop_id": "hop-1",
+                "sub_question": "审核通过后可以查看什么？",
+                "material_id": "section-1",
+                "evidence_mode": "text",
+                "required_image_ids": [],
+            },
+            {
+                "hop_id": "hop-2",
+                "sub_question": "页面通过什么控件导出？",
+                "material_id": "section-1",
+                "evidence_mode": "visual",
+                "required_image_ids": ["image-1"],
+            },
+        ]
+        client = _StaticChatClient(
+            {
+                "items": [
+                    {
+                        "answer": "审核通过后可以查看申报记录，并通过导出按钮导出。",
+                        "answer_explanation": "正文支持查看内容，图片支持导出控件。",
+                        "source_fact_text": "可查看申报记录；页面提供导出按钮。",
+                        "evidence_usage": [
+                            {
+                                "evidence_ref": "正文证据-1",
+                                "role": "primary_source",
+                                "hop_refs": ["HOP-1"],
+                            },
+                            {
+                                "evidence_ref": "图片证据-1",
+                                "role": "primary_visual",
+                                "hop_refs": ["HOP-2"],
+                            },
+                        ],
                     }
                 ]
             }
@@ -511,18 +800,39 @@ class QAGenerationContractTests(unittest.TestCase):
         item, reason = call_evidence_answer_llm(
             client=client,
             model="test-model",
-            candidate={"question": "办理需要哪些材料和多长时间？", "question_type": "简答题"},
-            generation_unit=_generation_unit(required_materials=["section-1", "section-2"]),
+            candidate={"question": "审核通过后可以查看和导出什么？", "question_type": "简答题"},
+            generation_unit=_generation_unit(
+                mode="mixed",
+                required_images=["image-1"],
+                summary_hops=summary_hops,
+            ),
             qa_detail_mode="summary",
             prompt_language="zh",
             request_timeout=10,
             item_normalizer_with_reason=validate_and_normalize_item_with_reason,
             source_override_handler=lambda *_args, **_kwargs: None,
         )
-        self.assertIsNone(item)
-        self.assertEqual("incomplete_primary_material_coverage", reason)
+        self.assertEqual("ok", reason)
+        self.assertEqual("mixed", item["evidence_mode"])
+        self.assertEqual("image-1", item["evidence_usage"][1]["image_id"])
 
     def test_consolidation_and_debug_have_no_difficulty_fields(self):
+        summary_hops = [
+            {
+                "hop_id": "hop-1",
+                "sub_question": "谁负责办理？",
+                "material_id": "section-1",
+                "evidence_mode": "text",
+                "required_image_ids": [],
+            },
+            {
+                "hop_id": "hop-2",
+                "sub_question": "办理依据是什么？",
+                "material_id": "section-1",
+                "evidence_mode": "text",
+                "required_image_ids": [],
+            },
+        ]
         qa_item = {
             "id": "qa-1",
             "question": "谁负责办理？",
@@ -531,6 +841,7 @@ class QAGenerationContractTests(unittest.TestCase):
             "source_fact_text": "登记机关负责办理。",
             "qa_evaluation_evidence_text": "正文证据-1\n正文：登记机关负责办理。",
             "question_type": "简答题",
+            "qa_generation_summary_hops": summary_hops,
             "evidence_usage": [
                 {
                     "evidence_ref": "正文证据-1",
@@ -539,6 +850,7 @@ class QAGenerationContractTests(unittest.TestCase):
                     "chunk_index": 1,
                     "title_path": "办理要求",
                     "material_id": "section-1",
+                    "hop_refs": ["HOP-1", "HOP-2"],
                 }
             ],
         }
@@ -568,6 +880,11 @@ class QAGenerationContractTests(unittest.TestCase):
             "正文证据-1\n正文：登记机关负责办理。",
             consolidated["qa_evaluation_evidence_text"],
         )
+        self.assertEqual(summary_hops, consolidated["qa_generation_summary_hops"])
+        self.assertEqual(
+            ["HOP-1", "HOP-2"],
+            consolidated["evidence_usage"][0]["hop_refs"],
+        )
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = str(Path(tmp_dir) / "qa-debug.sqlite3")
             with patch.dict("os.environ", {"QA_DEBUG_DB_PATH": db_path}):
@@ -578,6 +895,11 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertEqual(
             "正文证据-1\n正文：登记机关负责办理。",
             debug_payload["qa_evaluation_evidence_text"],
+        )
+        self.assertEqual(summary_hops, debug_payload["qa_generation_summary_hops"])
+        self.assertEqual(
+            ["HOP-1", "HOP-2"],
+            debug_payload["evidence_usage"][0]["hop_refs"],
         )
 
     def test_zero_final_evidence_k_is_preserved(self):

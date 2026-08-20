@@ -226,11 +226,13 @@ def _normalize_candidate_question(
 def _restore_evidence_usage_ids(
     raw_entries: Any,
     ref_map: Dict[str, Dict[str, Any]],
+    valid_hop_refs: Optional[set[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Convert readable evidence labels into audited material/image pointers."""
     if not isinstance(raw_entries, list):
         return []
     restored: List[Dict[str, Any]] = []
+    restored_by_ref: Dict[str, Dict[str, Any]] = {}
     for raw_entry in raw_entries:
         if not isinstance(raw_entry, dict):
             continue
@@ -238,17 +240,32 @@ def _restore_evidence_usage_ids(
         mapped = ref_map.get(ref) if ref else None
         if not isinstance(mapped, dict):
             continue
-        restored_entry = {
-            "evidence_ref": ref,
-            "role": str(mapped.get("role") or "evidence"),
-            "material_id": mapped.get("material_id"),
-            "chunk_id": mapped.get("chunk_id"),
-            "chunk_index": mapped.get("chunk_index"),
-            "title_path": mapped.get("title_path"),
-        }
-        if mapped.get("image_id"):
-            restored_entry["image_id"] = mapped.get("image_id")
-        restored.append(restored_entry)
+        restored_entry = restored_by_ref.get(ref)
+        if restored_entry is None:
+            restored_entry = {
+                "evidence_ref": ref,
+                "role": str(mapped.get("role") or "evidence"),
+                "material_id": mapped.get("material_id"),
+                "chunk_id": mapped.get("chunk_id"),
+                "chunk_index": mapped.get("chunk_index"),
+                "title_path": mapped.get("title_path"),
+            }
+            if mapped.get("image_id"):
+                restored_entry["image_id"] = mapped.get("image_id")
+            if valid_hop_refs:
+                restored_entry["hop_refs"] = []
+            restored_by_ref[ref] = restored_entry
+            restored.append(restored_entry)
+        if valid_hop_refs:
+            raw_hop_refs = raw_entry.get("hop_refs")
+            raw_hop_refs = raw_hop_refs if isinstance(raw_hop_refs, list) else []
+            for hop_ref in raw_hop_refs:
+                normalized_hop_ref = str(hop_ref or "").strip()
+                if (
+                    normalized_hop_ref in valid_hop_refs
+                    and normalized_hop_ref not in restored_entry["hop_refs"]
+                ):
+                    restored_entry["hop_refs"].append(normalized_hop_ref)
     return restored
 
 
@@ -277,7 +294,47 @@ def _evidence_usage_covers_contract(
     *,
     source_unit: Dict[str, Any],
 ) -> Tuple[bool, str]:
-    if not _primary_usage_covers_bound_materials(evidence_usage, source_unit=source_unit):
+    summary_hops = source_unit.get("summary_hops")
+    summary_hops = summary_hops if isinstance(summary_hops, list) else []
+    if summary_hops:
+        if not 2 <= len(summary_hops) <= 3:
+            return False, "incomplete_summary_hop_coverage"
+        for index, hop in enumerate(summary_hops, start=1):
+            if not isinstance(hop, dict):
+                return False, "incomplete_summary_hop_coverage"
+            hop_ref = f"HOP-{index}"
+            material_id = str(hop.get("material_id") or "")
+            hop_entries = [
+                entry
+                for entry in evidence_usage
+                if isinstance(entry, dict)
+                and hop_ref in (entry.get("hop_refs") or [])
+                and str(entry.get("material_id") or "") == material_id
+            ]
+            hop_mode = str(hop.get("evidence_mode") or "text").strip().lower()
+            has_text = any(
+                str(entry.get("role") or "") == "primary_source"
+                for entry in hop_entries
+            )
+            cited_images = {
+                str(entry.get("image_id") or "")
+                for entry in hop_entries
+                if str(entry.get("role") or "") == "primary_visual"
+            }
+            required_hop_images = {
+                str(value)
+                for value in hop.get("required_image_ids") or []
+                if str(value)
+            }
+            if hop_mode in {"text", "mixed"} and not has_text:
+                return False, "incomplete_summary_hop_coverage"
+            if hop_mode in {"visual", "mixed"} and not required_hop_images.issubset(
+                cited_images
+            ):
+                return False, "incomplete_summary_hop_coverage"
+    elif not _primary_usage_covers_bound_materials(
+        evidence_usage, source_unit=source_unit
+    ):
         return False, "incomplete_primary_material_coverage"
     evidence_mode = str(source_unit.get("evidence_mode") or "text").strip().lower()
     required_image_ids = {
@@ -303,6 +360,7 @@ def _evidence_usage_covers_contract(
 def _answer_retry_instruction(
     reason: str,
     evidence_ref_map: Dict[str, Dict[str, Any]],
+    llm_summary_hops: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     if reason == "missing_items":
         return "请按既定 JSON 结构返回一条完整答案。"
@@ -318,6 +376,25 @@ def _answer_retry_instruction(
             if isinstance(item, dict) and item.get("role") in {"primary_source", "primary_visual"}
         ]
         return "必须覆盖并在 evidence_usage 中引用所有必需证据：" + "、".join(labels)
+    if reason == "incomplete_summary_hop_coverage":
+        hop_requirements = []
+        for hop in llm_summary_hops or []:
+            if not isinstance(hop, dict):
+                continue
+            hop_ref = str(hop.get("hop_ref") or "").strip()
+            evidence_refs = [
+                str(value)
+                for value in hop.get("evidence_refs") or []
+                if str(value)
+            ]
+            if hop_ref:
+                hop_requirements.append(
+                    f"{hop_ref} 使用 {'、'.join(evidence_refs) or '其绑定证据'}"
+                )
+        return (
+            "必须逐一回答所有原子子问题，并在 evidence_usage.hop_refs 中标明支撑关系："
+            + "；".join(hop_requirements)
+        )
     return ""
 
 
@@ -555,6 +632,15 @@ def _build_question_writing_brief(
         if str(value)
     }
     evidence_mode = str(meta.get("qa_generation_unit_evidence_mode") or "text").strip().lower()
+    raw_summary_hops = meta.get("qa_generation_unit_summary_hops")
+    raw_summary_hops = raw_summary_hops if isinstance(raw_summary_hops, list) else []
+    summary_sub_questions: List[str] = []
+    for raw_hop in raw_summary_hops:
+        if not isinstance(raw_hop, dict):
+            continue
+        sub_question = " ".join(str(raw_hop.get("sub_question") or "").split()).strip()
+        if sub_question and sub_question not in summary_sub_questions:
+            summary_sub_questions.append(sub_question)
     subject = str(meta.get("qa_generation_unit_subject_label") or "").strip()
     question_object = _question_object_label(meta)
     text_facts: List[str] = []
@@ -597,6 +683,14 @@ def _build_question_writing_brief(
         f"{str(reader_need or '').strip()}"
     )
     lines.append("题目粒度：总结" if qa_detail_mode == "summary" else "题目粒度：单点")
+    if qa_detail_mode == "summary" and summary_sub_questions:
+        lines.append(
+            "总括问题必须同时覆盖的信息缺口（合并成一句自然问题，不要逐项照抄）：\n"
+            + "\n".join(
+                f"{index}. {sub_question}"
+                for index, sub_question in enumerate(summary_sub_questions, start=1)
+            )
+        )
     if text_facts:
         lines.append(
             "回答依据（只用于限定答案范围，不要逐项复述数值、名单、步骤或日期）：\n"
@@ -706,6 +800,7 @@ def call_scenario_planner_llm(
             knowledge_category=knowledge_category,
             language_code=language_code,
         ),
+        material_count=len(section_materials),
     )
     user_content = json.dumps({"materials": readable_materials}, ensure_ascii=False)
     retry_context = dict(_planner_retry_context or {})
@@ -796,21 +891,129 @@ def call_scenario_planner_llm(
                     resolved.append(material_id)
             return resolved, unknown
 
-        required_material_ids, unknown_required = resolve_refs(
-            item.get("required_material_refs"),
-        )
+        summary_hops: List[Dict[str, Any]] = []
+        required_material_ids: List[str] = []
+        required_image_ids: List[str] = []
+        if scenario_type == "summary":
+            raw_hops = item.get("summary_hops")
+            raw_hops = raw_hops if isinstance(raw_hops, list) else []
+            if not 2 <= len(raw_hops) <= 3:
+                dropped["summary_requires_2_to_3_hops"] = (
+                    dropped.get("summary_requires_2_to_3_hops", 0) + 1
+                )
+                continue
+            seen_sub_questions: set[str] = set()
+            invalid_hop_reason = ""
+            for hop_index, raw_hop in enumerate(raw_hops, start=1):
+                if not isinstance(raw_hop, dict):
+                    invalid_hop_reason = "invalid_summary_hop"
+                    break
+                sub_question = " ".join(
+                    str(raw_hop.get("sub_question") or "").split()
+                ).strip()
+                sub_key = sub_question.casefold()
+                material_ref = str(raw_hop.get("material_ref") or "").strip()
+                material = material_by_ref.get(material_ref)
+                if not sub_question or material is None:
+                    invalid_hop_reason = (
+                        "unknown_summary_hop_material_ref"
+                        if material is None
+                        else "invalid_summary_hop"
+                    )
+                    break
+                if sub_key in seen_sub_questions:
+                    invalid_hop_reason = "duplicate_summary_hop"
+                    break
+                seen_sub_questions.add(sub_key)
+                material_id = str(material.material_id)
+                material_image_ids = {
+                    str(getattr(image, "image_id", "") or "").strip()
+                    for image in getattr(material, "image_materials", []) or []
+                }
+                hop_image_ids: List[str] = []
+                hop_image_refs: List[str] = []
+                for value in raw_hop.get("image_refs") or []:
+                    image_ref = str(value or "").strip()
+                    image_id = image_id_by_ref.get(image_ref)
+                    if not image_id or image_id not in material_image_ids:
+                        invalid_hop_reason = "unknown_summary_hop_image_ref"
+                        break
+                    if image_id not in hop_image_ids:
+                        hop_image_ids.append(image_id)
+                        hop_image_refs.append(image_ref)
+                if invalid_hop_reason:
+                    break
+                hop_mode = str(raw_hop.get("evidence_mode") or "").strip().lower()
+                if hop_mode not in {"text", "visual", "mixed"}:
+                    hop_mode = "mixed" if hop_image_ids else "text"
+                if hop_image_ids and hop_mode == "text":
+                    hop_mode = "mixed"
+                if not hop_image_ids and hop_mode in {"visual", "mixed"}:
+                    invalid_hop_reason = "summary_hop_visual_requires_image"
+                    break
+                summary_hops.append(
+                    {
+                        "hop_id": f"hop-{hop_index}",
+                        "sub_question": sub_question,
+                        "material_id": material_id,
+                        "material_ref": material_ref,
+                        "evidence_mode": hop_mode,
+                        "required_image_ids": hop_image_ids,
+                        "image_refs": hop_image_refs,
+                    }
+                )
+                if material_id not in required_material_ids:
+                    required_material_ids.append(material_id)
+                for image_id in hop_image_ids:
+                    if image_id not in required_image_ids:
+                        required_image_ids.append(image_id)
+            if invalid_hop_reason:
+                dropped[invalid_hop_reason] = dropped.get(invalid_hop_reason, 0) + 1
+                continue
+        else:
+            required_material_ids, unknown_required = resolve_refs(
+                item.get("required_material_refs"),
+            )
+            if unknown_required:
+                dropped["unknown_material_ref"] = (
+                    dropped.get("unknown_material_ref", 0) + unknown_required
+                )
+            selected_material_ids = set(required_material_ids)
+            available_image_ids = {
+                str(getattr(image, "image_id", "") or "").strip()
+                for material in section_materials
+                if str(material.material_id) in selected_material_ids
+                for image in getattr(material, "image_materials", []) or []
+            }
+            unknown_image_refs = 0
+            for value in item.get("required_image_refs") or []:
+                image_id = image_id_by_ref.get(str(value or "").strip())
+                if not image_id or image_id not in available_image_ids:
+                    unknown_image_refs += 1
+                    continue
+                if image_id not in required_image_ids:
+                    required_image_ids.append(image_id)
+            if unknown_image_refs:
+                dropped["unknown_image_ref"] = (
+                    dropped.get("unknown_image_ref", 0) + unknown_image_refs
+                )
         optional_material_ids, unknown_optional = resolve_refs(
             item.get("optional_material_refs"),
         )
-        if unknown_required or unknown_optional:
-            dropped["unknown_material_ref"] = dropped.get("unknown_material_ref", 0) + (
-                unknown_required + unknown_optional
+        if unknown_optional:
+            dropped["unknown_material_ref"] = (
+                dropped.get("unknown_material_ref", 0) + unknown_optional
             )
+        optional_material_ids = [
+            material_id
+            for material_id in optional_material_ids
+            if material_id not in required_material_ids
+        ]
         material_ids: List[str] = []
         for material_id in [*required_material_ids, *optional_material_ids]:
             if material_id not in material_ids:
                 material_ids.append(material_id)
-        if not intent or not reader_need or not material_ids:
+        if not intent or not reader_need or not required_material_ids:
             dropped["missing_required_field"] = dropped.get("missing_required_field", 0) + 1
             continue
         if scenario_type == "point" and (
@@ -818,62 +1021,28 @@ def call_scenario_planner_llm(
         ):
             dropped["point_requires_one_material"] = dropped.get("point_requires_one_material", 0) + 1
             continue
-        if scenario_type == "summary" and len(required_material_ids) > 3:
+        if len(required_material_ids) > 3:
             dropped["summary_requires_at_most_three_materials"] = (
                 dropped.get("summary_requires_at_most_three_materials", 0) + 1
             )
             continue
-        selected_material_ids = set(material_ids)
-        available_image_ids = {
-            str(getattr(image, "image_id", "") or "").strip()
-            for material in section_materials
-            if str(material.material_id) in selected_material_ids
-            for image in getattr(material, "image_materials", []) or []
-        }
-        required_image_ids: List[str] = []
-        unknown_image_refs = 0
-        for value in item.get("required_image_refs") or []:
-            image_id = image_id_by_ref.get(str(value or "").strip())
-            if not image_id or image_id not in available_image_ids:
-                unknown_image_refs += 1
-                continue
-            if image_id not in required_image_ids:
-                required_image_ids.append(image_id)
-        if unknown_image_refs:
-            dropped["unknown_image_ref"] = dropped.get("unknown_image_ref", 0) + unknown_image_refs
-        for material in section_materials:
-            if not any(
-                str(getattr(image, "image_id", "") or "") in required_image_ids
-                for image in getattr(material, "image_materials", []) or []
-            ):
-                continue
-            material_id = str(material.material_id)
-            if material_id not in required_material_ids:
-                required_material_ids.append(material_id)
-            optional_material_ids = [
-                value for value in optional_material_ids if value != material_id
-            ]
-        material_ids = []
-        for material_id in [*required_material_ids, *optional_material_ids]:
-            if material_id not in material_ids:
-                material_ids.append(material_id)
-        if scenario_type == "point" and (
-            len(required_material_ids) != 1 or optional_material_ids
-        ):
-            dropped["point_requires_one_material"] = dropped.get("point_requires_one_material", 0) + 1
-            continue
-        if scenario_type == "summary" and len(required_material_ids) > 3:
-            dropped["summary_requires_at_most_three_materials"] = (
-                dropped.get("summary_requires_at_most_three_materials", 0) + 1
+        if scenario_type == "summary":
+            hop_modes = {str(hop.get("evidence_mode") or "text") for hop in summary_hops}
+            evidence_mode = (
+                "text"
+                if hop_modes == {"text"}
+                else "visual"
+                if hop_modes == {"visual"}
+                else "mixed"
             )
-            continue
-        evidence_mode = str(item.get("evidence_mode") or "").strip().lower()
-        if evidence_mode not in {"text", "visual", "mixed"}:
-            evidence_mode = "mixed" if required_image_ids else "text"
-        if required_image_ids and evidence_mode == "text":
-            evidence_mode = "mixed"
-        elif not required_image_ids and evidence_mode in {"visual", "mixed"}:
-            evidence_mode = "text"
+        else:
+            evidence_mode = str(item.get("evidence_mode") or "").strip().lower()
+            if evidence_mode not in {"text", "visual", "mixed"}:
+                evidence_mode = "mixed" if required_image_ids else "text"
+            if required_image_ids and evidence_mode == "text":
+                evidence_mode = "mixed"
+            elif not required_image_ids and evidence_mode in {"visual", "mixed"}:
+                evidence_mode = "text"
         normalized.append(
             {
                 "scenario_type": scenario_type,
@@ -909,6 +1078,7 @@ def call_scenario_planner_llm(
                     for image_id in required_image_ids
                     if image_id in image_refs_by_id
                 ],
+                "summary_hops": summary_hops,
             }
         )
     only_scenario_type_mismatch = (
@@ -1254,6 +1424,13 @@ def call_evidence_answer_llm(
     evidence_text_by_ref = generation_unit.get("llm_evidence_text_by_ref")
     if not isinstance(evidence_text_by_ref, dict):
         evidence_text_by_ref = {}
+    llm_summary_hops = generation_unit.get("llm_summary_hops")
+    llm_summary_hops = llm_summary_hops if isinstance(llm_summary_hops, list) else []
+    valid_hop_refs = {
+        str(hop.get("hop_ref") or "").strip()
+        for hop in llm_summary_hops
+        if isinstance(hop, dict) and str(hop.get("hop_ref") or "").strip()
+    }
     language_code, language_instruction = _resolve_generation_language(
         prompt_language,
         prompt_unit_text or source_chunk_text,
@@ -1274,6 +1451,20 @@ def call_evidence_answer_llm(
         f"题目形式：{question_type}\n\n"
         f"可读证据：\n{prompt_unit_text}"
     )
+    if llm_summary_hops:
+        hop_lines: List[str] = []
+        for hop in llm_summary_hops:
+            if not isinstance(hop, dict):
+                continue
+            hop_lines.append(
+                f"{hop.get('hop_ref')}：{hop.get('sub_question')}\n"
+                f"绑定证据：{'、'.join(str(value) for value in hop.get('evidence_refs') or [])}"
+            )
+        user_content += (
+            "\n\n必须覆盖的原子子问题：\n"
+            + "\n".join(hop_lines)
+            + "\n请在 evidence_usage.hop_refs 中标明每条证据支撑的 HOP。"
+        )
 
     response_type: Optional[str] = None
     response_dump: Any = None
@@ -1319,6 +1510,7 @@ def call_evidence_answer_llm(
             normalized["evidence_usage"] = _restore_evidence_usage_ids(
                 raw_usage,
                 evidence_ref_map,
+                valid_hop_refs=valid_hop_refs or None,
             )[:12]
         contract_ok, contract_reason = _evidence_usage_covers_contract(
             normalized.get("evidence_usage") or [],
@@ -1372,7 +1564,11 @@ def call_evidence_answer_llm(
 
     initial_raw = raw
     normalized_item, dropped_reason = _normalize_answer(raw_items)
-    retry_instruction = _answer_retry_instruction(dropped_reason, evidence_ref_map)
+    retry_instruction = _answer_retry_instruction(
+        dropped_reason,
+        evidence_ref_map,
+        llm_summary_hops=llm_summary_hops,
+    )
     if normalized_item is None and retry_instruction:
         answer_attempt_count = 2
         answer_retry_reason = dropped_reason
@@ -1458,6 +1654,11 @@ def call_evidence_answer_llm(
             normalized_item["qa_generation_optional_material_ids"] = list(
                 source_unit_payload.get("optional_material_ids") or []
             )
+            normalized_item["qa_generation_summary_hops"] = [
+                dict(hop)
+                for hop in source_unit_payload.get("summary_hops") or []
+                if isinstance(hop, dict)
+            ]
             normalized_item["retrieval_trace"] = generation_unit.get("retrieval_trace") or {}
             normalized_item["source"] = primary_source.get("chunk_id") or normalized_item.get("source")
             normalized_item["text_for_embedding"] = (
@@ -1474,6 +1675,7 @@ def call_evidence_answer_llm(
                     "qa_generation_unit_id": generation_unit.get("qa_generation_unit_id"),
                     "evidence_chunk_ids": generation_unit.get("evidence_chunk_ids"),
                     "retrieval_trace": generation_unit.get("retrieval_trace"),
+                    "summary_hops": llm_summary_hops,
                 },
                 "knowledge_category": fixed_knowledge_category,
                 "model": model,

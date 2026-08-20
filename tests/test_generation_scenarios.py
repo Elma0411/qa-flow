@@ -138,10 +138,16 @@ class GenerationScenarioTests(unittest.TestCase):
                     "scenario_type": "summary",
                     "intent": "概括整份手册",
                     "reader_need": "了解所有内容",
-                    "required_material_ids": [material.material_id for material in materials],
+                    "summary_hops": [
+                        {
+                            "sub_question": f"事实{index}是什么？",
+                            "material_id": material.material_id,
+                            "evidence_mode": "text",
+                            "required_image_ids": [],
+                        }
+                        for index, material in enumerate(materials, start=1)
+                    ],
                     "optional_material_ids": [],
-                    "evidence_mode": "text",
-                    "required_image_ids": [],
                 }
             ]
 
@@ -181,10 +187,21 @@ class GenerationScenarioTests(unittest.TestCase):
                             "scenario_type": "summary",
                             "intent": "完成办理前需要整体了解哪些要求？",
                             "reader_need": "统筹准备办理事项",
-                            "required_material_refs": ["主材料-A", "主材料-B"],
+                            "summary_hops": [
+                                {
+                                    "sub_question": "需要提交什么申请材料？",
+                                    "material_ref": "主材料-A",
+                                    "evidence_mode": "text",
+                                    "image_refs": [],
+                                },
+                                {
+                                    "sub_question": "办理时限是多久？",
+                                    "material_ref": "主材料-B",
+                                    "evidence_mode": "text",
+                                    "image_refs": [],
+                                },
+                            ],
                             "optional_material_refs": [],
-                            "evidence_mode": "text",
-                            "required_image_refs": [],
                         }
                     ]
                 },
@@ -216,6 +233,9 @@ class GenerationScenarioTests(unittest.TestCase):
         )
         self.assertEqual(1, len(plan.units))
         self.assertEqual("summary", plan.units[0].qa_mode)
+        self.assertEqual(["section-1", "section-2"], plan.units[0].required_material_ids)
+        self.assertEqual(2, len(plan.units[0].summary_hops))
+        self.assertEqual("hop-1", plan.units[0].summary_hops[0]["hop_id"])
         self.assertEqual(2, len(client.messages))
         self.assertIn("本批次只接受 `summary`", client.messages[1][-1]["content"])
         self.assertEqual(2, captured[0]["planning_attempt_count"])
@@ -223,6 +243,120 @@ class GenerationScenarioTests(unittest.TestCase):
         planner_detail = plan.summary()["scenario_planner_batch_details"]["summary"][0]
         self.assertEqual(2, planner_detail["planning_attempt_count"])
         self.assertGreaterEqual(float(planner_detail["planner_seconds"]), 0.0)
+        self.assertEqual(
+            "文档>申请材料",
+            planner_detail["scenarios"][0]["summary_hops"][0]["material_path"],
+        )
+        self.assertEqual(
+            "办理时限是多久？",
+            planner_detail["scenarios"][0]["summary_hops"][1]["sub_question"],
+        )
+
+    def test_summary_with_only_one_atomic_hop_is_rejected(self):
+        chunks = [_chunk(1, "1.1", "文档>材料", "应提交身份证明。")]
+
+        def planner(materials, _count, _mode, **_kwargs):
+            return [
+                {
+                    "scenario_type": "summary",
+                    "intent": "了解申请要求",
+                    "reader_need": "准备申请",
+                    "summary_hops": [
+                        {
+                            "sub_question": "需要提交什么材料？",
+                            "material_id": materials[0].material_id,
+                            "evidence_mode": "text",
+                            "required_image_ids": [],
+                        }
+                    ],
+                    "optional_material_ids": [],
+                }
+            ]
+
+        plan = plan_generation_units(
+            chunks,
+            qa_total_limit=1,
+            qa_per_chunk=1,
+            qa_detail_mode="summary",
+            chunk_size=600,
+            scenario_planner=planner,
+        )
+        self.assertEqual([], plan.units)
+
+    def test_summary_mode_and_required_images_are_derived_from_hops(self):
+        chunks = [
+            _chunk(
+                1,
+                "1.1",
+                "文档>申报结果",
+                "审核通过后可查看申报记录。",
+                image_materials=[
+                    {
+                        "image_id": "image-1",
+                        "description": "页面提供导出按钮。",
+                        "context_before": "",
+                        "context_after": "",
+                    }
+                ],
+            )
+        ]
+        client = _JsonClient(
+            {
+                "items": [
+                    {
+                        "scenario_type": "summary",
+                        "intent": "了解申报结果的查看和导出方式",
+                        "reader_need": "查看并保存申报结果",
+                        "summary_hops": [
+                            {
+                                "sub_question": "审核通过后可以查看什么？",
+                                "material_ref": "主材料-A",
+                                "evidence_mode": "text",
+                                "image_refs": [],
+                            },
+                            {
+                                "sub_question": "页面通过什么控件导出记录？",
+                                "material_ref": "主材料-A",
+                                "evidence_mode": "visual",
+                                "image_refs": ["图片-A"],
+                            },
+                        ],
+                        "optional_material_refs": [],
+                        # These conflicting top-level values are deliberately
+                        # ignored for Summary; hops own the evidence contract.
+                        "evidence_mode": "text",
+                        "required_image_refs": [],
+                    }
+                ]
+            }
+        )
+
+        def planner(materials, count, mode, **kwargs):
+            return call_scenario_planner_llm(
+                client=client,
+                model="test",
+                section_materials=list(materials),
+                requested_count=count,
+                qa_detail_mode=mode,
+                prompt_language="zh",
+                request_timeout=10,
+                planning_batch_index=kwargs.get("planning_batch_index"),
+                planning_batch_count=kwargs.get("planning_batch_count"),
+            )
+
+        plan = plan_generation_units(
+            chunks,
+            qa_total_limit=1,
+            qa_per_chunk=1,
+            qa_detail_mode="summary",
+            chunk_size=600,
+            scenario_planner=planner,
+        )
+        self.assertEqual(1, len(plan.units))
+        self.assertEqual("mixed", plan.units[0].evidence_mode)
+        self.assertEqual(["image-1"], plan.units[0].required_image_ids)
+        self.assertEqual("visual", plan.units[0].summary_hops[1]["evidence_mode"])
+        self.assertNotIn('"material_ref":"主材料-B"', client.messages[0]["content"])
 
     def test_visual_alternative_is_promoted_over_same_material_text_candidate(self):
         chunks = [
@@ -307,10 +441,21 @@ class GenerationScenarioTests(unittest.TestCase):
                     "scenario_type": "summary",
                     "intent": "了解页面操作",
                     "reader_need": "查看并导出记录",
-                    "required_material_ids": [material.material_id],
+                    "summary_hops": [
+                        {
+                            "sub_question": "页面可以查看哪些记录？",
+                            "material_id": material.material_id,
+                            "evidence_mode": "text",
+                            "required_image_ids": [],
+                        },
+                        {
+                            "sub_question": "页面通过什么按钮导出记录？",
+                            "material_id": material.material_id,
+                            "evidence_mode": "mixed",
+                            "required_image_ids": ["image-1"],
+                        },
+                    ],
                     "optional_material_ids": [],
-                    "evidence_mode": "mixed",
-                    "required_image_ids": ["image-1"],
                 }
             ]
 
@@ -353,10 +498,21 @@ class GenerationScenarioTests(unittest.TestCase):
                     "scenario_type": "summary",
                     "intent": "查看并导出申报记录",
                     "reader_need": "了解平台渠道和导出操作",
-                    "required_material_ids": [materials[0].material_id],
-                    "optional_material_ids": [materials[1].material_id],
-                    "evidence_mode": "mixed",
-                    "required_image_ids": ["image-2"],
+                    "summary_hops": [
+                        {
+                            "sub_question": "可以通过什么平台查看申报记录？",
+                            "material_id": materials[0].material_id,
+                            "evidence_mode": "text",
+                            "required_image_ids": [],
+                        },
+                        {
+                            "sub_question": "审核记录页面通过什么控件导出数据？",
+                            "material_id": materials[1].material_id,
+                            "evidence_mode": "visual",
+                            "required_image_ids": ["image-2"],
+                        },
+                    ],
+                    "optional_material_ids": [],
                 }
             ]
 
