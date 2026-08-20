@@ -475,7 +475,7 @@ class GenerationScenarioTests(unittest.TestCase):
         self.assertEqual(2, len(deduped))
         self.assertEqual(1, dropped)
 
-    def test_document_dedup_uses_grounded_fact_overlap_across_materials(self):
+    def test_summary_is_not_dropped_when_it_extends_a_point_fact(self):
         items = [
             {
                 "question": "本操作说明适用于哪些参保单位？",
@@ -491,9 +491,51 @@ class GenerationScenarioTests(unittest.TestCase):
             },
         ]
         deduped, dropped = _deduplicate_document_questions(items)
+        self.assertEqual(2, len(deduped))
+        self.assertEqual(0, dropped)
+
+    def test_cross_mode_equivalent_grounded_fact_is_still_deduplicated(self):
+        shared_fact = "缴费基数诚信申报未生效前，只影响正常的单位缴费核定业务。"
+        items = [
+            {
+                "question": "诚信申报未生效会影响什么业务？",
+                "source_fact_text": shared_fact,
+                "qa_generation_material_ids": ["section-1"],
+                "qa_generation_unit_mode": "point",
+            },
+            {
+                "question": "缴费基数诚信申报未生效时会影响哪些业务？",
+                "source_fact_text": shared_fact,
+                "qa_generation_material_ids": ["section-2"],
+                "qa_generation_unit_mode": "summary",
+            },
+        ]
+        deduped, dropped = _deduplicate_document_questions(items)
         self.assertEqual(1, len(deduped))
         self.assertEqual(1, dropped)
         self.assertEqual("summary", deduped[0]["qa_generation_unit_mode"])
+
+    def test_cross_mode_similar_wording_does_not_drop_composite_summary(self):
+        items = [
+            {
+                "question": "未按时完成诚信申报会有什么影响？",
+                "source_fact_text": "未按时完成申报将无法办理缴费核定。",
+                "qa_generation_material_ids": ["section-1"],
+                "qa_generation_unit_mode": "point",
+            },
+            {
+                "question": "未按时完成缴费基数诚信申报会有哪些影响？",
+                "source_fact_text": (
+                    "未按时完成申报将无法办理缴费核定；单位整体补收、个人缴费核定"
+                    "和个人补费等其他核定业务不受影响。"
+                ),
+                "qa_generation_material_ids": ["section-1", "section-2"],
+                "qa_generation_unit_mode": "summary",
+            },
+        ]
+        deduped, dropped = _deduplicate_document_questions(items)
+        self.assertEqual(2, len(deduped))
+        self.assertEqual(0, dropped)
 
 
 if __name__ == "__main__":

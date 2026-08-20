@@ -2925,6 +2925,10 @@ function deriveGenerationTimingViews(generationExtra, outputTimings) {
   let latencyPercentiles = hasObjectKeys(generationExtra.latency_percentiles)
     ? generationExtra.latency_percentiles
     : {};
+  let duplicateQuestionsDropped = firstNumber(
+    generationExtra.duplicate_questions_dropped,
+    progressTiming.duplicate_questions_dropped,
+  );
   let unitPlanSummary = hasObjectKeys(generationExtra.unit_plan_summary)
     ? generationExtra.unit_plan_summary
     : {};
@@ -2963,6 +2967,9 @@ function deriveGenerationTimingViews(generationExtra, outputTimings) {
     if (!hasObjectKeys(latencyPercentiles) && hasObjectKeys(timing.latency_percentiles)) {
       latencyPercentiles = timing.latency_percentiles;
     }
+    if (duplicateQuestionsDropped === null) {
+      duplicateQuestionsDropped = firstNumber(timing.duplicate_questions_dropped);
+    }
     if (!hasObjectKeys(wallDetail) && hasObjectKeys(timing.generation_detail)) {
       wallDetail = timing.generation_detail;
     }
@@ -2990,6 +2997,7 @@ function deriveGenerationTimingViews(generationExtra, outputTimings) {
     unitDetails,
     chunkDetails: progressChunkDetails.length ? progressChunkDetails : outputChunkDetails,
     latencyPercentiles,
+    duplicateQuestionsDropped,
   };
 }
 
@@ -3045,6 +3053,7 @@ function derivePipelineTiming(status) {
     generation_unit_details: generationViews.unitDetails,
     generation_chunk_details: generationViews.chunkDetails,
     latency_percentiles: generationViews.latencyPercentiles,
+    duplicate_questions_dropped: generationViews.duplicateQuestionsDropped,
   };
 }
 
@@ -3851,6 +3860,7 @@ function renderPipelineDebugStatus(status, options = {}) {
   appendTextMetric(genMeta, '总题数上限', firstNumber(detail.qa_total_limit, safeStatus.qa_total_limit));
   appendTextMetric(genMeta, '上限范围', detail.qa_total_limit_scope || safeStatus.qa_total_limit_scope || 'per_file');
   appendTextMetric(genMeta, '预算丢弃 unit', unitPlanSummary.dropped_unit_count_by_budget ?? 0);
+  appendTextMetric(genMeta, '文档级重复题丢弃', timing.duplicate_questions_dropped ?? 0);
   appendTextMetric(genMeta, 'unit 最大尝试次数', safeStatus.chunk_max_attempts);
   appendTextMetric(genMeta, '文本模型并发', safeStatus.text_model_concurrency || '8');
   appendTextMetric(genMeta, '图片模型并发', safeStatus.vision_model_concurrency || '2');

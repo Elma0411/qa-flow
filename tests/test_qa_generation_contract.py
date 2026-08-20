@@ -146,8 +146,9 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertIn('{"question":"..."}', candidate_prompt)
         self.assertIn('{"question":"..."}', editor_prompt)
         self.assertIn("图片证据", answer_prompt)
-        self.assertIn("肯否关系", candidate_prompt)
-        self.assertIn("不要逐项复述", candidate_prompt)
+        self.assertIn("信息缺口", candidate_prompt)
+        self.assertIn("必须从题干删除", candidate_prompt)
+        self.assertIn("完整步骤", candidate_prompt)
 
     def test_summary_planner_prompt_only_allows_summary_schema(self):
         prompt = build_scenario_planner_system_prompt(
@@ -159,6 +160,8 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertIn('"scenario_type":"summary"', prompt)
         self.assertNotIn('"scenario_type":"point|summary"', prompt)
         self.assertIn("本批次只规划总结场景", prompt)
+        self.assertIn("独立事实", prompt)
+        self.assertIn("optional material", prompt)
 
     def test_category_profile_stays_in_planning_and_few_shot_is_style_only(self):
         profile = build_planner_category_profile(
@@ -285,6 +288,29 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertEqual("edited", status)
         self.assertNotIn("这份操作说明", edited["question"])
         self.assertIn("单位缴费基数诚信申报操作使用说明", edited["question"])
+
+    def test_editor_removes_unnecessary_document_source_wrapper(self):
+        client = _StaticChatClient(
+            {
+                "question": (
+                    "请问在《陕西省城镇职工基本养老保险单位缴费基数诚信申报"
+                    "操作使用说明》中，哪些人员的缴费基数无法修正？"
+                )
+            }
+        )
+        edited, status = call_question_editor_llm(
+            client=client,
+            model="test-model",
+            candidate={"question": "哪些人员的缴费基数无法修正？", "question_type": "简答题"},
+            source_material="统内转出、在职死亡等人员的缴费基数无法修正。",
+            scenario_intent="明确无法修正缴费基数的人员范围",
+            reader_need="判断哪些人员不参与补缴或退还",
+            qa_detail_mode="summary",
+            prompt_language="zh",
+            request_timeout=10,
+        )
+        self.assertEqual("edited", status)
+        self.assertEqual("哪些人员的缴费基数无法修正？", edited["question"])
 
     def test_evidence_renderer_separates_text_and_image_blocks(self):
         index = QADocumentEvidenceIndex(

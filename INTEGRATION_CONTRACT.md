@@ -502,7 +502,9 @@ Rules:
   `latency_percentiles` records p50/p95 unit timing for total, candidate,
   question-editor, retrieval, and answer stages. Unit tables must show the
   question-editor duration and mark a unit with zero valid items as
-  `未产出`, not `完成`.
+  `未产出`, not `完成`. `duplicate_questions_dropped` records the final
+  document-level duplicate count after grounded QA items are assembled; it is
+  persisted into consolidated timing rather than remaining progress-only.
 - QA generation first reorganizes content into `section materials`: every
   logical `section_path` is one atomic material containing that section's body
   fragments and typed image blocks. Planner input separates `text_content`
@@ -519,7 +521,12 @@ Rules:
   catalog. A Point has exactly one `required_material`; a Summary has one to
   three tightly related `required_materials` and may have
   `optional_materials`. Summary coverage checks inspect only required
-  materials; an optional material that is not cited is not a failure.
+  materials; an optional material that is not cited is not a failure. For a
+  Summary, every required material must contribute a distinct answer fact that
+  cannot be omitted. Background, corroborating, repeated-policy, or merely
+  scope-setting materials belong in `optional_materials`. If no real
+  enumeration or at least two distinct answer contributions exist, the planner
+  must return fewer Summary scenarios instead of relabeling one atomic fact.
   Each scenario also carries `evidence_mode=text|visual|mixed` and
   `required_image_refs`. An image is required only when removing its
   description would make the planned question impossible to answer completely;
@@ -544,9 +551,12 @@ Rules:
   Pool selection and conservative grounded final-question de-duplication are
   document-wide and apply across Point/Summary pools. After answers are
   grounded, direct `source_fact_text` containment or strong fact overlap can
-  identify a repeated rule copied into different materials; a clearer Summary
-  representative is preferred over its duplicate Point item, then reserve
-  units fill any resulting shortfall. If a planner call
+  identify a repeated rule copied into different materials. Containment is
+  sufficient only for same-mode duplicates. A Summary that contains a Point
+  sub-fact is retained unless their complete grounded facts, questions, and
+  fact lengths are strongly equivalent; therefore a partial Point overlap
+  cannot erase a genuinely composite Summary. Reserve units fill any resulting
+  shortfall. If a planner call
   underfills the point pool, deterministic
   one-material point scenarios fill only the missing capacity; summary
   scenarios are never synthesized as fallback. Planner calls use internal
@@ -577,8 +587,12 @@ Rules:
   readable object. A permission, prohibition, or eligibility question may
   remain in a yes/no form; the editor must not turn it into a how-to question
   or broaden it into a policy overview. The backend protects this narrow
-  binary-to-procedural semantic regression if a model still makes it. The editor
-  cannot return `keep`, `rewrite`, `drop`, evidence mode, or source mappings.
+  binary-to-procedural semantic regression if a model still makes it. Leading
+  source wrappers such as “根据《…》” or “在《…》中” are removed when the
+  remaining question is already standalone. A visual question asks an
+  observable action/state/branch/feedback and must not restate a complete
+  visible sequence merely to request yes/no confirmation. The editor cannot
+  return `keep`, `rewrite`, `drop`, evidence mode, or source mappings.
 - After the candidate-question and answer LLM calls, generation performs only
   structural normalization: required JSON fields, supported question types,
   valid multiple-choice options/correct option, valid judgment answers, and

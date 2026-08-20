@@ -445,6 +445,14 @@ def _select_style_example(
 _DOCUMENT_DEICTIC_RE = re.compile(
     r"(?:本|这份|该)(?:操作说明|说明|通知|文件|手册|指南|材料|文档)"
 )
+_SOURCE_ATTRIBUTION_PREFIX_RE = re.compile(
+    r"^(?:请问[，,\s]*)?(?:(?:根据|依据|按照|在)\s*)"
+    r"《[^》]{3,120}》(?:中|里)?[，,：:\s]+"
+)
+_EN_SOURCE_ATTRIBUTION_PREFIX_RE = re.compile(
+    r"^(?:(?:according to|in)\s+[\"“][^\"”]{3,120}[\"”][,:]?\s*)",
+    re.IGNORECASE,
+)
 _GENERIC_SECTION_LABEL_RE = re.compile(
     r"^(?:[（(]?[一二三四五六七八九十0-9]+[）).、．\s]*)?"
     r"(?:适用范围|功能说明|政策依据|注意事项|操作步骤|业务操作要点说明|"
@@ -496,6 +504,17 @@ def _repair_document_deictic(question: str, *, question_object: str) -> str:
     if not text or not question_object:
         return text
     return _DOCUMENT_DEICTIC_RE.sub(question_object, text).strip()
+
+
+def _clean_standalone_question(question: str, *, question_object: str) -> str:
+    text = str(question or "").strip()
+    if not text:
+        return ""
+    without_source = _SOURCE_ATTRIBUTION_PREFIX_RE.sub("", text).strip()
+    without_source = _EN_SOURCE_ATTRIBUTION_PREFIX_RE.sub("", without_source).strip()
+    if len(without_source) >= 6:
+        text = without_source
+    return _repair_document_deictic(text, question_object=question_object)
 
 
 def _preserve_binary_question_form(original_question: str, edited_question: str) -> bool:
@@ -1046,22 +1065,25 @@ def call_question_editor_llm(
         parsed = json.loads(raw)
     except Exception:
         parsed = {}
-    edited_question = str(parsed.get("question") or "").strip() if isinstance(parsed, dict) else ""
+    raw_edited_question = (
+        str(parsed.get("question") or "").strip() if isinstance(parsed, dict) else ""
+    )
     question_object = _question_object_label(editor_meta)
     semantic_guard = ""
-    if edited_question:
-        edited_question = _repair_document_deictic(
-            edited_question,
+    edited_question = ""
+    if raw_edited_question:
+        edited_question = _clean_standalone_question(
+            raw_edited_question,
             question_object=question_object,
         )
         if _preserve_binary_question_form(original_question, edited_question):
-            edited_question = _repair_document_deictic(
+            edited_question = _clean_standalone_question(
                 original_question,
                 question_object=question_object,
             )
             semantic_guard = "preserved_binary_question_form"
-        elif edited_question != str(parsed.get("question") or "").strip():
-            semantic_guard = "repaired_document_reference"
+        elif edited_question != raw_edited_question:
+            semantic_guard = "repaired_source_or_document_reference"
     result = dict(candidate) if edited_question else None
     if result is not None:
         result["question"] = edited_question

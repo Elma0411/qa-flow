@@ -998,6 +998,9 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                 latency_percentiles = dict(
                     generation_timing_summary.get("latency_percentiles") or {}
                 )
+                duplicate_questions_dropped = int(
+                    generation_timing_summary.get("duplicate_questions_dropped") or 0
+                )
                 qa_generation_skipped_by_budget = (
                     file_qa_total_limit is not None and int(file_qa_total_limit) <= 0
                 )
@@ -1147,6 +1150,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                         "generation_wall_detail": generation_wall_detail,
                         "generation_cumulative_detail": generation_cumulative_detail,
                         "latency_percentiles": latency_percentiles,
+                        "duplicate_questions_dropped": duplicate_questions_dropped,
                         "generation_unit_details": generation_unit_details,
                         "generation_chunk_details": generation_chunk_details,
                         "unit_plan_summary": unit_plan_summary,
@@ -1445,6 +1449,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                         "generation_wall_detail": generation_wall_detail,
                         "generation_cumulative_detail": generation_cumulative_detail,
                         "latency_percentiles": latency_percentiles,
+                        "duplicate_questions_dropped": duplicate_questions_dropped,
                         "generation_unit_details": generation_unit_details,
                         "generation_chunk_details": generation_chunk_details,
                         "unit_plan_summary": unit_plan_summary,
@@ -1572,6 +1577,7 @@ async def run_batch_complete_pipeline_async(job_context: Dict[str, Any]) -> None
                             "generation_wall_detail",
                             "generation_cumulative_detail",
                             "latency_percentiles",
+                            "duplicate_questions_dropped",
                             "generation_unit_details",
                             "generation_chunk_details",
                             "unit_plan_summary",

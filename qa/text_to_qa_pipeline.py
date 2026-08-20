@@ -196,19 +196,27 @@ def _source_fact_overlap(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
     right_fact = _question_identity(right.get("source_fact_text"))
     if not left_fact or not right_fact:
         return False
-    if min(len(left_fact), len(right_fact)) >= 16 and (
-        left_fact in right_fact or right_fact in left_fact
-    ):
-        return True
+    cross_mode = _is_summary_item(left) != _is_summary_item(right)
     left_fact_tokens = _question_semantic_tokens(left_fact)
     right_fact_tokens = _question_semantic_tokens(right_fact)
     fact_dice = _token_dice(left_fact_tokens, right_fact_tokens)
-    if fact_dice < 0.62:
-        return False
     question_dice = _token_dice(
         _question_semantic_tokens(left.get("question")),
         _question_semantic_tokens(right.get("question")),
     )
+    if cross_mode:
+        if left_fact == right_fact:
+            return True
+        length_ratio = min(len(left_fact), len(right_fact)) / max(
+            len(left_fact), len(right_fact)
+        )
+        return fact_dice >= 0.86 and question_dice >= 0.50 and length_ratio >= 0.72
+    if min(len(left_fact), len(right_fact)) >= 16 and (
+        left_fact in right_fact or right_fact in left_fact
+    ):
+        return True
+    if fact_dice < 0.62:
+        return False
     return question_dice >= 0.24
 
 
@@ -249,6 +257,11 @@ def _questions_semantically_overlap(left: Dict[str, Any], right: Dict[str, Any])
         return True
     if _source_fact_overlap(left, right):
         return True
+    if _is_summary_item(left) != _is_summary_item(right):
+        # A Summary and a Point may share wording because the Point is one of
+        # the Summary's atomic needs. Do not collapse them on question text
+        # alone once their complete grounded facts are not equivalent.
+        return False
     left_sources = set(left.get("qa_generation_material_ids") or [])
     right_sources = set(right.get("qa_generation_material_ids") or [])
     if left_sources and right_sources and left_sources.isdisjoint(right_sources):
