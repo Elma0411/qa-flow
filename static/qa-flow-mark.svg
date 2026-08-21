@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="QA Flow">
+  <rect width="64" height="64" rx="15" fill="#087f8b" />
+  <path d="M18 19h12a9 9 0 0 1 9 9v6a9 9 0 0 1-9 9H18a9 9 0 0 1-9-9v-6a9 9 0 0 1 9-9Zm1 7a3 3 0 0 0-3 3v4a3 3 0 0 0 3 3h10l-3-3 4-4 3 3v-3a3 3 0 0 0-3-3H19Z" fill="#fff" />
+  <path d="M43 19h7l7 24h-7l-1.2-4h-7.6L40 43h-7l7-24h3Zm-.2 14h4.4L45 25.5 42.8 33Z" fill="#fff" />
+</svg>

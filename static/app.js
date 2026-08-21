@@ -1,4 +1,4 @@
-const QA_UI_BUILD_ID = '2026-08-15-4';
+const QA_UI_BUILD_ID = '2026-08-21-1';
 window.__QA_UI_APPJS_READY__ = false;
 window.__QA_UI_APPJS_VERSION__ = QA_UI_BUILD_ID;
 

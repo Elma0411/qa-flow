@@ -25,7 +25,7 @@ from app.services.milvus import ensure_milvus_initialized
 from qa.retrieval import get_reranker_service
 
 
-UI_BUILD_ID = "2026-08-15-4"
+UI_BUILD_ID = "2026-08-21-1"
 
 
 def _set_ui_cache_headers(response) -> None:
