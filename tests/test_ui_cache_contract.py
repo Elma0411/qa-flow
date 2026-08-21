@@ -35,6 +35,14 @@ class UiCacheContractTests(unittest.TestCase):
         self.assertIn(f"app.js?v={UI_BUILD_ID}", html)
         self.assertNotIn("兜底测试逻辑", html)
 
+    def test_desktop_sidebar_matches_reference_scale(self):
+        css = self.client.get("/ui/styles.css").text
+        self.assertIn("--sidebar-width: 248px", css)
+        self.assertIn("min-height: 112px", css)
+        self.assertIn("min-height: 44px", css)
+        self.assertIn("calc(100% - var(--sidebar-width))", css)
+        self.assertNotIn("224px", css)
+
 
 if __name__ == "__main__":
     unittest.main()

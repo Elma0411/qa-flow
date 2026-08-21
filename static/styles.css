@@ -1,5 +1,6 @@
 /* apiuse UI - data-dense dashboard console (light/dark) */
 :root {
+  --sidebar-width: 248px;
   --bg: #f7f8fb;
   --bg2: #edf1f7;
   --surface: rgba(255, 255, 255, 0.94);
@@ -4172,7 +4173,7 @@ body.qa-workbench-redesign {
 }
 
 body.qa-workbench-redesign.app-shell > header {
-  width: 224px;
+  width: var(--sidebar-width);
   padding: 16px 10px;
 }
 
@@ -4185,8 +4186,8 @@ body.qa-workbench-redesign.app-shell header h1 {
 
 body.qa-workbench-redesign.app-shell main,
 body.qa-workbench-redesign .app-workbar {
-  margin-left: 224px;
-  width: calc(100% - 224px);
+  margin-left: var(--sidebar-width);
+  width: calc(100% - var(--sidebar-width));
   box-sizing: border-box;
 }
 
@@ -5594,10 +5595,10 @@ body.qa-workbench-redesign.app-shell > header {
   inset: 0 auto 0 0;
   z-index: 50;
   display: block;
-  width: 224px;
+  width: var(--sidebar-width);
   height: 100dvh;
   max-height: 100dvh;
-  padding: 12px 10px;
+  padding: 0;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -5610,7 +5611,7 @@ body.qa-workbench-redesign.app-shell > header {
 
 body.app-shell .header-row,
 body.qa-workbench-redesign.app-shell .header-row {
-  min-height: calc(100dvh - 24px);
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -5619,28 +5620,33 @@ body.qa-workbench-redesign.app-shell .header-row {
 }
 
 .app-brand {
-  display: grid;
-  gap: 8px;
-  padding: 0 2px;
+  min-height: 112px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 0;
+  padding: 24px 20px;
 }
 
 .app-brand-copy {
   display: grid;
-  gap: 2px;
-  padding: 0 2px;
+  gap: 0;
+  padding: 0;
 }
 
 .app-brand-copy strong {
   color: var(--sidebar-text);
-  font-size: 13px;
-  font-weight: 700;
+  font-size: 18px;
+  font-weight: 760;
   line-height: 1.35;
 }
 
 .app-brand-copy span {
+  margin-top: 6px;
   color: var(--sidebar-muted);
   font-size: 10px;
-  line-height: 1.35;
+  line-height: 1.45;
   white-space: nowrap;
 }
 
@@ -5654,8 +5660,8 @@ body.qa-workbench-redesign.app-shell .header-actions {
   flex: 1;
   flex-direction: column;
   align-items: stretch;
-  gap: 14px;
-  margin-top: 22px;
+  gap: 0;
+  margin-top: 0;
 }
 
 body.app-shell .nav,
@@ -5663,20 +5669,22 @@ body.qa-workbench-redesign.app-shell .nav {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 4px;
+  gap: 5px;
+  padding: 18px 12px;
+  border-top: 1px solid rgba(231, 243, 243, 0.12);
 }
 
 body.app-shell .nav a,
 body.qa-workbench-redesign.app-shell .nav a {
   display: flex;
   align-items: center;
-  min-height: 40px;
-  padding: 8px 12px;
-  border: 1px solid transparent;
+  min-height: 44px;
+  padding: 0 13px;
+  border: 0;
   border-left: 3px solid transparent;
-  border-radius: 6px;
+  border-radius: 4px;
   color: var(--sidebar-muted);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   opacity: 1;
 }
@@ -5690,9 +5698,8 @@ body.qa-workbench-redesign.app-shell .nav a:hover {
 
 body.app-shell .nav a.active,
 body.qa-workbench-redesign.app-shell .nav a.active {
-  border-color: rgba(226, 179, 78, 0.14);
   border-left-color: var(--brand-gold);
-  background: var(--sidebar-surface);
+  background: rgba(240, 185, 106, 0.13);
   color: #ffffff;
 }
 
@@ -5700,6 +5707,9 @@ body.app-shell .header-actions > .icon-btn,
 body.qa-workbench-redesign.app-shell .header-actions > .icon-btn {
   align-self: flex-start;
   margin-top: auto;
+  margin-right: 14px;
+  margin-bottom: 14px;
+  margin-left: 14px;
   border-color: rgba(231, 243, 243, 0.18);
   background: transparent;
   color: var(--sidebar-muted);
@@ -5714,9 +5724,9 @@ body.qa-workbench-redesign.app-shell .header-actions > .icon-btn:hover {
 body.app-shell main,
 body.qa-workbench-redesign.app-shell main,
 body.qa-workbench-redesign .app-workbar {
-  width: calc(100% - 224px);
+  width: calc(100% - var(--sidebar-width));
   max-width: none;
-  margin-left: 224px;
+  margin-left: var(--sidebar-width);
   box-sizing: border-box;
 }
 
@@ -5913,11 +5923,18 @@ body.qa-workbench-redesign .settings-modal--workspace .settings-tab-panel.is-act
   }
 
   .app-brand {
+    min-height: 0;
     align-items: center;
     gap: 0;
+    padding: 0 2px;
+  }
+
+  .app-brand-copy strong {
+    font-size: 14px;
   }
 
   .app-brand-copy span {
+    margin-top: 2px;
     white-space: normal;
   }
 
@@ -5935,6 +5952,8 @@ body.qa-workbench-redesign .settings-modal--workspace .settings-tab-panel.is-act
     flex: 1;
     flex-direction: row;
     overflow-x: auto;
+    padding: 0;
+    border-top: 0;
   }
 
   body.app-shell .nav a,
@@ -5947,7 +5966,7 @@ body.qa-workbench-redesign .settings-modal--workspace .settings-tab-panel.is-act
   body.app-shell .header-actions > .icon-btn,
   body.qa-workbench-redesign.app-shell .header-actions > .icon-btn {
     align-self: center;
-    margin-top: 0;
+    margin: 0;
   }
 
   body.app-shell main,
@@ -6429,7 +6448,7 @@ body.qa-workbench-redesign.drawer-open {
 body.qa-workbench-redesign > header {
   position: fixed;
   inset: 0 auto 0 0;
-  width: 224px;
+  width: var(--sidebar-width);
   height: 100dvh;
   max-height: 100dvh;
   overflow-y: auto;
@@ -6442,7 +6461,7 @@ body.app-shell > header,
 body.qa-workbench-redesign.app-shell > header {
   position: fixed;
   inset: 0 auto 0 0;
-  width: 224px;
+  width: var(--sidebar-width);
   height: 100dvh;
   max-height: 100dvh;
   overflow-x: hidden;
@@ -6455,9 +6474,9 @@ body.app-shell main,
 body.qa-workbench-redesign.app-shell main,
 body.app-shell .app-workbar,
 body.qa-workbench-redesign .app-workbar {
-  width: calc(100% - 224px);
+  width: calc(100% - var(--sidebar-width));
   max-width: none;
-  margin-left: 224px;
+  margin-left: var(--sidebar-width);
   box-sizing: border-box;
 }
 
@@ -6653,7 +6672,7 @@ body.qa-workbench-redesign .module-settings-card {
   body.qa-workbench-redesign.app-shell > header {
     position: fixed;
     inset: 0 auto 0 0;
-    width: 224px;
+    width: var(--sidebar-width);
     height: 100dvh;
     max-height: 100dvh;
     border-right: 1px solid rgba(231, 243, 243, 0.12);
@@ -6662,7 +6681,7 @@ body.qa-workbench-redesign .module-settings-card {
 
   body.app-shell .header-row,
   body.qa-workbench-redesign.app-shell .header-row {
-    min-height: calc(100dvh - 24px);
+    min-height: 100dvh;
     flex-direction: column;
     align-items: stretch;
   }
@@ -6671,7 +6690,7 @@ body.qa-workbench-redesign .module-settings-card {
   body.qa-workbench-redesign.app-shell .header-actions {
     flex-direction: column;
     align-items: stretch;
-    margin-top: 22px;
+    margin-top: 0;
   }
 
   body.app-shell .nav,
