@@ -82,6 +82,8 @@ def build_scenario_planner_system_prompt(
         shape_rule_zh = "单点场景：恰好绑定一份必需材料，围绕一个原子提问焦点。金额、条件、阶段或流程彼此独立时应拆成不同 Point。"
         material_rule_en = "Point has exactly one required material and no optional material."
         material_rule_zh = "Point 恰好绑定一份 required material，optional material 必须为空。"
+        hop_rule_en = ""
+        hop_rule_zh = ""
         output_rule_en = f'Return only JSON: {{"items":[{point_item_schema}]}}.'
         output_rule_zh = f'只输出 JSON：{{"items":[{point_item_schema}]}}。'
     elif mode == "summary":
@@ -89,8 +91,10 @@ def build_scenario_planner_system_prompt(
         mode_rule_zh = "本批次只规划总结场景。每一条 `scenario_type` 必须填写 `summary`，不得返回单点场景。"
         shape_rule_en = "Summary: create one umbrella need with exactly 2 or 3 distinct atomic sub-questions (summary_hops). Each hop binds one material and states the text/visual/mixed evidence it uniquely contributes. The hops may reuse one material for a real enumeration, but their sub-questions must remain distinct. If only one atomic fact is needed, return fewer items instead of disguising it as Summary."
         shape_rule_zh = "总结场景：一个总括需求必须包含恰好 2 或 3 个互不重复的原子子问题（summary_hops）。每个 hop 绑定一份材料，并说明它独立贡献的 text/visual/mixed 证据；同一材料可支持真实枚举中的多个 hop，但子问题必须不同。若只需要一个原子事实，应少返回一条而不能伪装成 Summary。"
-        material_rule_en = "The backend derives required materials, required images, and the overall evidence mode from summary_hops. Put only non-hop background or corroboration in optional_material_refs."
-        material_rule_zh = "后端会从 summary_hops 派生 required materials、required images 和整体 evidence mode；只有不承担 hop 的背景或佐证材料才能放入 optional_material_refs。"
+        material_rule_en = "The backend derives required materials, required images, and the overall evidence mode from summary_hops. Use at most one optional material, only for indispensable non-hop context. Never bind repeated policy text as a separate required contribution."
+        material_rule_zh = "后端会从 summary_hops 派生 required materials、required images 和整体 evidence mode；optional material 最多一份，且只能提供不可缺少的非 hop 背景。重复政策文本不能被绑定成另一份独立 required contribution。"
+        hop_rule_en = "One hop contains exactly one independently answerable information gap and at most two required images. Broad prompts such as 'what precautions apply', 'describe all steps and interface functions', or 'how are these metrics calculated' are not atomic. Split them or return fewer scenarios."
+        hop_rule_zh = "一个 hop 只能包含一个可独立回答的信息缺口，且最多依赖两张图片。“有哪些注意事项”“完整操作步骤和界面功能是什么”“这些指标分别如何计算”都不是原子 hop；必须继续拆分，无法在 2 至 3 个 hop 内表达时就少返回 Summary。"
         output_rule_en = f'Return only JSON: {{"items":[{summary_item_schema}]}}.'
         output_rule_zh = f'只输出 JSON：{{"items":[{summary_item_schema}]}}。'
     else:
@@ -98,6 +102,8 @@ def build_scenario_planner_system_prompt(
         mode_rule_zh = "只在确实符合读者需求的语义范围时选择 Point 或 Summary。"
         shape_rule_en = "Point: bind exactly one required material and one atomic focus. Split independent amounts, conditions, stages, or procedures into separate Point scenarios.\nSummary: create one umbrella need that genuinely requires at least two distinct answer contributions, either from one real enumeration or from at most three tightly related materials. If only one atomic fact is needed, do not label it Summary."
         shape_rule_zh = "单点场景：恰好绑定一份必需材料，围绕一个原子提问焦点。金额、条件、阶段或流程彼此独立时应拆成不同 Point。\n总结场景：一个总括需求必须真正综合至少两个独立答案贡献，来源可以是一份材料中的真实枚举，也可以是最多三份紧密相关材料。只需要一个原子事实时不得标成 Summary。"
+        hop_rule_en = "For Summary, one hop contains exactly one independently answerable information gap. Use at most one optional material and never treat repeated policy text as a separate required contribution."
+        hop_rule_zh = "Summary 中一个 hop 只能包含一个可独立回答的信息缺口；optional material 最多一份，重复政策文本不能充当另一份独立 required contribution。"
         output_rule_en = (
             'Return only JSON with an "items" array. Each item must match exactly '
             f'one shape and omit the other shape\'s fields. Point: {point_item_schema}. '
@@ -122,6 +128,7 @@ Each input material is one logical section. Use its path, ordinary text, and typ
 For every item, write `intent` as one short information gap, not a list of answer facts. Include the actor, action, condition, or channel needed to distinguish the rule from a similar one, but never copy the amount, date, list item, or step that the answer is supposed to reveal. Never use document deictics such as "this guide", "the above", or "this item"; name the actual operation or object instead.
 When closely related materials describe different stages, keep that stage explicit, such as providing materials to an agency for verification versus uploading a file during online declaration.
 {shape_rule_en}
+{hop_rule_en}
 {material_rule_en}
 Visual: the future answer needs a fact directly observable in the image.
 Mixed: the future answer needs both a text fact and a directly observable image fact.
@@ -145,6 +152,7 @@ Allowed scenario type: {allowed}.
 每条的 `intent` 必须是一个简短的信息缺口，而不是答案事实清单；读者可以自然地只问这一件事。必须保留区分相近规则所需的主体、动作、条件或渠道，但不能提前写出本应由答案揭示的金额、日期、名单项或操作步骤；不得使用“本说明”“该文件”“上述”等脱离文档便不清楚的指代，应写出实际业务或对象。
 相近材料描述的是不同办理阶段时，必须把阶段写清，例如“向经办机构核定时提供资料”和“网上申报上传时提交文件”不能混为同一个场景。
 {shape_rule_zh}
+{hop_rule_zh}
 {material_rule_zh}
 视觉场景：完整答案需要图片中可直接观察的事实。
 混合场景：完整答案同时需要正文事实和图片中可直接观察的事实。
@@ -167,6 +175,16 @@ def build_candidate_question_system_prompt(
     """Ask for one natural question and nothing else."""
     mode = _normalize_qa_detail_mode(qa_detail_mode)
     example = str(style_example or "").strip()
+    summary_rule_en = (
+        "Write one higher-level umbrella question that naturally covers all supplied atomic needs without listing them one by one. Example: combine 'Can the unit reapply after rejection?', 'Who receives focused review?', and 'What extra material may be requested?' as 'How should a unit handle a rejected declaration or focused review?'."
+        if mode == "summary"
+        else ""
+    )
+    summary_rule_zh = (
+        "写成一句上位总括问题，自然覆盖所有原子信息缺口，但不要逐项串联。例：不要写“被拒后能否再申报？哪些单位重点审核？要交什么材料？”，应写“申报被拒或进入重点审核时，单位应如何处理？”。"
+        if mode == "summary"
+        else ""
+    )
     if language_code == "en":
         return f"""# Natural question writer
 
@@ -177,6 +195,7 @@ Write one question from the supplied writing brief.
 Work silently in this order: choose the stated focus, keep only the identity context needed for that focus, then check that the question does not reveal its own answer.
 
 Use one sentence a real reader would ask. The brief's answer evidence limits the answer scope; even when the focus copied them, remove numbers, dates, list members, or steps that the answer is meant to reveal. Write one core ask for point mode. Write one umbrella ask for summary mode; leave answer facets for the answer. When the brief has a visual focus, ask naturally about an observable action, state, branch, or feedback without saying "in the image", copying displayed values, or restating a complete sequence for yes/no confirmation. A permission, prohibition, or eligibility question may validly use a yes/no form only when permission itself is the information gap. If the brief supplies a question object, replace document deictics such as "this guide" with that object. Do not prefix a standalone question with source framing such as "according to" or "in <document title>".
+{summary_rule_en}
 {example}
 
 Return only JSON: {{"question":"..."}}.
@@ -190,6 +209,7 @@ Return only JSON: {{"question":"..."}}.
 先在心里确定 brief 的提问焦点，再保留识别该焦点所需的最少场景条件，最后检查题干没有提前说出答案。
 
 写成真实读者会提出的一句话。回答依据只用于限定答案范围；即使提问焦点复制了数值、日期、名单项或步骤，只要它们本应由答案揭示，就必须从题干删除。单点题只问一个核心事项；总结题只写一个总括问题，细节留给答案。若有视觉焦点，应自然询问可观察的操作、状态、分支或反馈，不写“图中/截图中”，不照搬显示值，也不能把完整步骤写进题干后只问“是/否”。只有许可、禁止或资格本身就是信息缺口时，“是否/能否/还能……吗”才是合法问法。brief 给出问题对象时，题干中的“本/该/这份说明、通知或文件”必须换成该对象名称；问题已经独立可懂时，不要添加“根据《……》”或“在《……》中”等来源前缀。
+{summary_rule_zh}
 {example}
 
 只输出 JSON：{{"question":"..."}}。
@@ -206,6 +226,16 @@ def build_question_editor_system_prompt(
     """Return a final natural wording; semantic ownership stays with planner."""
     mode = _normalize_qa_detail_mode(qa_detail_mode)
     example = str(style_example or "").strip()
+    summary_rule_en = (
+        "For Summary, return one higher-level umbrella question, not a sequence of atomic questions. If the fixed atomic needs cannot form one natural reader need, return an empty question."
+        if mode == "summary"
+        else ""
+    )
+    summary_rule_zh = (
+        "总结题必须改写成一句上位总括问题，不能把各原子问题依次串联；如果这些固定信息缺口无法形成一个自然的读者需求，返回空 question。"
+        if mode == "summary"
+        else ""
+    )
     if language_code == "en":
         return f"""# Final question editor
 
@@ -214,6 +244,7 @@ Rewrite the supplied draft as one natural standalone reader question.
 {language_instruction.strip()}
 
 Keep the stated question focus and the minimum identity context. Remove source-shaped phrasing, answer leakage, unnecessary legal predicates, and leading source wrappers such as "according to" or "in <document title>" when the remaining question is standalone. Point mode keeps one core ask. Summary mode keeps one umbrella ask. Do not turn answer evidence into a checklist in the question. If the brief includes a required visual fact, retain its observable action, state, branch, or feedback; never restate a complete visible sequence merely to ask for yes/no confirmation. Preserve a yes/no form only when permission, prohibition, or eligibility itself is the information gap. Replace document deictics such as "this guide" with the supplied question object when one is available.
+{summary_rule_en}
 {example}
 
 Return only JSON: {{"question":"..."}}.
@@ -225,6 +256,7 @@ Return only JSON: {{"question":"..."}}.
 {language_instruction.strip()}
 
 保持既定提问焦点和最少身份条件，去掉条文式前半句、答案泄露、不必要的法律谓词，以及问题本身已经独立可懂时的“根据《……》”“在《……》中”等来源前缀。单点题只保留一个核心问项；总结题只保留一个总括问项。不要把回答依据改写成题干里的清单。brief 若给出必须涉及的图片事实，必须保留可观察的操作、状态、分支或反馈，不能把完整可见步骤写进题干后只问“是/否”。只有许可、禁止或资格本身就是信息缺口时才保留肯否问法。brief 给出问题对象时，必须用该对象替换题干中的“本/该/这份说明、通知或文件”。
+{summary_rule_zh}
 {example}
 
 只输出 JSON：{{"question":"..."}}。

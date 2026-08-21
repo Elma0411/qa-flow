@@ -489,7 +489,7 @@ async def batch_upload_complete_pipeline_with_evaluation(
             "text_model_concurrency": text_concurrency,
             "chunk_max_attempts": chunk_attempts,
             "retrieval_config": {
-                "pipeline": "bm25_dense_rrf_bge_admission_structure_v2",
+                "pipeline": "bm25_dense_rrf_bge_structure_scope_v3",
                 "final_evidence_k": final_evidence_k,
                 "evidence_token_budget": evidence_token_budget,
             },

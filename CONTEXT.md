@@ -103,7 +103,9 @@ _Avoid_: A generated question, a fixed section type, forced question quota
 One auditable atomic sub-question inside a `SummaryScenario`. It binds one
 Section Material and declares whether that contribution needs text, visual, or
 mixed evidence plus any required image IDs. Several hops may reuse one material
-only when they represent genuinely different parts of a real enumeration.
+only when they represent genuinely different parts of a real enumeration. One
+hop may require at most two images, and repeated material text cannot be used as
+separate required contributions.
 _Avoid_: Treating every selected material as a hop, a free-form reasoning trace
 
 **Scenario Contract**:

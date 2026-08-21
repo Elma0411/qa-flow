@@ -1,4 +1,4 @@
-const QA_UI_BUILD_ID = '2026-08-21-2';
+const QA_UI_BUILD_ID = '2026-08-21-3';
 window.__QA_UI_APPJS_READY__ = false;
 window.__QA_UI_APPJS_VERSION__ = QA_UI_BUILD_ID;
 
@@ -3879,7 +3879,7 @@ function renderPipelineDebugStatus(status, options = {}) {
   appendTextMetric(genMeta, '文本模型并发', safeStatus.text_model_concurrency || '8');
   appendTextMetric(genMeta, '图片模型并发', safeStatus.vision_model_concurrency || '2');
   const retrievalConfig = safeStatus.retrieval_config || {};
-  appendTextMetric(genMeta, '检索链路', retrievalConfig.pipeline || 'bm25_dense_rrf_bge_admission_structure_v2');
+  appendTextMetric(genMeta, '检索链路', retrievalConfig.pipeline || 'bm25_dense_rrf_bge_structure_scope_v3');
   appendTextMetric(genMeta, '最多补充证据窗口/题', retrievalConfig.final_evidence_k ?? '5');
   appendTextMetric(
     genMeta,

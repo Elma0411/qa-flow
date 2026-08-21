@@ -180,6 +180,7 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertIn('{"question":"..."}', editor_prompt)
         self.assertIn("图片证据", answer_prompt)
         self.assertIn("不能附带回答题目没有询问的另一事项", answer_prompt)
+        self.assertIn("上位总括问题", editor_prompt)
         self.assertIn("信息缺口", candidate_prompt)
         self.assertIn("必须从题干删除", candidate_prompt)
         self.assertIn("完整步骤", candidate_prompt)
@@ -195,6 +196,7 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertNotIn('"scenario_type":"point|summary"', prompt)
         self.assertIn("本批次只规划总结场景", prompt)
         self.assertIn("原子子问题", prompt)
+        self.assertIn("一个 hop 只能包含一个可独立回答的信息缺口", prompt)
         self.assertIn('"summary_hops"', prompt)
         self.assertIn('"material_ref"', prompt)
         self.assertIn('"material_ref":"主材料-B"', prompt)
@@ -815,6 +817,109 @@ class QAGenerationContractTests(unittest.TestCase):
         self.assertEqual("ok", reason)
         self.assertEqual("mixed", item["evidence_mode"])
         self.assertEqual("image-1", item["evidence_usage"][1]["image_id"])
+
+    def test_summary_evidence_refs_keep_only_their_bound_hops(self):
+        summary_hops = [
+            {
+                "hop_id": "hop-1",
+                "sub_question": "需要提交什么材料？",
+                "material_id": "section-1",
+                "evidence_mode": "text",
+                "required_image_ids": [],
+            },
+            {
+                "hop_id": "hop-2",
+                "sub_question": "办理时限是多久？",
+                "material_id": "section-2",
+                "evidence_mode": "text",
+                "required_image_ids": [],
+            },
+        ]
+        client = _StaticChatClient(
+            {
+                "items": [
+                    {
+                        "answer": "需要提交申请表，五个工作日内办结。",
+                        "answer_explanation": "材料和时限分别有证据支持。",
+                        "source_fact_text": "提交申请表；五个工作日内办结。",
+                        "evidence_usage": [
+                            {
+                                "evidence_ref": "正文证据-1",
+                                "role": "primary_source",
+                                "hop_refs": ["HOP-1", "HOP-2"],
+                            },
+                            {
+                                "evidence_ref": "正文证据-2",
+                                "role": "primary_source",
+                                "hop_refs": ["HOP-1", "HOP-2"],
+                            },
+                        ],
+                    }
+                ]
+            }
+        )
+        item, reason = call_evidence_answer_llm(
+            client=client,
+            model="test-model",
+            candidate={"question": "申请需要哪些材料和多长时间？", "question_type": "简答题"},
+            generation_unit=_generation_unit(
+                required_materials=["section-1", "section-2"],
+                summary_hops=summary_hops,
+            ),
+            qa_detail_mode="summary",
+            prompt_language="zh",
+            request_timeout=10,
+            item_normalizer_with_reason=validate_and_normalize_item_with_reason,
+            source_override_handler=lambda *_args, **_kwargs: None,
+        )
+        self.assertEqual("ok", reason)
+        self.assertEqual(["HOP-1"], item["evidence_usage"][0]["hop_refs"])
+        self.assertEqual(["HOP-2"], item["evidence_usage"][1]["hop_refs"])
+
+    def test_retrieved_only_answer_is_explicit_source_mismatch_without_retry(self):
+        generation_unit = _generation_unit()
+        generation_unit["llm_evidence_ref_map"]["补充正文证据-1"] = {
+            "chunk_id": "chunk-2",
+            "chunk_index": 2,
+            "title_path": "办理 > 补充规则",
+            "role": "retrieved_evidence",
+        }
+        generation_unit["llm_evidence_text_by_ref"]["补充正文证据-1"] = (
+            "补充正文证据-1\n正文：社平公布后必须申报。"
+        )
+        client = _StaticChatClient(
+            {
+                "items": [
+                    {
+                        "answer": "社平公布后必须申报。",
+                        "answer_explanation": "补充条款给出了时间要求。",
+                        "source_fact_text": "社平公布后必须申报。",
+                        "evidence_usage": [
+                            {
+                                "evidence_ref": "补充正文证据-1",
+                                "role": "primary_source",
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+        audit = {}
+        item, reason = call_evidence_answer_llm(
+            client=client,
+            model="test-model",
+            candidate={"question": "什么时候必须申报？", "question_type": "简答题"},
+            generation_unit=generation_unit,
+            qa_detail_mode="point",
+            prompt_language="zh",
+            request_timeout=10,
+            item_normalizer_with_reason=validate_and_normalize_item_with_reason,
+            source_override_handler=lambda *_args, **_kwargs: None,
+            answer_audit=audit,
+        )
+        self.assertIsNone(item)
+        self.assertEqual("primary_evidence_mismatch", reason)
+        self.assertEqual(1, audit["answer_attempt_count"])
 
     def test_consolidation_and_debug_have_no_difficulty_fields(self):
         summary_hops = [

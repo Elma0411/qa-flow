@@ -413,6 +413,221 @@ class GenerationScenarioTests(unittest.TestCase):
             plan.units[0].debug["selection_adjustment"],
         )
 
+    def test_shared_visual_hop_does_not_remove_composite_summary(self):
+        chunks = [
+            _chunk(
+                1,
+                "1.1",
+                "文档>申报流程",
+                "审核不通过后可以重新申报。",
+                image_materials=[
+                    {
+                        "image_id": "image-flow",
+                        "description": "审核不通过时流程返回申报环节。",
+                        "context_before": "",
+                        "context_after": "",
+                    }
+                ],
+            ),
+            _chunk(2, "1.2", "文档>办理时限", "审核通过后五个工作日内办结。"),
+        ]
+
+        def planner(materials, _count, mode, **_kwargs):
+            if mode == "point":
+                return [
+                    {
+                        "scenario_type": "point",
+                        "intent": "审核不通过后流程返回哪里？",
+                        "reader_need": "了解退回环节",
+                        "required_material_ids": [materials[0].material_id],
+                        "optional_material_ids": [],
+                        "evidence_mode": "visual",
+                        "required_image_ids": ["image-flow"],
+                    }
+                ]
+            return [
+                {
+                    "scenario_type": "summary",
+                    "intent": "申报审核后如何继续办理？",
+                    "reader_need": "了解失败分支和成功时限",
+                    "summary_hops": [
+                        {
+                            "sub_question": "审核不通过后流程返回哪里？",
+                            "material_id": materials[0].material_id,
+                            "evidence_mode": "visual",
+                            "required_image_ids": ["image-flow"],
+                        },
+                        {
+                            "sub_question": "审核通过后多久办结？",
+                            "material_id": materials[1].material_id,
+                            "evidence_mode": "text",
+                            "required_image_ids": [],
+                        },
+                    ],
+                    "optional_material_ids": [],
+                }
+            ]
+
+        plan = plan_generation_units(
+            chunks,
+            qa_total_limit=2,
+            qa_per_chunk=1,
+            qa_detail_mode="auto",
+            chunk_size=600,
+            scenario_planner=planner,
+            auto_summary_ratio=0.5,
+        )
+        self.assertEqual(1, plan.scenario_candidates_by_type["summary"])
+        self.assertEqual(1, plan.scenario_selected_by_type["summary"])
+        self.assertTrue(any(unit.qa_mode == "summary" for unit in plan.units))
+
+    def test_summary_rejects_more_than_one_optional_material(self):
+        chunks = [
+            _chunk(1, "1.1", "文档>材料", "应提交身份证明。"),
+            _chunk(2, "1.2", "文档>时限", "五个工作日内办结。"),
+            _chunk(3, "1.3", "文档>背景一", "背景说明一。"),
+            _chunk(4, "1.4", "文档>背景二", "背景说明二。"),
+        ]
+
+        def planner(materials, _count, _mode, **_kwargs):
+            return [
+                {
+                    "scenario_type": "summary",
+                    "intent": "了解申请材料和办理时限",
+                    "reader_need": "准备申请",
+                    "summary_hops": [
+                        {
+                            "sub_question": "需要提交什么材料？",
+                            "material_id": materials[0].material_id,
+                            "evidence_mode": "text",
+                            "required_image_ids": [],
+                        },
+                        {
+                            "sub_question": "办理时限是多久？",
+                            "material_id": materials[1].material_id,
+                            "evidence_mode": "text",
+                            "required_image_ids": [],
+                        },
+                    ],
+                    "optional_material_ids": [
+                        materials[2].material_id,
+                        materials[3].material_id,
+                    ],
+                }
+            ]
+
+        plan = plan_generation_units(
+            chunks,
+            qa_total_limit=1,
+            qa_per_chunk=1,
+            qa_detail_mode="summary",
+            chunk_size=600,
+            scenario_planner=planner,
+        )
+        self.assertEqual([], plan.units)
+
+    def test_summary_rejects_duplicate_required_materials_as_separate_hops(self):
+        repeated_policy = (
+            "申报被拒后可以再次申报。对有漏报记录的单位进行重点审核，"
+            "经办机构可以要求提供工资申报审核材料。"
+        )
+        chunks = [
+            _chunk(1, "1.1", "文档>经办版注意事项", repeated_policy),
+            _chunk(2, "1.2", "文档>单位版注意事项", repeated_policy),
+        ]
+
+        def planner(materials, _count, _mode, **_kwargs):
+            return [
+                {
+                    "scenario_type": "summary",
+                    "intent": "了解重点审核处理要求",
+                    "reader_need": "处理异常申报",
+                    "summary_hops": [
+                        {
+                            "sub_question": "申报被拒后能否再次申报？",
+                            "material_id": materials[0].material_id,
+                            "evidence_mode": "text",
+                            "required_image_ids": [],
+                        },
+                        {
+                            "sub_question": "重点审核时可能要求什么材料？",
+                            "material_id": materials[1].material_id,
+                            "evidence_mode": "text",
+                            "required_image_ids": [],
+                        },
+                    ],
+                    "optional_material_ids": [],
+                }
+            ]
+
+        plan = plan_generation_units(
+            chunks,
+            qa_total_limit=1,
+            qa_per_chunk=1,
+            qa_detail_mode="summary",
+            chunk_size=600,
+            scenario_planner=planner,
+        )
+        self.assertEqual([], plan.units)
+
+    def test_summary_rejects_non_atomic_hop_with_too_many_images(self):
+        chunks = [
+            _chunk(
+                1,
+                "1.1",
+                "文档>操作步骤",
+                "按页面提示完成申报。",
+                image_materials=[
+                    {
+                        "image_id": f"image-{index}",
+                        "description": f"第{index}个操作页面。",
+                        "context_before": "",
+                        "context_after": "",
+                    }
+                    for index in range(1, 4)
+                ],
+            ),
+            _chunk(2, "1.2", "文档>办理时限", "五个工作日内办结。"),
+        ]
+
+        def planner(materials, _count, _mode, **_kwargs):
+            return [
+                {
+                    "scenario_type": "summary",
+                    "intent": "了解完整操作和办理时限",
+                    "reader_need": "完成申报",
+                    "summary_hops": [
+                        {
+                            "sub_question": "完整操作步骤和界面功能是什么？",
+                            "material_id": materials[0].material_id,
+                            "evidence_mode": "visual",
+                            "required_image_ids": [
+                                "image-1",
+                                "image-2",
+                                "image-3",
+                            ],
+                        },
+                        {
+                            "sub_question": "办理时限是多久？",
+                            "material_id": materials[1].material_id,
+                            "evidence_mode": "text",
+                            "required_image_ids": [],
+                        },
+                    ],
+                    "optional_material_ids": [],
+                }
+            ]
+
+        plan = plan_generation_units(
+            chunks,
+            qa_total_limit=1,
+            qa_per_chunk=1,
+            qa_detail_mode="summary",
+            chunk_size=600,
+            scenario_planner=planner,
+        )
+        self.assertEqual([], plan.units)
+
     def test_same_section_fragments_and_images_stay_one_material(self):
         chunks = [
             _chunk(1, "1.1", "文档>办理", "第一段正文。", fragment=1, fragment_count=2),
@@ -670,6 +885,82 @@ class GenerationScenarioTests(unittest.TestCase):
         self.assertEqual(1, len(deduped))
         self.assertEqual(1, dropped)
         self.assertEqual("summary", deduped[0]["qa_generation_unit_mode"])
+
+    def test_distinct_point_questions_survive_broad_source_fact_containment(self):
+        items = [
+            {
+                "question": "缴费困难时可以暂缓缴费吗？",
+                "answer": "可以自愿暂缓缴费。",
+                "source_fact_text": (
+                    "缴费困难的可以暂缓缴费；之后可以补缴，补缴基数在当年上下限内选择。"
+                ),
+                "qa_generation_material_ids": ["section-1"],
+                "qa_generation_unit_mode": "point",
+                "qa_generation_scenario_intent": "确认能否暂缓缴费",
+            },
+            {
+                "question": "之后补缴时缴费基数如何确定？",
+                "answer": "在补缴年度个人缴费基数上下限内选择。",
+                "source_fact_text": "之后可以补缴，补缴基数在当年上下限内选择。",
+                "qa_generation_material_ids": ["section-1"],
+                "qa_generation_unit_mode": "point",
+                "qa_generation_scenario_intent": "明确补缴基数标准",
+            },
+        ]
+        deduped, dropped = _deduplicate_document_questions(items)
+        self.assertEqual(2, len(deduped))
+        self.assertEqual(0, dropped)
+
+    def test_different_business_stages_survive_overlapping_material_words(self):
+        items = [
+            {
+                "question": "到经办机构核定缴费基数时需要准备哪些资料？",
+                "answer": "准备汇总表、工资台账和个人所得税申报表等资料。",
+                "source_fact_text": (
+                    "核定时提供汇总表、工资台账和个人所得税申报表；"
+                    "网上申报上传材料时仅需要提交缴费基数申报汇总表一项材料。"
+                ),
+                "qa_generation_material_ids": ["section-agency"],
+                "qa_generation_unit_mode": "point",
+                "qa_generation_scenario_intent": "经办机构核定资料",
+            },
+            {
+                "question": "网上申报时需要上传什么材料？",
+                "answer": "仅需上传缴费基数申报汇总表。",
+                "source_fact_text": (
+                    "网上申报上传材料时仅需要提交缴费基数申报汇总表一项材料。"
+                ),
+                "qa_generation_material_ids": ["section-online"],
+                "qa_generation_unit_mode": "point",
+                "qa_generation_scenario_intent": "网上申报上传材料",
+            },
+        ]
+        deduped, dropped = _deduplicate_document_questions(items)
+        self.assertEqual(2, len(deduped))
+        self.assertEqual(0, dropped)
+
+    def test_similar_question_wording_with_different_answers_is_not_duplicate(self):
+        items = [
+            {
+                "question": "申报成功后还能修改人员缴费基数吗？",
+                "answer": "不能修改。",
+                "source_fact_text": "申报成功后不能修改人员缴费基数。",
+                "qa_generation_material_ids": ["section-1"],
+                "qa_generation_unit_mode": "point",
+                "qa_generation_scenario_intent": "确认成功后的修改限制",
+            },
+            {
+                "question": "申报成功后如何修改人员缴费基数？",
+                "answer": "通过单位年度补基数核定功能修改。",
+                "source_fact_text": "通过单位年度补基数核定功能修正缴费基数。",
+                "qa_generation_material_ids": ["section-1"],
+                "qa_generation_unit_mode": "point",
+                "qa_generation_scenario_intent": "了解补基数修改路径",
+            },
+        ]
+        deduped, dropped = _deduplicate_document_questions(items)
+        self.assertEqual(2, len(deduped))
+        self.assertEqual(0, dropped)
 
     def test_cross_mode_similar_wording_does_not_drop_composite_summary(self):
         items = [

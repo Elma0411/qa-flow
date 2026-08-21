@@ -184,8 +184,10 @@ QA retrieval configuration:
   defaults and validation ranges.
 - The internal path is fixed: deterministic question normalization -> standard
   BM25 plus BGE-M3 dense recall -> RRF -> chunk-ID de-duplication -> local
-  BGE reranking of atomic chunks -> structural window completion -> BGE
-  reranking of windows -> de-duplication and token budgeting.
+  BGE reranking of atomic chunks -> required-source structural-scope admission
+  -> structural window completion -> BGE reranking of windows -> de-duplication
+  and token budgeting. The persisted/status pipeline name is
+  `bm25_dense_rrf_bge_structure_scope_v3`.
 - `QA_RERANKER_MODEL_PATH` defaults to
   `${APP_MODELS_DIR}/bge-reranker-v2-m3`; optional runtime controls are
   `QA_RERANKER_DEVICE`, `QA_RERANKER_BATCH_SIZE`, and
@@ -204,6 +206,12 @@ QA retrieval configuration:
   `scripts/calibrate_bge_relevance.py`. Changes require updating and running
   that calibration plus the focused tests. `final_evidence_k` is only an upper
   bound after admission, so the selected supplemental-window count may be zero.
+- Retrieval source IDs come only from required materials, never optional
+  materials. A supplemental chunk must belong to the same exact section as a
+  required source or be its structural ancestor/descendant. A sibling section,
+  even under the same parent and with a high BGE score, is rejected as
+  `outside_source_structure_scope`; this prevents different business stages
+  from being mixed merely because they share topic words.
 
 Image classifier classes:
 
@@ -524,25 +532,31 @@ Rules:
   `evidence_mode=text|visual|mixed`, and zero or more request-local `image_refs`.
   Hop sub-questions must be distinct. A hop may name only an image that belongs
   to its bound material; a visual or mixed hop must name at least one such
-  image. Several hops may reuse one Section Material only for genuinely
-  different contributions within a real enumeration. The backend maps aliases
-  to real IDs and assigns stable `hop_id=hop-1..hop-3` values.
+  image and no hop may require more than two images. Several hops may reuse one
+  Section Material only for genuinely different contributions within a real
+  enumeration. Different materials whose normalized content is equal or at
+  least 90% token-overlapping cannot be treated as separate required
+  contributions. The backend maps aliases to real IDs and assigns stable
+  `hop_id=hop-1..hop-3` values.
   A Summary's `required_material_ids` are the ordered union of hop material IDs;
   `required_image_ids` are the ordered union of hop image IDs; its overall
   evidence mode is derived from the hop modes. The planner does not separately
-  decide these three derived values. `optional_materials` may contain only
-  background or corroboration that carries no hop, and an uncited optional
-  material is never a coverage failure. If fewer than two real atomic
+  decide these three derived values. A Summary may contain at most one
+  `optional_material`, used only for indispensable background that carries no
+  hop; an uncited optional material is never a coverage failure. If fewer than two real atomic
   contributions exist, the planner must return fewer Summary scenarios instead
   of relabeling one atomic fact. After backend alias resolution these fields
   form an immutable `ScenarioContract`; no later LLM may reclassify materials,
   images, hop modes, scenario type, or question type.
   Image-bearing sections are considered for visual scenarios but no final
-  image-question quota is forced. If a text-only and a distinct visual
-  scenario compete for the same material at the selection boundary, the visual
-  scenario may replace the text alternative only when it adds an uncovered
-  image and asks an observable operation/state/feedback fact; static-number
-  screenshots are not promoted merely for diversity.
+  image-question quota is forced. Scenario de-duplication compares Point only
+  with Point and Summary only with Summary. A Point may be recognized as one
+  HOP inside a Summary without deleting either scenario. Sharing one image is
+  sufficient only for Point-level visual duplication; a Summary is duplicated
+  only when its complete HOP set is semantically equivalent. Visual promotion
+  may replace a text-only Point over the same material when it adds an uncovered
+  observable fact; it never replaces one composite Summary with another merely
+  because their materials overlap.
   In `qa_detail_mode=auto`, the planner builds both pools and the allocator
   targets 35% summary scenarios; missing summary capacity flows to point
   scenarios rather than being fabricated. Explicit `point` or `summary` mode
@@ -551,13 +565,13 @@ Rules:
   point batches may contain independent sections, while summary batches retain
   structural parent neighborhoods so related sibling sections remain visible.
   Pool selection and conservative grounded final-question de-duplication are
-  document-wide and apply across Point/Summary pools. After answers are
-  grounded, direct `source_fact_text` containment or strong fact overlap can
-  identify a repeated rule copied into different materials. Containment is
-  sufficient only for same-mode duplicates. A Summary that contains a Point
-  sub-fact is retained unless their complete grounded facts, questions, and
-  fact lengths are strongly equivalent; therefore a partial Point overlap
-  cannot erase a genuinely composite Summary. Reserve units fill any resulting
+  document-wide and apply across Point/Summary pools. Model-authored
+  `source_fact_text` is audit text and never independently causes deletion.
+  Final de-duplication requires aligned reader-question intent plus equivalent
+  answer claims; Point/Summary cross-mode deletion additionally requires
+  near-complete grounded-fact equivalence. A Summary that contains a Point
+  sub-fact therefore cannot erase the Point, and a long source paragraph cannot
+  collapse two different Point questions. Reserve units fill any resulting
   shortfall. If a planner call
   underfills the point pool, deterministic
   one-material point scenarios fill only the missing capacity; summary
@@ -586,8 +600,10 @@ Rules:
   need, goal, required text facts, and any required visual fact, but never
   material IDs, image IDs, retrieval metadata, or scenario-contract field
   names. For Summary, the brief additionally renders only the two or three
-  readable atomic sub-questions and asks the writer/editor to combine them into
-  one natural umbrella question. It does not expose hop IDs or the
+  readable atomic sub-questions and asks the writer/editor to compress them into
+  one higher-level natural umbrella question rather than enumerate them. If the
+  fixed HOPs cannot form one natural reader need, the editor returns an empty
+  question and that unit is explicitly dropped without another editor call. It does not expose hop IDs or the
   `summary_hops` field name. The writer/editor replace document deictics such as
   “本说明” with that readable object. A permission, prohibition, or eligibility
   question may remain in a yes/no form; the editor must not turn it into a
@@ -621,7 +637,8 @@ Rules:
   For Summary, answer input also renders each atomic sub-question under a
   temporary `HOP-1..HOP-3` label and lists its readable bound evidence labels.
   Every `evidence_usage` entry returned for a Summary includes `hop_refs`; the
-  backend keeps only supplied HOP labels, maps evidence labels to real pointers,
+  backend keeps a HOP label only when the cited evidence ref appears in that
+  HOP's explicit evidence whitelist, maps evidence labels to real pointers,
   and verifies each hop against its own material and text/visual/mixed evidence
   requirement. Failure uses `incomplete_summary_hop_coverage` and permits the
   existing single targeted answer retry. The old blind check that every bound
@@ -634,7 +651,9 @@ Rules:
   `source_chunk_ids`, `source_chunk_indexes`, and
   `source_chunk_title_paths` retain the complete ordered primary-evidence set
   for multi-material answers. Retrieved-only evidence never becomes the scalar
-  primary source.
+  primary source. If an answer cites retrieved evidence but no bound primary
+  material, generation ends that candidate with `primary_evidence_mismatch`;
+  this is a scenario/source error and does not trigger an answer rewrite.
   Persisted QA/debug items include `evidence_mode`, stable source image IDs in
   `required_image_refs`, `qa_generation_subject_label`, and the reviewed
   `qa_generation_required_material_ids`/
@@ -802,6 +821,10 @@ Rules:
   generation-time structural validity alone is not a quality score.
 - `source` should be normalized to the stable `chunk_id` when chunk metadata is
   available.
+- `source_fact_text` records the model's concise evidence statement for audit.
+  It is not authoritative enough to delete another QA item through substring
+  containment; final duplicate decisions also require equivalent question
+  intent and answer claims.
 - `qa_evaluation_evidence_text` is the readable subset of evidence blocks that
   the answer actually cited. It is produced after label-to-source restoration,
   persists with the QA item, and is the preferred source context for all

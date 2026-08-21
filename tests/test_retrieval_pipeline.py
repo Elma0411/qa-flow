@@ -62,7 +62,7 @@ class RetrievalPipelineTests(unittest.TestCase):
             source_chunk_ids=["c1"],
         )
 
-        self.assertEqual("bm25_dense_rrf_bge_admission_structure_v2", result["trace"]["pipeline"])
+        self.assertEqual("bm25_dense_rrf_bge_structure_scope_v3", result["trace"]["pipeline"])
         self.assertEqual(
             len(result["trace"]["selected_windows"]),
             result["trace"]["selected_evidence_window_count"],
@@ -182,7 +182,7 @@ class RetrievalPipelineTests(unittest.TestCase):
     def test_candidate_far_below_primary_source_is_not_admitted(self):
         chunks = [
             EvidenceChunk("c1", 1, "1", "", 1, True, 1, "主材料", "g1", 1, 1, "text", (), "主材料", "主材料"),
-            EvidenceChunk("c2", 2, "2", "", 1, True, 1, "时限", "g2", 1, 1, "text", (), "五个工作日", "五个工作日"),
+            EvidenceChunk("c2", 2, "1.1", "1", 2, True, 1, "主材料>时限", "g2", 1, 1, "text", (), "五个工作日", "五个工作日"),
         ]
 
         class CalibratedReranker:
@@ -215,7 +215,7 @@ class RetrievalPipelineTests(unittest.TestCase):
     def test_low_absolute_candidate_close_to_primary_source_is_admitted(self):
         chunks = [
             EvidenceChunk("c1", 1, "1", "", 1, True, 1, "主材料", "g1", 1, 1, "text", (), "五个工作日", "五个工作日"),
-            EvidenceChunk("c2", 2, "2", "", 1, True, 1, "补充时限", "g2", 1, 1, "text", (), "补正时间不计入期限", "补正时间不计入期限"),
+            EvidenceChunk("c2", 2, "1.1", "1", 2, True, 1, "主材料>补充时限", "g2", 1, 1, "text", (), "补正时间不计入期限", "补正时间不计入期限"),
         ]
 
         class LowRelevantReranker:
@@ -236,6 +236,48 @@ class RetrievalPipelineTests(unittest.TestCase):
         )
 
         self.assertEqual(["c2"], result["selected_chunk_ids"])
+
+    def test_relevant_sibling_outside_source_structure_scope_is_rejected(self):
+        chunks = [
+            EvidenceChunk(
+                "c1", 1, "1.1", "1", 2, True, 1,
+                "文档>经办机构核定", "g1", 1, 1, "text", (),
+                "核定时提交工资台账。", "经办机构核定 工资台账",
+            ),
+            EvidenceChunk(
+                "c2", 2, "1.2", "1", 2, True, 1,
+                "文档>网上申报上传", "g2", 1, 1, "text", (),
+                "网上上传仅需汇总表。", "网上申报 上传 汇总表",
+            ),
+        ]
+
+        class ScopeReranker:
+            def rank(self, query, pairs):
+                del query
+                return [
+                    (identifier, 4.0 if identifier == "c2" else 3.8)
+                    for identifier, _text in pairs
+                ]
+
+        pipeline = EvidenceRetrievalPipeline(
+            chunks,
+            [[1.0], [0.9]],
+            reranker=ScopeReranker(),
+        )
+        result = pipeline.retrieve(
+            "核定时需要提交哪些资料？",
+            [1.0],
+            final_evidence_k=2,
+            evidence_token_budget=4000,
+            source_chunk_ids=["c1"],
+        )
+        self.assertEqual([], result["selected_chunk_ids"])
+        rejected = next(
+            item
+            for item in result["trace"]["atomic_rerank"]
+            if item["chunk_id"] == "c2"
+        )
+        self.assertEqual("outside_source_structure_scope", rejected["rejection_reason"])
 
 
 if __name__ == "__main__":

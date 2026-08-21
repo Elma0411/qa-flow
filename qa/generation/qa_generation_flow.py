@@ -15,6 +15,10 @@ from qa.common import (
     detect_language,
     safe_response_dump,
 )
+from qa.generation.structure_units import (
+    MAX_SUMMARY_HOP_IMAGES,
+    summary_hop_materials_are_distinct,
+)
 from qa.prompts.qa_generation_prompts import (
     build_candidate_question_system_prompt,
     build_evidence_answer_system_prompt,
@@ -226,7 +230,7 @@ def _normalize_candidate_question(
 def _restore_evidence_usage_ids(
     raw_entries: Any,
     ref_map: Dict[str, Dict[str, Any]],
-    valid_hop_refs: Optional[set[str]] = None,
+    allowed_hop_refs_by_evidence_ref: Optional[Dict[str, set[str]]] = None,
 ) -> List[Dict[str, Any]]:
     """Convert readable evidence labels into audited material/image pointers."""
     if not isinstance(raw_entries, list):
@@ -252,17 +256,18 @@ def _restore_evidence_usage_ids(
             }
             if mapped.get("image_id"):
                 restored_entry["image_id"] = mapped.get("image_id")
-            if valid_hop_refs:
+            if allowed_hop_refs_by_evidence_ref is not None:
                 restored_entry["hop_refs"] = []
             restored_by_ref[ref] = restored_entry
             restored.append(restored_entry)
-        if valid_hop_refs:
+        if allowed_hop_refs_by_evidence_ref is not None:
             raw_hop_refs = raw_entry.get("hop_refs")
             raw_hop_refs = raw_hop_refs if isinstance(raw_hop_refs, list) else []
+            allowed_hop_refs = allowed_hop_refs_by_evidence_ref.get(ref, set())
             for hop_ref in raw_hop_refs:
                 normalized_hop_ref = str(hop_ref or "").strip()
                 if (
-                    normalized_hop_ref in valid_hop_refs
+                    normalized_hop_ref in allowed_hop_refs
                     and normalized_hop_ref not in restored_entry["hop_refs"]
                 ):
                     restored_entry["hop_refs"].append(normalized_hop_ref)
@@ -294,6 +299,24 @@ def _evidence_usage_covers_contract(
     *,
     source_unit: Dict[str, Any],
 ) -> Tuple[bool, str]:
+    required_material_ids = {
+        str(value)
+        for value in source_unit.get("required_material_ids") or []
+        if str(value)
+    }
+    uses_retrieved_evidence = any(
+        isinstance(entry, dict)
+        and str(entry.get("role") or "") == "retrieved_evidence"
+        for entry in evidence_usage
+    )
+    cites_bound_primary = any(
+        isinstance(entry, dict)
+        and str(entry.get("role") or "") in {"primary_source", "primary_visual"}
+        and str(entry.get("material_id") or "") in required_material_ids
+        for entry in evidence_usage
+    )
+    if required_material_ids and uses_retrieved_evidence and not cites_bound_primary:
+        return False, "primary_evidence_mismatch"
     summary_hops = source_unit.get("summary_hops")
     summary_hops = summary_hops if isinstance(summary_hops, list) else []
     if summary_hops:
@@ -943,6 +966,9 @@ def call_scenario_planner_llm(
                         hop_image_refs.append(image_ref)
                 if invalid_hop_reason:
                     break
+                if len(hop_image_ids) > MAX_SUMMARY_HOP_IMAGES:
+                    invalid_hop_reason = "summary_hop_has_too_many_images"
+                    break
                 hop_mode = str(raw_hop.get("evidence_mode") or "").strip().lower()
                 if hop_mode not in {"text", "visual", "mixed"}:
                     hop_mode = "mixed" if hop_image_ids else "text"
@@ -969,6 +995,17 @@ def call_scenario_planner_llm(
                         required_image_ids.append(image_id)
             if invalid_hop_reason:
                 dropped[invalid_hop_reason] = dropped.get(invalid_hop_reason, 0) + 1
+                continue
+            if not summary_hop_materials_are_distinct(
+                summary_hops,
+                {
+                    str(material.material_id): material
+                    for material in section_materials
+                },
+            ):
+                dropped["summary_hop_materials_redundant"] = (
+                    dropped.get("summary_hop_materials_redundant", 0) + 1
+                )
                 continue
         else:
             required_material_ids, unknown_required = resolve_refs(
@@ -1009,6 +1046,11 @@ def call_scenario_planner_llm(
             for material_id in optional_material_ids
             if material_id not in required_material_ids
         ]
+        if scenario_type == "summary" and len(optional_material_ids) > 1:
+            dropped["summary_allows_at_most_one_optional_material"] = (
+                dropped.get("summary_allows_at_most_one_optional_material", 0) + 1
+            )
+            continue
         material_ids: List[str] = []
         for material_id in [*required_material_ids, *optional_material_ids]:
             if material_id not in material_ids:
@@ -1426,11 +1468,21 @@ def call_evidence_answer_llm(
         evidence_text_by_ref = {}
     llm_summary_hops = generation_unit.get("llm_summary_hops")
     llm_summary_hops = llm_summary_hops if isinstance(llm_summary_hops, list) else []
-    valid_hop_refs = {
-        str(hop.get("hop_ref") or "").strip()
-        for hop in llm_summary_hops
-        if isinstance(hop, dict) and str(hop.get("hop_ref") or "").strip()
-    }
+    allowed_hop_refs_by_evidence_ref: Optional[Dict[str, set[str]]] = None
+    if llm_summary_hops:
+        allowed_hop_refs_by_evidence_ref = {}
+        for hop in llm_summary_hops:
+            if not isinstance(hop, dict):
+                continue
+            hop_ref = str(hop.get("hop_ref") or "").strip()
+            if not hop_ref:
+                continue
+            for evidence_ref in hop.get("evidence_refs") or []:
+                normalized_ref = str(evidence_ref or "").strip()
+                if normalized_ref:
+                    allowed_hop_refs_by_evidence_ref.setdefault(
+                        normalized_ref, set()
+                    ).add(hop_ref)
     language_code, language_instruction = _resolve_generation_language(
         prompt_language,
         prompt_unit_text or source_chunk_text,
@@ -1510,7 +1562,7 @@ def call_evidence_answer_llm(
             normalized["evidence_usage"] = _restore_evidence_usage_ids(
                 raw_usage,
                 evidence_ref_map,
-                valid_hop_refs=valid_hop_refs or None,
+                allowed_hop_refs_by_evidence_ref=allowed_hop_refs_by_evidence_ref,
             )[:12]
         contract_ok, contract_reason = _evidence_usage_covers_contract(
             normalized.get("evidence_usage") or [],

@@ -31,6 +31,39 @@ def _dot(left: Sequence[float], right: Sequence[float]) -> float:
     return float(sum(float(a) * float(b) for a, b in zip(left, right)))
 
 
+def _is_structural_ancestor(ancestor: str, descendant: str) -> bool:
+    left = str(ancestor or "").strip()
+    right = str(descendant or "").strip()
+    if not left or not right or left == right:
+        return False
+    return right.startswith(f"{left}.") or right.startswith(f"{left}/")
+
+
+def _is_source_structure_compatible(
+    candidate: EvidenceChunk,
+    source_chunks: Sequence[EvidenceChunk],
+) -> bool:
+    if not source_chunks:
+        return True
+    candidate_path = str(candidate.section_path or "").strip()
+    candidate_title = str(candidate.title_path or "").replace("＞", ">").strip(" >")
+    for source in source_chunks:
+        source_path = str(source.section_path or "").strip()
+        source_title = str(source.title_path or "").replace("＞", ">").strip(" >")
+        if candidate_path and candidate_path == source_path:
+            return True
+        if _is_structural_ancestor(source_path, candidate_path) or _is_structural_ancestor(
+            candidate_path, source_path
+        ):
+            return True
+        if source_title and candidate_title and (
+            candidate_title.startswith(f"{source_title}>")
+            or source_title.startswith(f"{candidate_title}>")
+        ):
+            return True
+    return False
+
+
 def admit_relevant_ranked(
     ranked: Sequence[tuple[str, float]],
     *,
@@ -143,17 +176,30 @@ class EvidenceRetrievalPipeline:
             if source_reference_ranked
             else None
         )
-        atomic_non_source = [
-            (chunk_id, score)
-            for chunk_id, score in atomic_ranked
-            if chunk_id not in source_ids
+        source_chunks = [
+            self.by_id[chunk_id]
+            for chunk_id in source_ids
+            if chunk_id in self.by_id
         ]
-        atomic_admitted, atomic_rejected = admit_relevant_ranked(
-            atomic_non_source,
+        structure_rejected: Dict[str, str] = {}
+        atomic_in_scope: List[tuple[str, float]] = []
+        for chunk_id, score in atomic_ranked:
+            if chunk_id in source_ids:
+                continue
+            chunk = self.by_id.get(chunk_id)
+            if chunk is None:
+                continue
+            if not _is_source_structure_compatible(chunk, source_chunks):
+                structure_rejected[chunk_id] = "outside_source_structure_scope"
+                continue
+            atomic_in_scope.append((chunk_id, score))
+        atomic_admitted, relevance_rejected = admit_relevant_ranked(
+            atomic_in_scope,
             maximum_top_drop=ATOMIC_RELEVANCE_MAX_LOGIT_DROP,
             reference_score=source_reference_top_score,
             maximum_reference_drop=ATOMIC_PRIMARY_SOURCE_MAX_LOGIT_DROP,
         )
+        atomic_rejected = {**structure_rejected, **relevance_rejected}
         atomic_ranked_ids = [chunk_id for chunk_id, _score in atomic_admitted[:DEFAULT_ATOMIC_RERANK_K]]
         atomic_scores = {chunk_id: score for chunk_id, score in atomic_ranked}
         if timing is not None:
@@ -162,9 +208,25 @@ class EvidenceRetrievalPipeline:
         window_started = time.perf_counter()
         windows = self.windows.build(query=query, ranked_chunk_ids=atomic_ranked_ids)
         windows_by_id = {window.window_id: window for window in windows}
+        window_structure_rejected = {
+            window.window_id: "outside_source_structure_scope"
+            for window in windows
+            if any(
+                chunk_id not in source_ids
+                and chunk_id in self.by_id
+                and not _is_source_structure_compatible(
+                    self.by_id[chunk_id], source_chunks
+                )
+                for chunk_id in window.chunk_ids
+            )
+        }
         raw_window_ranked = self.reranker.rank(
             query,
-            [(window.window_id, window.text) for window in windows],
+            [
+                (window.window_id, window.text)
+                for window in windows
+                if window.window_id not in window_structure_rejected
+            ],
         ) if windows else []
         raw_window_scores = {window_id: score for window_id, score in raw_window_ranked}
         window_ranked = sorted(
@@ -178,15 +240,22 @@ class EvidenceRetrievalPipeline:
         )
         window_scores = raw_window_scores
         if window_ranked:
-            window_ranked, window_rejected = admit_relevant_ranked(
+            window_ranked, relevance_window_rejected = admit_relevant_ranked(
                 window_ranked,
                 maximum_top_drop=WINDOW_RELEVANCE_MAX_LOGIT_DROP,
                 reference_score=source_reference_top_score,
                 maximum_reference_drop=WINDOW_PRIMARY_SOURCE_MAX_LOGIT_DROP,
             )
+            window_rejected = {
+                **window_structure_rejected,
+                **relevance_window_rejected,
+            }
         else:
             window_rejected = {
-                window_id: "no_atomic_anchor_admitted" for window_id in windows_by_id
+                window_id: window_structure_rejected.get(
+                    window_id, "no_atomic_anchor_admitted"
+                )
+                for window_id in windows_by_id
             }
 
         # Structural alternatives with the same atomic anchors are mutually
@@ -251,7 +320,7 @@ class EvidenceRetrievalPipeline:
             "selected_windows": selected,
             "selected_chunk_ids": unique_selected_chunk_ids,
             "trace": {
-                "pipeline": "bm25_dense_rrf_bge_admission_structure_v2",
+                "pipeline": "bm25_dense_rrf_bge_structure_scope_v3",
                 "dense_hits": [item.__dict__ for item in dense],
                 "bm25_hits": [item.__dict__ for item in lexical],
                 "rrf_hits": [

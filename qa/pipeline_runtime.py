@@ -428,16 +428,38 @@ def run_one_step_chunk_worker(
                 dropped_answer_reasons.get(f"question_editor_{reason}", 0) + count
             )
         if not candidates:
+            if editor_drop_reasons:
+                break
             if not candidate_retry_used and attempt_index < max_attempts:
                 candidate_retry_used = True
                 continue
             break
         retrieval_timing: Dict[str, float] = {}
         retrieval_started_at = time.perf_counter()
-        source_indexes = [
-            int(value)
-            for value in source_unit_payload.get("source_chunk_indexes") or [chunk_index]
+        material_source_indexes = source_unit_payload.get(
+            "material_source_chunk_indexes"
+        )
+        material_source_indexes = (
+            material_source_indexes
+            if isinstance(material_source_indexes, dict)
+            else {}
+        )
+        required_material_ids = [
+            str(value)
+            for value in source_unit_payload.get("required_material_ids") or []
+            if str(value)
         ]
+        source_indexes = list(
+            dict.fromkeys(
+                int(index)
+                for material_id in required_material_ids
+                for index in material_source_indexes.get(material_id) or []
+            )
+        )
+        if not source_indexes:
+            raise ValueError(
+                "generation unit is missing required material source indexes"
+            )
         source_chunk_ids = [
             str(evidence_index.get_chunk(index).get("chunk_id") or "")
             for index in source_indexes

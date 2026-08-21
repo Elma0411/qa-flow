@@ -34,7 +34,7 @@ Important details:
 
 The QA evidence path is fixed:
 
-`question normalization -> BM25 + BGE-M3 dense recall -> RRF -> atomic BGE rerank -> structural evidence windows -> window BGE rerank -> token budget -> answer`
+`question normalization -> BM25 + BGE-M3 dense recall -> RRF -> atomic BGE rerank -> required-source structural scope -> structural evidence windows -> window BGE rerank -> token budget -> answer`
 
 Section nodes, content chunks, and physical fragments are separate concepts.
 Do not encode `Part N/M` into a section path or materialize aggregate parent
@@ -58,7 +58,9 @@ optional Section Materials, `text|visual|mixed` evidence mode, required images,
 and backend-selected question type. A Summary owns exactly two or three atomic
 `SummaryHop` records; every hop binds one sub-question to one Section Material
 and its required text/image evidence. Summary required materials, images, and
-overall evidence mode are derived from those hops. The question writer and
+overall evidence mode are derived from those hops. Each hop may require at most
+two images; a Summary may carry at most one optional material, and duplicate
+material text cannot masquerade as two required contributions. The question writer and
 wording editor may change only the reader-facing question text; neither may
 reclassify material or image evidence. The answer renderer presents required
 text and image evidence as separate readable blocks, validates every Summary

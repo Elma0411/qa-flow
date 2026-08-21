@@ -23,6 +23,7 @@ SCENARIO_TYPE_POINT = "point"
 SCENARIO_TYPE_SUMMARY = "summary"
 DEFAULT_AUTO_SUMMARY_RATIO = 0.35
 DEFAULT_SCENARIO_PLANNING_BATCH_CHARS = 24000
+MAX_SUMMARY_HOP_IMAGES = 2
 _STATIC_VISUAL_VALUE_INTENT_RE = re.compile(
     r"(?:多少|几(?:个|次|天|元|条|项)?|上限|下限|比例|金额|数值|编号|日期|年度)"
 )
@@ -1141,6 +1142,43 @@ def _normalize_material_id_list(raw: Any, materials_by_id: Dict[str, SectionMate
     return result
 
 
+def summary_hop_materials_are_distinct(
+    hops: Sequence[Dict[str, Any]],
+    materials_by_id: Dict[str, SectionMaterial],
+) -> bool:
+    material_ids = list(
+        dict.fromkeys(
+            _safe_text(hop.get("material_id"))
+            for hop in hops
+            if isinstance(hop, dict) and _safe_text(hop.get("material_id"))
+        )
+    )
+    for left_index, left_id in enumerate(material_ids):
+        left = materials_by_id.get(left_id)
+        if left is None:
+            return False
+        left_text = _collapse_text(left.text_content or left.material_text).casefold()
+        left_tokens = _token_set(left_text)
+        for right_id in material_ids[left_index + 1 :]:
+            right = materials_by_id.get(right_id)
+            if right is None:
+                return False
+            right_text = _collapse_text(right.text_content or right.material_text).casefold()
+            right_tokens = _token_set(right_text)
+            if not left_text or not right_text:
+                return False
+            length_ratio = min(len(left_text), len(right_text)) / max(
+                len(left_text), len(right_text)
+            )
+            containment = (
+                length_ratio >= 0.85
+                and (left_text in right_text or right_text in left_text)
+            )
+            if containment or _jaccard(left_tokens, right_tokens) >= 0.90:
+                return False
+    return True
+
+
 def _normalize_summary_hops(
     raw: Any,
     materials_by_id: Dict[str, SectionMaterial],
@@ -1168,6 +1206,8 @@ def _normalize_summary_hops(
                 return []
             if normalized_image_id not in image_ids:
                 image_ids.append(normalized_image_id)
+        if len(image_ids) > MAX_SUMMARY_HOP_IMAGES:
+            return []
         requested_hop_mode = _safe_text(value.get("evidence_mode")).lower()
         if requested_hop_mode in {"visual", "mixed"} and not image_ids:
             return []
@@ -1186,7 +1226,11 @@ def _normalize_summary_hops(
                 "required_image_ids": image_ids,
             }
         )
-    return normalized
+    return (
+        normalized
+        if summary_hop_materials_are_distinct(normalized, materials_by_id)
+        else []
+    )
 
 
 def _build_generation_unit(
@@ -1218,6 +1262,8 @@ def _build_generation_unit(
     optional_material_ids = _normalize_material_id_list(
         raw.get("optional_material_ids"), materials_by_id
     )
+    if scenario_type == SCENARIO_TYPE_SUMMARY and len(optional_material_ids) > 1:
+        return None
     material_ids: List[str] = []
     for material_id in [*required_material_ids, *optional_material_ids]:
         if material_id not in material_ids:
@@ -1487,6 +1533,54 @@ def _required_visual_text(unit: GenerationUnit) -> str:
     return _collapse_text(" ".join(value for value in descriptions if value)).casefold()
 
 
+def _summary_hop_signature(unit: GenerationUnit) -> Tuple[Tuple[Any, ...], ...]:
+    return tuple(
+        sorted(
+            (
+                _collapse_text(hop.get("sub_question")).casefold(),
+                _safe_text(hop.get("material_id")),
+                _safe_text(hop.get("evidence_mode")) or "text",
+                tuple(
+                    sorted(
+                        _safe_text(value)
+                        for value in hop.get("required_image_ids") or []
+                    )
+                ),
+            )
+            for hop in unit.summary_hops
+            if isinstance(hop, dict)
+        )
+    )
+
+
+def _summary_hops_equivalent(left: GenerationUnit, right: GenerationUnit) -> bool:
+    left_hops = [hop for hop in left.summary_hops if isinstance(hop, dict)]
+    right_hops = [hop for hop in right.summary_hops if isinstance(hop, dict)]
+    if len(left_hops) != len(right_hops) or not left_hops:
+        return False
+    unmatched = list(right_hops)
+    for left_hop in left_hops:
+        left_tokens = _token_set(_safe_text(left_hop.get("sub_question")))
+        left_mode = _safe_text(left_hop.get("evidence_mode")) or "text"
+        match_index = next(
+            (
+                index
+                for index, right_hop in enumerate(unmatched)
+                if (_safe_text(right_hop.get("evidence_mode")) or "text") == left_mode
+                and _jaccard(
+                    left_tokens,
+                    _token_set(_safe_text(right_hop.get("sub_question"))),
+                )
+                >= 0.78
+            ),
+            None,
+        )
+        if match_index is None:
+            return False
+        unmatched.pop(match_index)
+    return not unmatched
+
+
 def _promote_visual_alternatives(
     selected: List[GenerationUnit],
     *,
@@ -1505,6 +1599,8 @@ def _promote_visual_alternatives(
         candidates,
         key=lambda unit: (unit.anchor_chunk_index, unit.qa_mode, unit.unit_id),
     ):
+        if candidate.qa_mode != SCENARIO_TYPE_POINT:
+            continue
         if not candidate.required_image_ids:
             continue
         if _STATIC_VISUAL_VALUE_INTENT_RE.search(candidate.scenario_intent):
@@ -1554,12 +1650,20 @@ def _select_scenarios(
     auto_summary_ratio: float,
 ) -> Tuple[List[GenerationUnit], List[GenerationUnit], Dict[str, int], Dict[str, int], int]:
     deduped: List[GenerationUnit] = []
-    seen: set[Tuple[str, str, Tuple[str, ...]]] = set()
+    seen: set[Tuple[Any, ...]] = set()
     for unit in candidates:
-        key = (
-            unit.qa_mode,
-            _collapse_text(unit.scenario_intent).casefold(),
-            tuple(unit.material_ids),
+        key: Tuple[Any, ...] = (
+            (
+                unit.qa_mode,
+                _summary_hop_signature(unit),
+            )
+            if unit.qa_mode == SCENARIO_TYPE_SUMMARY
+            else (
+                unit.qa_mode,
+                _collapse_text(unit.scenario_intent).casefold(),
+                tuple(unit.required_material_ids),
+                tuple(sorted(unit.required_image_ids)),
+            )
         )
         if key in seen:
             continue
@@ -1570,6 +1674,13 @@ def _select_scenarios(
         unit_visual_text = _required_visual_text(unit)
         semantically_duplicated = False
         for existing in deduped:
+            if unit.qa_mode != existing.qa_mode:
+                continue
+            if unit.qa_mode == SCENARIO_TYPE_SUMMARY:
+                if _summary_hops_equivalent(unit, existing):
+                    semantically_duplicated = True
+                    break
+                continue
             existing_visual_text = _required_visual_text(existing)
             visual_duplicate = False
             if unit_visual_text and existing_visual_text:

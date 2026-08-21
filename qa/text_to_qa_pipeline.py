@@ -185,17 +185,15 @@ def _token_dice(left: set[str], right: set[str]) -> float:
     return (2.0 * len(left & right)) / (len(left) + len(right))
 
 
-def _source_fact_overlap(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
-    """Recognize repeated grounded facts, including copied policy text.
+def _grounded_answer_overlap(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+    """Require aligned question intent and answer claims before deduplication.
 
-    The normal question-text duplicate guard must not collapse unrelated
-    sections merely because they share a topic. This narrower check applies
-    only after the answer is grounded and requires direct source-fact overlap.
+    ``source_fact_text`` is model-authored audit text and can contain an entire
+    paragraph or neighboring facts. It therefore supports a duplicate decision
+    only after the reader questions and answer claims are already equivalent.
     """
     left_fact = _question_identity(left.get("source_fact_text"))
     right_fact = _question_identity(right.get("source_fact_text"))
-    if not left_fact or not right_fact:
-        return False
     cross_mode = _is_summary_item(left) != _is_summary_item(right)
     left_fact_tokens = _question_semantic_tokens(left_fact)
     right_fact_tokens = _question_semantic_tokens(right_fact)
@@ -204,20 +202,34 @@ def _source_fact_overlap(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
         _question_semantic_tokens(left.get("question")),
         _question_semantic_tokens(right.get("question")),
     )
+    left_answer_tokens = _question_semantic_tokens(left.get("answer"))
+    right_answer_tokens = _question_semantic_tokens(right.get("answer"))
+    answer_dice = _token_dice(left_answer_tokens, right_answer_tokens)
+    left_intent = _question_semantic_tokens(
+        left.get("qa_generation_scenario_intent") or left.get("question")
+    )
+    right_intent = _question_semantic_tokens(
+        right.get("qa_generation_scenario_intent") or right.get("question")
+    )
+    intent_dice = _token_dice(left_intent, right_intent)
     if cross_mode:
+        if question_dice < 0.55 or intent_dice < 0.55:
+            return False
+        if left_answer_tokens and right_answer_tokens and answer_dice < 0.78:
+            return False
+        if not left_fact or not right_fact:
+            return bool(left_answer_tokens and right_answer_tokens)
         if left_fact == right_fact:
             return True
         length_ratio = min(len(left_fact), len(right_fact)) / max(
             len(left_fact), len(right_fact)
         )
-        return fact_dice >= 0.86 and question_dice >= 0.50 and length_ratio >= 0.72
-    if min(len(left_fact), len(right_fact)) >= 16 and (
-        left_fact in right_fact or right_fact in left_fact
-    ):
-        return True
-    if fact_dice < 0.62:
+        return fact_dice >= 0.90 and length_ratio >= 0.85
+    if question_dice < 0.68 or intent_dice < 0.55:
         return False
-    return question_dice >= 0.24
+    if left_answer_tokens and right_answer_tokens:
+        return answer_dice >= 0.72
+    return bool(left_fact and right_fact and fact_dice >= 0.82)
 
 
 def _is_summary_item(item: Dict[str, Any]) -> bool:
@@ -255,7 +267,14 @@ def _questions_semantically_overlap(left: Dict[str, Any], right: Dict[str, Any])
         return False
     if left_text == right_text:
         return True
-    if _source_fact_overlap(left, right):
+    both_have_answers = bool(
+        _question_identity(left.get("answer"))
+        and _question_identity(right.get("answer"))
+    )
+    grounded_overlap = _grounded_answer_overlap(left, right)
+    if both_have_answers:
+        return grounded_overlap
+    if grounded_overlap:
         return True
     if _is_summary_item(left) != _is_summary_item(right):
         # A Summary and a Point may share wording because the Point is one of
